@@ -192,6 +192,29 @@ class AlignmentSettings(BaseSettings):
         "enormous.",
     )
 
+    post_interlude_leak_lead_sec: float = Field(
+        default=3.0,
+        description="Reverse-leak detector lead. The whole-window fill margin above only fires when "
+        "an ENTIRE post-interlude block is compressed forward; it misses the milder (and now more "
+        "common, after vocals-first CTC lifted bulk accuracy) failure where only the LEADING "
+        "narration line of a spoken section leaks back across the interlude while the rest of the "
+        "block lands correctly (初音ミクの消失 today: idx17-18 ~19s early, idx46 ~24s early, while "
+        "idx19+/47+ are ~in place, so ko fills 103/116s of the largest window and the fill margin "
+        "never trips). The reverse-leak check compares ja vs ko per interlude: a line is 'leaked' "
+        "when ja places it at/after the interlude gap_end but ko places it at least this many "
+        "seconds BEFORE gap_end. Catches single leading-line leaks the fill margin cannot see.",
+    )
+
+    post_interlude_leak_min_sec: float = Field(
+        default=8.0,
+        description="Minimum backward displacement (seconds) of a leaked run before the reverse-leak "
+        "guard rewrites its timing. A leaked run (a maximal block of ja-vs-ko displaced lines "
+        "containing at least one leaked seed line) is spliced to ja timing only when its worst line "
+        "is displaced at least this far — keeping benign sub-second/fast-rap wobble untouched while "
+        "catching the ~19-24s narration leaks. Conservative by design: the guard moves lines only "
+        "when ja and ko disagree grossly.",
+    )
+
 
 class TranslationSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EVERYRIC_TRANSLATE_")

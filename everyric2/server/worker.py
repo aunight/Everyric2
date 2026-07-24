@@ -1013,6 +1013,110 @@ def _splice_alignments(ko_results, ja_results, post_win: tuple[float, float]) ->
     return k
 
 
+def _post_interlude_windows(vad_regions, min_gap_sec: float) -> list[tuple[float, float]]:
+    """min_gap_sec 이상의 **모든** 간주 뒤 발성 블록 창 목록 [gap_end, block_end] (시간순).
+
+    ``_post_interlude_window``(최대 간주 하나만)의 확장판. 최대 갭만 앵커하면 두 번째로
+    큰 간주 뒤의 대사 블록(初音ミクの消失 나레이션1: 간주1 43.76→59.84 뒤)이 가드
+    범위 밖으로 빠진다. 각 간주 i의 창 끝은 다음 간주의 시작(없으면 마지막 발성 끝)이라
+    간주 사이 블록이 서로 겹치지 않는다. 큰 간주가 없으면 빈 목록.
+    """
+    regions = sorted((reg.start, reg.end) for reg in vad_regions)
+    if len(regions) < 2:
+        return []
+    interludes: list[tuple[float, float]] = []  # (gap_start, gap_end)
+    for (_, e0), (s1, _) in zip(regions, regions[1:]):
+        if s1 - e0 >= min_gap_sec:
+            interludes.append((e0, s1))
+    if not interludes:
+        return []
+    last_end = regions[-1][1]
+    windows: list[tuple[float, float]] = []
+    for i, (_gs, ge) in enumerate(interludes):
+        block_end = interludes[i + 1][0] if i + 1 < len(interludes) else last_end
+        if block_end - ge > 0:
+            windows.append((ge, block_end))
+    return windows
+
+
+def _straddles_interlude(results, min_gap_sec: float) -> bool:
+    """연속 라인 사이에 min_gap_sec 이상 벌어진 곳이 있으면 True (라인이 간주를 가로지름).
+
+    독음(ko) 정렬은 간주를 사이에 두고 라인 블록을 배치하므로, 이 간극은 대사/간주
+    전이가 있다는 값싼 ko 전용 신호다. star 삼킴이 작아(무음 위 star) 삼킴 게이트를
+    못 넘는 누출(初音ミクの消失: 삼킴 1.02s)도 여기서 ja 교차검증을 트리거하게 한다.
+    실제 라인 이동은 아래 ja 대조(_leaked_runs)만이 결정하므로 이 게이트가 넓어도
+    무해 케이스를 흔들지 않는다 — 두 번째 정렬을 도는 비용만 늘 뿐이다.
+    """
+    return any(
+        results[i + 1].start_time - results[i].end_time >= min_gap_sec
+        for i in range(len(results) - 1)
+    )
+
+
+def _leaked_runs(
+    ko_results,
+    ja_results,
+    windows: list[tuple[float, float]],
+    lead_sec: float,
+    onset_slack: float = 2.0,
+    rejoin_tol: float = 3.0,
+) -> list[list[int]]:
+    """ko가 간주 이전으로 역누출한 라인들의 연속 런 목록 (ja와 라인 단위 대조).
+
+    ko/ja는 같은 가사 라인을 정렬하므로 인덱스가 대응한다. 어떤 라인 i가 '누출 seed'가
+    되는 조건: **ja가 그 라인을 간주 이후 창 안(±onset_slack)에 두는데 ko는 창의 gap_end
+    보다 lead_sec 이상 앞에 둔다.** seed를 포함하는 '변위(|ja.start−ko.start|>rejoin_tol)
+    연속 블록'을 하나의 런으로 돌려준다 — 선두 한 줄만 새는 경우(初音ミクの消失 idx46)와
+    블록 전체가 압축된 경우(7/11 idx46-52)를 모두 같은 방식으로 포착하고, seed 없는
+    변위(초고속 랩부의 ±2s 흔들림)는 런에서 배제해 외과적으로만 교체한다.
+    """
+    n = len(ko_results)
+    if n == 0 or n != len(ja_results) or not windows:
+        return []
+    seed = [False] * n
+    for w0, w1 in windows:
+        for i in range(n):
+            if (
+                ko_results[i].start_time <= w0 - lead_sec
+                and (w0 - onset_slack) <= ja_results[i].start_time <= (w1 + onset_slack)
+            ):
+                seed[i] = True
+    displaced = [
+        abs(ja_results[i].start_time - ko_results[i].start_time) > rejoin_tol for i in range(n)
+    ]
+    runs: list[list[int]] = []
+    i = 0
+    while i < n:
+        if not displaced[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and displaced[j]:
+            j += 1
+        block = list(range(i, j))
+        if any(seed[k] for k in block):
+            runs.append(block)
+        i = j
+    return runs
+
+
+def _apply_leak_splice(ko_results, ja_results, idxs: list[int]) -> None:
+    """누출 라인 idxs의 타이밍(start/end/word_segments)만 ja 정렬값으로 제자리 교체한다.
+
+    가사 순서·인덱스가 대응하므로 텍스트/신뢰도 등 ko 라인 속성은 유지하고 타이밍만
+    바꾼다. 교체 라인의 ko 발음 음절 스팬(pron_segments)은 압축된 값이라 호출부가 별도로
+    무효화한다(캐시 재병합이 ja 타이밍 기반으로 복원). 런은 연속이고 ja는 단조라 경계는
+    앞뒤 유지 라인과 자연히 정합한다.
+    """
+    for i in idxs:
+        ja = ja_results[i]
+        r = ko_results[i]
+        r.start_time = ja.start_time
+        r.end_time = ja.end_time
+        r.word_segments = ja.word_segments
+
+
 def _pron_by_text(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
     """line_meta를 정규화 텍스트 → 메타 dict로 색인 (merge_line_meta와 동일 규칙)."""
     by_text: dict[str, dict[str, Any]] = {}
@@ -1222,57 +1326,123 @@ def _run_alignment(
                 # 둘이 비슷하면(熱異常: ja도 채움, 배치 차이는 국소) ko 유지.
                 if alignment_text == "pronunciation" and settings.alignment.star_vocal_fallback_sec > 0:
                     swallowed = _star_swallowed_vocal(pron_star_spans, vad_result.regions)
+                    windows = _post_interlude_windows(
+                        vad_result.regions, settings.alignment.interlude_min_gap_sec
+                    )
                     post_win = _post_interlude_window(
                         vad_result.regions, settings.alignment.interlude_min_gap_sec
                     )
-                    if swallowed >= settings.alignment.star_vocal_fallback_sec and post_win:
+                    # star가 실보컬을 크게 삼켰거나(전체 압축) 라인이 간주를 가로지르면
+                    # (선두 라인만 뒤로 새는 약한 누출도 가능) ja 정렬을 한 번 돌려 대조한다.
+                    # 삼킴이 작아도(무음 위 star: 初音ミクの消失 1.02s) straddle이면 검사 —
+                    # 실제 라인 이동은 아래 ja 대조만 결정하므로 게이트가 넓어도 안전하다.
+                    run_cross_check = bool(windows) and (
+                        swallowed >= settings.alignment.star_vocal_fallback_sec
+                        or _straddles_interlude(results, settings.alignment.interlude_min_gap_sec)
+                    )
+                    if run_cross_check:
                         ja_candidate = engine.align(
                             align_audio, lyric_lines, language=language or "auto"
                         )
-                        ko_fill = _lines_span_overlap(results, post_win)
-                        ja_fill = _lines_span_overlap(ja_candidate, post_win)
-                        if ja_fill - ko_fill >= settings.alignment.post_interlude_fill_margin_sec:
-                            splice_k = (
-                                _splice_alignments(results, ja_candidate, post_win)
-                                if settings.alignment.star_guard_splice
-                                else None
+                        # 1) 역방향 누출(모든 간주): ja가 간주 이후에 두는데 ko가 앞으로 뺀
+                        #    라인들의 변위 런 중 크게(>= leak_min) 밀린 것만 골라 그 라인들의
+                        #    타이밍을 ja로 외과 교체한다. 선두 한 줄만 새는 경우(idx46)와
+                        #    블록 전체 압축(idx46-52)을 같은 방식으로 포착, 정상 라인은 보존.
+                        runs = _leaked_runs(
+                            results,
+                            ja_candidate,
+                            windows,
+                            settings.alignment.post_interlude_leak_lead_sec,
+                        )
+                        leaked = [
+                            i
+                            for run in runs
+                            if max(
+                                ja_candidate[k].start_time - results[k].start_time for k in run
                             )
-                            if splice_k is not None:
-                                # 간주 전 라인은 ko(음절 타이밍) 보존 + 간주 후는 ja로 교체.
-                                # 교체된 라인의 ko pron_segments는 압축된 타이밍이라 무효 —
-                                # 스팬만 버리면 발음·번역 텍스트는 남고, 캐시 재병합이 ja
-                                # 타이밍 기반 DP 근사로 노트 스팬을 복원한다.
-                                logger.warning(
-                                    f"Pronunciation alignment vacated the post-interlude window "
-                                    f"[{post_win[0]:.1f}-{post_win[1]:.1f}]s (ko fills {ko_fill:.1f}s "
-                                    f"vs ja {ja_fill:.1f}s; star swallowed {swallowed:.1f}s); "
-                                    f"splicing ko[:{splice_k}] + ja[{splice_k}:]"
-                                )
-                                alignment_text = "spliced"
-                                if pron_data:
-                                    for idx in range(splice_k, len(results)):
-                                        pd = pron_data.get(idx)
-                                        if pd:
-                                            pd["pron_segments"] = None
-                            else:
-                                logger.warning(
-                                    f"Pronunciation alignment vacated the post-interlude window "
-                                    f"[{post_win[0]:.1f}-{post_win[1]:.1f}]s (ko fills {ko_fill:.1f}s "
-                                    f"vs ja {ja_fill:.1f}s, +{ja_fill - ko_fill:.1f}s; star swallowed "
-                                    f"{swallowed:.1f}s); falling back to original-text alignment"
-                                )
-                                results = ja_candidate
-                                alignment_text = "original"
-                                pron_data = None
+                            >= settings.alignment.post_interlude_leak_min_sec
+                            for i in run
+                        ]
+                        if leaked and settings.alignment.star_guard_splice:
+                            # 교체된 라인의 ko pron_segments는 압축된 타이밍이라 무효 —
+                            # 스팬만 버리면 발음·번역 텍스트는 남고, 캐시 재병합이 ja
+                            # 타이밍 기반 DP 근사로 노트 스팬을 복원한다.
+                            logger.warning(
+                                f"Pronunciation alignment leaked {len(leaked)} line(s) back across "
+                                f"{len(windows)} interlude(s) (idx {leaked[0]}..{leaked[-1]}; star "
+                                f"swallowed {swallowed:.1f}s); splicing ja timing onto leaked lines"
+                            )
+                            _apply_leak_splice(results, ja_candidate, leaked)
+                            alignment_text = "spliced"
+                            if pron_data:
+                                for idx in leaked:
+                                    pd = pron_data.get(idx)
+                                    if pd:
+                                        pd["pron_segments"] = None
                             raw_spans = [(r.start_time, r.end_time) for r in results]
                             fixes = {}
+                        elif leaked:
+                            # 스플라이스 비활성 — 누출 확인 시 전곡 원문 폴백
+                            logger.warning(
+                                f"Pronunciation alignment leaked {len(leaked)} line(s) across "
+                                f"interlude(s) (splice disabled); falling back to original-text "
+                                f"alignment"
+                            )
+                            results = ja_candidate
+                            alignment_text = "original"
+                            pron_data = None
+                            raw_spans = [(r.start_time, r.end_time) for r in results]
+                            fixes = {}
+                        elif swallowed >= settings.alignment.star_vocal_fallback_sec and post_win:
+                            # 2) 역누출 런은 없지만 삼킴 게이트가 트립됐으면, 레거시 전창
+                            #    점유 대조로 극단적 전체 압축(창을 통째로 비운 경우)을 안전망으로.
+                            ko_fill = _lines_span_overlap(results, post_win)
+                            ja_fill = _lines_span_overlap(ja_candidate, post_win)
+                            if ja_fill - ko_fill >= settings.alignment.post_interlude_fill_margin_sec:
+                                splice_k = (
+                                    _splice_alignments(results, ja_candidate, post_win)
+                                    if settings.alignment.star_guard_splice
+                                    else None
+                                )
+                                if splice_k is not None:
+                                    logger.warning(
+                                        f"Pronunciation alignment vacated the post-interlude window "
+                                        f"[{post_win[0]:.1f}-{post_win[1]:.1f}]s (ko fills "
+                                        f"{ko_fill:.1f}s vs ja {ja_fill:.1f}s; star swallowed "
+                                        f"{swallowed:.1f}s); splicing ko[:{splice_k}] + ja[{splice_k}:]"
+                                    )
+                                    alignment_text = "spliced"
+                                    if pron_data:
+                                        for idx in range(splice_k, len(results)):
+                                            pd = pron_data.get(idx)
+                                            if pd:
+                                                pd["pron_segments"] = None
+                                else:
+                                    logger.warning(
+                                        f"Pronunciation alignment vacated the post-interlude window "
+                                        f"[{post_win[0]:.1f}-{post_win[1]:.1f}]s (ko fills "
+                                        f"{ko_fill:.1f}s vs ja {ja_fill:.1f}s, +{ja_fill - ko_fill:.1f}s; "
+                                        f"star swallowed {swallowed:.1f}s); falling back to "
+                                        f"original-text alignment"
+                                    )
+                                    results = ja_candidate
+                                    alignment_text = "original"
+                                    pron_data = None
+                                raw_spans = [(r.start_time, r.end_time) for r in results]
+                                fixes = {}
+                            else:
+                                logger.info(
+                                    f"Star swallowed {swallowed:.1f}s but both alignments fill the "
+                                    f"post-interlude window similarly (ko {ko_fill:.1f}s, ja "
+                                    f"{ja_fill:.1f}s, +{ja_fill - ko_fill:.1f}s < "
+                                    f"{settings.alignment.post_interlude_fill_margin_sec}s); keeping "
+                                    f"pronunciation alignment"
+                                )
+
                         else:
                             logger.info(
-                                f"Star swallowed {swallowed:.1f}s but both alignments fill the "
-                                f"post-interlude window similarly (ko {ko_fill:.1f}s, ja {ja_fill:.1f}s, "
-                                f"+{ja_fill - ko_fill:.1f}s < "
-                                f"{settings.alignment.post_interlude_fill_margin_sec}s); keeping "
-                                f"pronunciation alignment"
+                                f"No reverse-leak across {len(windows)} interlude(s) "
+                                f"(star swallowed {swallowed:.1f}s); keeping pronunciation alignment"
                             )
                 # extend_to_vocal은 끄는다: 가사에 없는 반복 가창/애드립도 "보컬 활동"이라
                 # 라인을 그쪽으로 늘려버린다 (star 토큰이 흡수해 둔 구간을 도로 끌어안는 역효과)
