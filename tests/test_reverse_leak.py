@@ -15,6 +15,7 @@ from everyric2.inference.prompt import SyncResult
 from everyric2.server.worker import (
     _apply_leak_splice,
     _leaked_runs,
+    _mark_leak_ghosts,
     _post_interlude_windows,
     _straddles_interlude,
 )
@@ -136,3 +137,41 @@ def test_apply_leak_splice_replaces_only_leaked_timing():
     # 비누출 라인(초고속 랩·정위치)은 그대로
     assert (ko[5].start_time, ko[5].end_time) == before_5
     assert (ko[6].start_time, ko[6].end_time) == before_6
+
+
+# ---- _mark_leak_ghosts: 디버그 고스트(원 ko 위치) + "leak" 라벨 -------------------
+
+
+def test_mark_leak_ghosts_labels_only_moved_lines():
+    ko, ja = _vwv_ko_ja()
+    pre = {i: (ko[i].start_time, ko[i].end_time) for i in [2, 3, 4]}  # 스플라이스 전 ko
+    _apply_leak_splice(ko, ja, [2, 3, 4])  # 이제 ko[2..4]는 ja 타이밍
+    raw_spans = [(r.start_time, r.end_time) for r in ko]  # 리셋된 raw
+    fixes: dict[int, list[str]] = {}
+    _mark_leak_ghosts(raw_spans, fixes, pre, ko)
+    # 이동한 라인은 원 ko 위치를 고스트로 복원 + "leak" 라벨
+    assert raw_spans[2] == pre[2] and fixes[2] == ["leak"]
+    assert raw_spans[3] == pre[3] and fixes[3] == ["leak"]
+    # pre에 없던 라인은 손대지 않음
+    assert 5 not in fixes
+
+
+def test_mark_leak_ghosts_prepends_and_dedups_label():
+    ko, ja = _vwv_ko_ja()
+    pre = {2: (ko[2].start_time, ko[2].end_time)}
+    _apply_leak_splice(ko, ja, [2])
+    raw_spans = [(r.start_time, r.end_time) for r in ko]
+    fixes = {2: ["pp"]}  # 이미 다른 라벨이 있어도
+    _mark_leak_ghosts(raw_spans, fixes, pre, ko)
+    assert fixes[2] == ["leak", "pp"]  # 앞에 삽입, 중복 없음
+    _mark_leak_ghosts(raw_spans, fixes, pre, ko)  # 재호출해도 중복 안 됨
+    assert fixes[2] == ["leak", "pp"]
+
+
+def test_mark_leak_ghosts_skips_unmoved_within_tol():
+    ko, _ = _vwv_ko_ja()
+    pre = {2: (ko[2].start_time, ko[2].end_time)}  # 이동 안 함
+    raw_spans = [(r.start_time, r.end_time) for r in ko]
+    fixes: dict[int, list[str]] = {}
+    _mark_leak_ghosts(raw_spans, fixes, pre, ko)
+    assert fixes == {}  # 움직이지 않은 라인은 라벨 없음

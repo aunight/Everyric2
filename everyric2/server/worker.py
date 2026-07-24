@@ -1070,6 +1070,50 @@ def _dual_align_prefers_original(ko_conf: float, ja_conf: float | None, min_rati
     return ja_conf is not None and ja_conf >= ko_conf * min_ratio
 
 
+def _full_coverage_words(text: str, word_segments) -> list[dict[str, Any]]:
+    """라인 본문 글자를 1:1 완전히 덮는 words 목록 (직렬화용).
+
+    정렬 word_segments는 정규화 텍스트 기준이라 본문의 공백·문장부호·표기 차이 글자를
+    빠뜨려, ''.join(words)가 본문과 어긋나면 확장의 글자 매핑(indexOf)이 죽고 라인이 통짜로
+    점등된다. 여기서 words[].word를 순서대로 이으면 **정확히 본문**이 되도록 재구성한다:
+      - 방출하는 word는 항상 본문 부분문자열이라 join(words)==text가 구조적으로 보장된다.
+      - 정렬 토큰이 덮는 글자는 그 토큰의 타이밍/신뢰도를 상속,
+      - 토큰이 못 덮는 글자(공백·부호·표기 차이·괄호 독음 등)는 인접 토큰 시각으로 보간
+        (confidence=None). 토큰이 본문에 안 나타나면(표기 차이) 스퓨리어스로 버려 그 글자를
+        다음 토큰 시각으로 보간한다. 타이밍은 단조 비감소.
+    pron_segments는 건드리지 않는다(별도 부착).
+    """
+    tokens = [w for w in (word_segments or []) if w.word]
+    if not tokens:
+        return []
+    out: list[dict[str, Any]] = []
+    ti, wi, n, m = 0, 0, len(text), len(tokens)
+    prev_end: float | None = None
+    while ti < n:
+        tk = tokens[wi] if wi < m else None
+        if tk is not None and text.startswith(tk.word, ti):
+            out.append(
+                {
+                    "word": text[ti : ti + len(tk.word)],
+                    "start": tk.start,
+                    "end": tk.end,
+                    "confidence": tk.confidence,
+                }
+            )
+            prev_end = tk.end
+            ti += len(tk.word)
+            wi += 1
+        elif tk is not None and text.find(tk.word, ti, ti + len(tk.word) + 4) < 0:
+            wi += 1  # 표기 차이 스퓨리어스 토큰 — 버리고 같은 글자를 다음 토큰과 재평가
+        else:
+            # 토큰이 못 덮는 글자 → 인접 토큰 시각으로 보간(단조 유지 위해 prev_end에 앵커)
+            next_start = tokens[wi].start if wi < m else None
+            anchor = prev_end if prev_end is not None else (next_start or 0.0)
+            out.append({"word": text[ti], "start": anchor, "end": anchor, "confidence": None})
+            ti += 1
+    return out
+
+
 def _star_swallowed_vocal(star_spans, vad_regions) -> float:
     """단일 star span이 실제 VAD 발성 구간을 삼킨 최대 겹침 길이(초).
 
@@ -1247,6 +1291,29 @@ def _apply_leak_splice(ko_results, ja_results, idxs: list[int]) -> None:
         r.start_time = ja.start_time
         r.end_time = ja.end_time
         r.word_segments = ja.word_segments
+
+
+def _mark_leak_ghosts(
+    raw_spans: list[tuple[float, float]],
+    fixes: dict[int, list[str]],
+    pre_spans: dict[int, tuple[float, float]],
+    results,
+    tol: float = 0.2,
+) -> None:
+    """ja 스플라이스/폴백으로 타이밍이 바뀐 라인에 확장 디버그 고스트(원 ko 위치)+"leak" 라벨.
+
+    스플라이스/폴백 경로는 raw_spans/fixes를 리셋해 디버그 고스트가 사라진다. 이 함수를
+    리셋 직후 호출하면, pre_spans[i]=(교체 전 ko start,end)와 유의하게(>tol) 이동한 라인만
+    raw_spans[i]를 원 ko 위치로 되돌리고 fixes[i] 앞에 "leak"을 넣는다 — 디버그 모드에서
+    "ko가 어디서 당겨졌는지" 고스트가 표시된다.
+    """
+    for i, span in pre_spans.items():
+        r = results[i]
+        if abs(r.start_time - span[0]) > tol or abs(r.end_time - span[1]) > tol:
+            raw_spans[i] = span
+            labels = fixes.setdefault(i, [])
+            if "leak" not in labels:
+                labels.insert(0, "leak")
 
 
 def _pron_by_text(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
@@ -1539,6 +1606,7 @@ def _run_alignment(
                             # 교체된 라인의 ko pron_segments는 압축된 타이밍이라 무효 —
                             # 스팬만 버리면 발음·번역 텍스트는 남고, 캐시 재병합이 ja
                             # 타이밍 기반 DP 근사로 노트 스팬을 복원한다.
+                            pre_leak = {i: (results[i].start_time, results[i].end_time) for i in leaked}
                             logger.warning(
                                 f"Pronunciation alignment leaked {len(leaked)} line(s) back across "
                                 f"{len(windows)} interlude(s) (idx {leaked[0]}..{leaked[-1]}; star "
@@ -1553,8 +1621,13 @@ def _run_alignment(
                                         pd["pron_segments"] = None
                             raw_spans = [(r.start_time, r.end_time) for r in results]
                             fixes = {}
+                            _mark_leak_ghosts(raw_spans, fixes, pre_leak, results)
                         elif leaked:
                             # 스플라이스 비활성 — 누출 확인 시 전곡 원문 폴백
+                            pre_leak = {
+                                i: (results[i].start_time, results[i].end_time)
+                                for i in range(len(results))
+                            }
                             logger.warning(
                                 f"Pronunciation alignment leaked {len(leaked)} line(s) across "
                                 f"interlude(s) (splice disabled); falling back to original-text "
@@ -1565,12 +1638,17 @@ def _run_alignment(
                             pron_data = None
                             raw_spans = [(r.start_time, r.end_time) for r in results]
                             fixes = {}
+                            _mark_leak_ghosts(raw_spans, fixes, pre_leak, results)
                         elif swallowed >= settings.alignment.star_vocal_fallback_sec and post_win:
                             # 2) 역누출 런은 없지만 삼킴 게이트가 트립됐으면, 레거시 전창
                             #    점유 대조로 극단적 전체 압축(창을 통째로 비운 경우)을 안전망으로.
                             ko_fill = _lines_span_overlap(results, post_win)
                             ja_fill = _lines_span_overlap(ja_candidate, post_win)
                             if ja_fill - ko_fill >= settings.alignment.post_interlude_fill_margin_sec:
+                                pre_leak = {
+                                    i: (results[i].start_time, results[i].end_time)
+                                    for i in range(len(results))
+                                }
                                 splice_k = (
                                     _splice_alignments(results, ja_candidate, post_win)
                                     if settings.alignment.star_guard_splice
@@ -1602,6 +1680,7 @@ def _run_alignment(
                                     pron_data = None
                                 raw_spans = [(r.start_time, r.end_time) for r in results]
                                 fixes = {}
+                                _mark_leak_ghosts(raw_spans, fixes, pre_leak, results)
                             else:
                                 logger.info(
                                     f"Star swallowed {swallowed:.1f}s but both alignments fill the "
@@ -1663,10 +1742,9 @@ def _run_alignment(
             if line_conf is not None:
                 seg["confidence"] = round(line_conf, 6)
             if r.word_segments:
-                seg["words"] = [
-                    {"word": w.word, "start": w.start, "end": w.end, "confidence": w.confidence}
-                    for w in r.word_segments
-                ]
+                # 본문 글자를 1:1 완전히 덮도록 재구성 — join(words)==r.text 보장(공백·표기
+                # 차이로 확장 글자 매핑이 죽어 통짜 점등되던 문제 해소). pron_segments는 불변.
+                seg["words"] = _full_coverage_words(r.text, r.word_segments)
             # 독음 정렬 경로: 발음 음절 스팬을 멜로디 앵커·발음 표시용으로 직접 부착한다
             # (기존 DP 근사 pron_segments 대신 — 실제 정렬 타이밍이라 더 정확).
             if pron_data is not None:
