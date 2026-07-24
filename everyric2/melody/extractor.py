@@ -533,9 +533,13 @@ class MelodyExtractor:
 
         이 부분이 파이프라인에서 무거운(GPU) 단계라 WS2-B가 CTC 정렬과 병렬로 돌린다
         (precompute_f0). vocals가 주어지면 이미 분리된 스템으로 간주하고 재분리를 건너뛴다.
-        vocal_regions 마스킹·옥타브 스냅 같은 정렬 의존 후처리는 여기서 하지 않는다."""
+        vocal_regions 마스킹·옥타브 스냅 같은 정렬 의존 후처리는 여기서 하지 않는다.
+
+        긴 오디오는 겹침 청크로 나눠 청크별 추론 후 f0 배열을 시간축으로 스티칭한다 —
+        f0 추론은 CTC 정렬과 병렬로 GPU를 써 활성 피크가 합쳐지므로(WS2-B), 통짜 forward의
+        길이 비례 활성값이 긴 곡 OOM에 기여한다(실사고 2026-07-24). 단일 청크(짧은 곡·비활성)는
+        통짜와 완전히 동일하다 (MelodySettings.chunk_sec)."""
         import librosa
-        import torch
 
         audio = vocals if vocals is not None else self._maybe_separate(audio)
         waveform = audio.waveform
@@ -543,28 +547,50 @@ class MelodyExtractor:
             waveform = librosa.resample(
                 waveform, orig_sr=audio.sample_rate, target_sr=MELODY_SAMPLE_RATE
             )
+        waveform = np.ascontiguousarray(waveform, dtype=np.float32)
 
-        model = self._get_model()
-        if self._backend == "rmvpe":
-            f0 = model.infer(waveform, threshold=self.config.rmvpe_threshold)
+        from everyric2.audio.chunking import plan_chunk_windows, stitch_chunk_outputs
+
+        n = len(waveform)
+        chunk_sec = getattr(self.config, "chunk_sec", 0.0) or 0.0
+        overlap_sec = getattr(self.config, "chunk_overlap_sec", 5.0) or 0.0
+        windows = plan_chunk_windows(
+            n, int(chunk_sec * MELODY_SAMPLE_RATE), int(overlap_sec * MELODY_SAMPLE_RATE)
+        )
+        if len(windows) == 1:
+            f0 = self._infer_f0_chunk(waveform)
         else:
-            audio_t = torch.from_numpy(np.ascontiguousarray(waveform, dtype=np.float32))
-            audio_t = audio_t.unsqueeze(0).unsqueeze(-1)
-            with torch.no_grad():
-                f0 = model.infer(
-                    audio_t,
-                    sr=MELODY_SAMPLE_RATE,
-                    decoder_mode="local_argmax",
-                    threshold=self.config.threshold,
-                    interp_uv=False,
-                )
-            f0 = f0.squeeze().cpu().numpy().astype(np.float64)
+            pieces = [
+                self._infer_f0_chunk(np.ascontiguousarray(waveform[s:e])) for s, e in windows
+            ]
+            f0 = stitch_chunk_outputs(pieces, windows, n, frame_axis=0)
 
         f0 = np.asarray(f0, dtype=np.float64)
         duration = len(waveform) / MELODY_SAMPLE_RATE
         frame_dt = duration / max(1, len(f0))
         times = (np.arange(len(f0)) + 0.5) * frame_dt
         return f0, times
+
+    def _infer_f0_chunk(self, waveform: np.ndarray) -> np.ndarray:
+        """단일 파형 청크(16kHz mono np.ndarray) → 백엔드 f0(Hz) 배열 (10ms hop, unvoiced=0)."""
+        import torch
+
+        model = self._get_model()
+        if self._backend == "rmvpe":
+            return np.asarray(
+                model.infer(waveform, threshold=self.config.rmvpe_threshold), dtype=np.float64
+            )
+        audio_t = torch.from_numpy(np.ascontiguousarray(waveform, dtype=np.float32))
+        audio_t = audio_t.unsqueeze(0).unsqueeze(-1)
+        with torch.no_grad():
+            f0 = model.infer(
+                audio_t,
+                sr=MELODY_SAMPLE_RATE,
+                decoder_mode="local_argmax",
+                threshold=self.config.threshold,
+                interp_uv=False,
+            )
+        return f0.squeeze().cpu().numpy().astype(np.float64)
 
     def precompute_f0(
         self, audio: AudioData, vocals: AudioData | None = None

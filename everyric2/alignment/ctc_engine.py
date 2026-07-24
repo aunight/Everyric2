@@ -208,6 +208,70 @@ class CTCEngine(BaseAlignmentEngine):
             "CTCEngine does not support transcription. Use for forced alignment only."
         )
 
+    def _chunk_windows(self, n_samples: int) -> list[tuple[int, int]]:
+        """align_chunk_sec/overlap로 겹침 청크 윈도를 계획한다 (16kHz 기준).
+
+        chunk_sec=0이거나 오디오가 한 청크에 들어가면 윈도 1개 → 통짜 경로(정렬 결과 불변)."""
+        from everyric2.audio.chunking import plan_chunk_windows
+
+        sr = 16000
+        chunk_sec = getattr(self.config, "align_chunk_sec", 0.0) or 0.0
+        overlap_sec = getattr(self.config, "align_chunk_overlap_sec", 5.0) or 0.0
+        return plan_chunk_windows(n_samples, int(chunk_sec * sr), int(overlap_sec * sr))
+
+    def _model_logits(self, waveform_1d: torch.Tensor, device) -> torch.Tensor:
+        """단일 파형 청크 → wav2vec2/MMS 로짓 [1, t, V] (device 위, no-grad)."""
+        with torch.inference_mode():
+            inputs = self._processor(  # pyright: ignore[reportCallIssue,reportOptionalCall]
+                waveform_1d.numpy(), sampling_rate=16000, return_tensors="pt", padding=True
+            )
+            input_values = inputs.input_values.to(device)
+            return self._model(input_values).logits  # pyright: ignore[reportOptionalCall]
+
+    def _ctc_log_emission(self, waveform: torch.Tensor, device) -> torch.Tensor:
+        """CJK 경로 log_softmax emission [1, T, V].
+
+        긴 오디오는 겹침 청크로 나눠 청크별 forward 후 CPU에서 스티칭해 피크 VRAM을 청크
+        길이로 제한한다. 단일 청크면 통짜와 완전히 동일한 device 텐서를 돌려준다
+        (log_softmax는 기존과 동일하게 inference_mode 밖에서 수행)."""
+        n = int(waveform.shape[0])
+        windows = self._chunk_windows(n)
+        if len(windows) == 1:
+            logits = self._model_logits(waveform, device)
+            return torch.nn.functional.log_softmax(logits.float(), dim=-1)
+
+        from everyric2.audio.chunking import stitch_chunk_outputs
+
+        pieces = []
+        for s, e in windows:
+            logits = self._model_logits(waveform[s:e].contiguous(), device)
+            pieces.append(torch.nn.functional.log_softmax(logits.float(), dim=-1).cpu())
+            del logits
+        return stitch_chunk_outputs(pieces, windows, n, frame_axis=1)
+
+    def _mms_emission(self, waveform: torch.Tensor, device) -> torch.Tensor:
+        """MMS_FA 경로 emission [1, T, V] (torchaudio 모델이 이미 log-probs 출력).
+
+        긴 오디오는 겹침 청크로 나눠 CPU에서 스티칭. 단일 청크면 통짜와 동일한 device 텐서."""
+        n = int(waveform.shape[0])
+        windows = self._chunk_windows(n)
+        if len(windows) == 1:
+            with torch.inference_mode():
+                emission, _ = self._model(waveform.unsqueeze(0).to(device))  # pyright: ignore[reportOptionalCall]
+            return emission
+
+        from everyric2.audio.chunking import stitch_chunk_outputs
+
+        pieces = []
+        for s, e in windows:
+            with torch.inference_mode():
+                emis, _ = self._model(  # pyright: ignore[reportOptionalCall]
+                    waveform[s:e].contiguous().unsqueeze(0).to(device)
+                )
+            pieces.append(emis.cpu())
+            del emis
+        return stitch_chunk_outputs(pieces, windows, n, frame_axis=1)
+
     def _align_cjk(
         self,
         waveform: torch.Tensor,
@@ -220,12 +284,11 @@ class CTCEngine(BaseAlignmentEngine):
         if progress_callback:
             progress_callback(2, 5)
 
-        with torch.inference_mode():
-            inputs = self._processor(  # pyright: ignore[reportCallIssue,reportOptionalCall]
-                waveform.numpy(), sampling_rate=16000, return_tensors="pt", padding=True
-            )
-            input_values = inputs.input_values.to(device)
-            logits = self._model(input_values).logits  # pyright: ignore[reportOptionalCall]
+        # 오디오를 겹침 청크로 나눠 청크별 forward 후 CPU에서 log_softmax emission을
+        # 스티칭한다 — 통짜 forward는 인코더 활성값이 길이 비례라 긴 곡에서 OOM
+        # (실사고 2026-07-24: 17분 곡). 짧은 곡·비활성은 단일 청크라 통짜와 완전히
+        # 동일한 device 텐서를 돌려받는다 (align_chunk_sec).
+        emission = self._ctc_log_emission(waveform, device)
 
         if progress_callback:
             progress_callback(3, 5)
@@ -238,7 +301,6 @@ class CTCEngine(BaseAlignmentEngine):
         # 실측 검증됨). star 없이는 정규화가 Viterbi 경로에 영향을 주지 않으므로(프레임별
         # 상수 상쇄) 기존 결과와 동일하다.
         use_star = getattr(self.config, "star_tokens", False)
-        emission = torch.nn.functional.log_softmax(logits.float(), dim=-1)
         star_id = emission.shape[-1]
         if use_star:
             star_col = torch.zeros(
@@ -295,7 +357,8 @@ class CTCEngine(BaseAlignmentEngine):
             raise AlignmentError("No valid tokens found in lyrics for this language")
 
         try:
-            targets = torch.tensor([tokens], dtype=torch.int32, device=device)
+            # emission이 청킹으로 CPU에 있으면 targets도 같은 디바이스여야 한다
+            targets = torch.tensor([tokens], dtype=torch.int32, device=emission.device)
             blank_id = self._processor.tokenizer.pad_token_id  # pyright: ignore[reportAttributeAccessIssue,reportOptionalMemberAccess]
             aligned_tokens, alignment_scores = F.forced_align(emission, targets, blank=blank_id)
             token_spans = F.merge_tokens(aligned_tokens[0], alignment_scores[0], blank=blank_id)
@@ -305,7 +368,7 @@ class CTCEngine(BaseAlignmentEngine):
         if progress_callback:
             progress_callback(4, 5)
 
-        num_frames = logits.shape[1]
+        num_frames = emission.shape[1]
         audio_length = waveform.shape[0] / 16000
         ratio = audio_length / num_frames
 
@@ -452,9 +515,9 @@ class CTCEngine(BaseAlignmentEngine):
         if progress_callback:
             progress_callback(3, 5)
 
-        waveform_2d = waveform.unsqueeze(0).to(device)
-        with torch.inference_mode():
-            emission, _ = self._model(waveform_2d)  # pyright: ignore[reportOptionalCall]
+        # 통짜 forward는 활성값이 길이 비례라 긴 곡에서 OOM — 겹침 청크로 나눠 추론 후
+        # CPU에서 emission을 스티칭한다. 짧은 곡·비활성은 단일 청크=통짜와 동일 (align_chunk_sec).
+        emission = self._mms_emission(waveform, device)
 
         tokens = [
             dictionary[c]
@@ -465,7 +528,9 @@ class CTCEngine(BaseAlignmentEngine):
 
         try:
             aligned_tokens, alignment_scores = F.forced_align(
-                emission, torch.tensor([tokens], dtype=torch.int32, device=device), blank=0
+                emission,
+                torch.tensor([tokens], dtype=torch.int32, device=emission.device),
+                blank=0,
             )
             token_spans = F.merge_tokens(aligned_tokens[0], alignment_scores[0])
         except Exception as e:

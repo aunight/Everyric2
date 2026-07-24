@@ -107,6 +107,22 @@ class AlignmentSettings(BaseSettings):
         default=16000, description="Sample rate for alignment engines"
     )
 
+    align_chunk_sec: float = Field(
+        default=360.0,
+        description="CTC 정렬 시 모델 forward에 한 번에 넣는 오디오 최대 길이(초, 겹침 포함). "
+        "긴 오디오를 통짜로 넣으면 wav2vec2/MMS 인코더 활성값이 길이 비례로 커져 공유 GPU에서 "
+        "OOM이 난다(실사고 2026-07-24: 17분 곡). 이 값을 넘는 오디오는 겹침 청크로 나눠 순차 "
+        "추론하고 emission을 CPU에서 스티칭해 피크 VRAM을 청크 길이로 제한한다. 기본 360(6분)은 "
+        "기존 통과 사례(5분)보다 커서 짧은 곡은 단일 청크=통짜 경로로 정렬 결과가 완전히 동일하다. "
+        "0이면 청킹 비활성(항상 통짜).",
+    )
+    align_chunk_overlap_sec: float = Field(
+        default=5.0,
+        description="CTC 정렬 청크 간 겹침(초). 청크 경계의 수용영역 오염을 겹침 절반씩 버려 "
+        "제거한다(중앙 채택). wav2vec2 수용영역(~0.4s)보다 넉넉해야 경계 프레임 emission이 "
+        "통짜와 일치한다.",
+    )
+
     align_on_vocals: bool = Field(
         default=True,
         description="Run CTC alignment on the demucs-separated vocal stem instead of the full "
@@ -305,6 +321,18 @@ class MelodySettings(BaseSettings):
     )
     min_voiced_ratio: float = Field(
         default=0.15, description="Skip spans whose voiced frame ratio is below this"
+    )
+    chunk_sec: float = Field(
+        default=360.0,
+        description="f0 추출(RMVPE/FCPE) 시 모델에 한 번에 넣는 오디오 최대 길이(초, 겹침 포함). "
+        "f0 추론은 CTC 정렬과 병렬로 돌아(WS2-B) 두 forward의 활성 피크가 합쳐지므로, 정렬과 "
+        "동일하게 청크 처리해 멜로디 쪽 피크 VRAM도 길이 무관 상한을 둔다. 이 값을 넘는 오디오는 "
+        "겹침 청크로 나눠 f0 배열을 시간축으로 스티칭한다. 기본 360(6분)은 짧은 곡을 단일 청크="
+        "통짜 경로로 유지해 노트 결과가 동일하다. 0이면 청킹 비활성.",
+    )
+    chunk_overlap_sec: float = Field(
+        default=5.0,
+        description="f0 추출 청크 간 겹침(초). 경계 프레임의 피치 오염을 겹침 절반씩 버려 제거한다.",
     )
 
 
