@@ -66,6 +66,8 @@ export class KaraokeAudio {
   private metroRate = 1;
   private metroBeat = 0;
   private sinkId = '';
+  /** 사용자 싱크 오프셋(초) — 가사 엔진과 동일하게 곡 시간 = video.currentTime + offset */
+  private offset = 0;
   /** 가라오케 창(PiP)이 열려 있을 때만 소리 낸다 */
   private active = false;
   private timer: number | undefined;
@@ -87,6 +89,13 @@ export class KaraokeAudio {
 
   setTempo(tempo: SongTempo | null): void {
     this.tempo = tempo && tempo.bpm > 0 ? tempo : null;
+    this.resync();
+  }
+
+  /** 사용자 싱크 오프셋 반영 — 노트·메트로놈이 가사와 같은 타임라인을 쓰게 한다 */
+  setOffset(sec: number): void {
+    if (sec === this.offset) return;
+    this.offset = sec;
     this.resync();
   }
 
@@ -175,7 +184,7 @@ export class KaraokeAudio {
       return;
     }
     const rate = video.playbackRate || 1;
-    const t = video.currentTime;
+    const t = video.currentTime + this.offset;
     const wall = performance.now() / 1000;
     if (this.lastT >= 0) {
       // 시크·프레임 드랍 등 타임라인 불연속 감지
