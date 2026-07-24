@@ -1,4 +1,4 @@
-import type { CaptionTrack, DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, Settings, SongInfo } from '../types';
+import type { CaptionTrack, DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, Settings, SongInfo, SyncListItem } from '../types';
 import { h, icon, ICONS } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
 
@@ -106,6 +106,8 @@ export class LyricsOverlay {
   private captionListEl: HTMLDivElement | null = null;
   private linkListEl: HTMLDivElement | null = null;
   private linkSrcInput: HTMLInputElement | null = null;
+  private linkFilterInput: HTMLInputElement | null = null;
+  private syncListItems: SyncListItem[] | null = null;
   /** 현재 표시 중인 싱크의 링크 상태 (없으면 null) — content가 setLinked로 밀어넣는다 */
   private linkedInfo: { sourceVideoId: string; offsetSec: number; rate?: number } | null = null;
 
@@ -573,6 +575,13 @@ export class LyricsOverlay {
     });
     rateInput.value = this.linkedInfo?.rate ? String(this.linkedInfo.rate) : '1';
     this.linkListEl = h('div', { className: 'ey-result-list' });
+    const filterInput = h('input', {
+      className: 'ey-input',
+      attrs: { placeholder: '저장 싱크 검색 — 가사 첫 줄·영상 ID·출처' },
+      on: { input: () => this.renderSyncList() },
+    });
+    filterInput.style.display = 'none'; // 목록을 불러온 뒤에만 노출
+    this.linkFilterInput = filterInput;
 
     const doLink = () => {
       const src = parseVideoId(srcInput.value.trim());
@@ -620,31 +629,60 @@ export class LyricsOverlay {
           },
         },
       }),
+      filterInput,
       this.linkListEl,
     );
     return section;
   }
 
-  /** SYNC_LIST 응답 반영 — 항목 클릭 시 원본 입력칸에 채워 넣는다 */
-  showSyncList(items: { video_id: string; first_line: string; line_count: number; attribution_name?: string | null; alignment_text?: string | null }[]): void {
+  /** SYNC_LIST 응답 반영 — 목록을 캐시하고 검색 필터와 함께 렌더 */
+  showSyncList(items: SyncListItem[]): void {
     if (this.stateKind !== 'search' || !this.linkListEl) return;
+    this.syncListItems = items;
+    if (this.linkFilterInput) {
+      this.linkFilterInput.style.display = items.length === 0 ? 'none' : '';
+      this.linkFilterInput.value = '';
+    }
     if (items.length === 0) {
       this.setLinkStatus('서버에 저장된 싱크가 없어요');
       return;
     }
-    this.linkListEl.replaceChildren(...items.map(it =>
-      h('button', {
-        className: 'ey-result-item',
-        on: {
-          click: () => {
-            if (this.linkSrcInput) this.linkSrcInput.value = it.video_id;
-          },
-        },
-      },
+    this.renderSyncList();
+  }
+
+  /** 저장 싱크 목록 렌더 — 필터(가사 첫 줄·영상 ID·출처·정렬문) 적용 */
+  private renderSyncList(): void {
+    if (!this.linkListEl || !this.syncListItems) return;
+    const q = (this.linkFilterInput?.value ?? '').trim().toLowerCase();
+    const items = q
+      ? this.syncListItems.filter(it =>
+        it.video_id.toLowerCase().includes(q)
+        || (it.first_line ?? '').toLowerCase().includes(q)
+        || (it.attribution_name ?? '').toLowerCase().includes(q)
+        || (it.alignment_text ?? '').toLowerCase().includes(q))
+      : this.syncListItems;
+    if (items.length === 0) {
+      this.linkListEl.replaceChildren(
+        h('div', { className: 'ey-state-sub', text: '검색과 일치하는 싱크가 없어요' }));
+      return;
+    }
+    const hint = h('div', {
+      className: 'ey-state-sub',
+      text: '항목을 클릭하면 원본 칸에 채워져요 — 오프셋 확인 후 \'연결\'을 누르세요',
+    });
+    this.linkListEl.replaceChildren(hint, ...items.map(it => {
+      const btn = h('button', { className: 'ey-result-item' },
         h('span', { className: 'ey-result-src', text: it.video_id }),
         h('span', { className: 'ey-result-title', text: it.first_line || '(첫 줄 없음)' }),
         h('span', { className: 'ey-result-meta', text: `${it.line_count}줄${it.attribution_name ? ' · ' + it.attribution_name : ''}` }),
-      )));
+      );
+      btn.addEventListener('click', () => {
+        if (this.linkSrcInput) this.linkSrcInput.value = it.video_id;
+        this.linkListEl?.querySelectorAll('.ey-selected').forEach(el => el.classList.remove('ey-selected'));
+        btn.classList.add('ey-selected');
+      });
+      return btn;
+    }));
   }
 
   /** 링크 섹션 상태 메시지 (검색 상태가 아니면 무시) */

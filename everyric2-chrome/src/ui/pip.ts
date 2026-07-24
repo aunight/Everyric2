@@ -81,6 +81,9 @@ const MAX_VIDEO_RATIO = 0.75;
 
 // 계이름 (pitch class 0 = 도)
 const PITCH_NAMES_KO = ['도', '도#', '레', '레#', '미', '파', '파#', '솔', '솔#', '라', '라#', '시'];
+// 사이드바 음정 라벨 (영문, 멜로다인식) — C4 = MIDI 60
+const PITCH_NAMES_EN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
 
 /** CTC 신뢰도 로그 버킷 색 — 패널(overlay.css의 .ey-conf-*)과 반드시 같은 값 유지 */
 const CONF_COLOR_LOW = '#ff6b6b';
@@ -178,6 +181,13 @@ export class PipController {
   private wordEls: { start: number; el: HTMLElement }[] = [];
   private onSeek: (time: number) => void = () => {};
   private pitchCanvas: HTMLCanvasElement | null = null;
+  /** 마지막 렌더 뷰포트 — 클릭·드래그의 좌표→시간 역변환용 */
+  private pitchView: { t0: number; W: number; plotX: number; plotW: number; staffBottom: number } | null = null;
+  /** 일시정지 중 수동 스크롤 창 시작 시각 — 재생 재개 시 해제 */
+  private manualT0: number | null = null;
+  private pitchPointer: { id: number; startX: number; startT0: number; moved: boolean } | null = null;
+  private paused = false;
+  private lastTime = 0;
   private pitchDividerEl: HTMLDivElement | null = null;
   private pitch: PitchData = { pages: [], notes: [], words: [], lo: 57, hi: 71 };
   private pitchEnabled = true;
@@ -393,6 +403,7 @@ export class PipController {
     this.pitchCanvas = doc.createElement('canvas');
     this.pitchCanvas.className = 'ey-pip-pitch';
     this.pitchCanvas.style.height = `${this.pitchLaneHeight}px`;
+    this.attachPitchPointer(this.pitchCanvas);
     this.pitchDividerEl = this.buildPitchDivider(opts.onPitchHeightChange);
     this.applyPitchVisibility();
 
@@ -754,6 +765,55 @@ export class PipController {
   }
 
   /** 레인 위 디바이더 — 위로 끌면 레인이 커진다. 놓으면 설정에 저장. */
+  /** 레인 상호작용 — 클릭=그 위치로 시크(노트 위면 노트 시작으로 스냅),
+   *  일시정지 중 드래그·Shift+휠=좌우 탐색 (멜로다인식) */
+  private attachPitchPointer(canvas: HTMLCanvasElement): void {
+    canvas.addEventListener('pointerdown', e => {
+      const view = this.pitchView;
+      if (!view) return;
+      this.pitchPointer = {
+        id: e.pointerId, startX: e.clientX,
+        startT0: this.paused && this.manualT0 != null ? this.manualT0 : view.t0,
+        moved: false,
+      };
+      canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', e => {
+      const p = this.pitchPointer;
+      const view = this.pitchView;
+      if (!p || p.id !== e.pointerId || !view) return;
+      const dx = e.clientX - p.startX;
+      if (Math.abs(dx) > 4) p.moved = true;
+      if (p.moved && this.paused) {
+        this.manualT0 = p.startT0 - dx * (view.W / view.plotW);
+        this.renderPitch(this.lastTime); // 일시정지 중엔 tick이 없어도 즉시 반영
+      }
+    });
+    canvas.addEventListener('pointerup', e => {
+      const p = this.pitchPointer;
+      this.pitchPointer = null;
+      const view = this.pitchView;
+      if (!p || p.id !== e.pointerId || !view || p.moved) return;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      if (px < view.plotX || py > view.staffBottom) return; // 사이드바·가사 줄 클릭은 무시
+      const t = view.t0 + ((px - view.plotX) / view.plotW) * view.W;
+      const hit = this.pitch.notes.find(n => n.start <= t && t <= n.end);
+      this.onSeek(hit ? hit.start : Math.max(0, t));
+    });
+    canvas.addEventListener('wheel', e => {
+      if (!this.paused) return;
+      const view = this.pitchView;
+      if (!view) return;
+      const delta = e.deltaX !== 0 ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+      if (delta === 0) return;
+      e.preventDefault();
+      this.manualT0 = (this.manualT0 ?? view.t0) + delta * (view.W / view.plotW);
+      this.renderPitch(this.lastTime);
+    }, { passive: false });
+  }
+
   private buildPitchDivider(onHeightChange: (px: number) => void): HTMLDivElement {
     const divider = h('div', {
       className: 'ey-pip-divider ey-pip-pitch-divider',
@@ -788,6 +848,9 @@ export class PipController {
   /** 매 tick 호출: 카라오케 필 + 진행 바 + 시간/재생 상태 */
   tick(time: number, duration: number, paused: boolean): void {
     if (!this.win) return;
+    this.paused = paused;
+    this.lastTime = time;
+    if (!paused) this.manualT0 = null; // 재생 재개 → 수동 스크롤 해제, 오토스크롤 복귀
     for (const { start, el } of this.wordEls) {
       el.classList.toggle('sung', start <= time);
     }
@@ -868,8 +931,11 @@ export class PipController {
     // ── 고정 시간 스케일: 창 폭 = N마디(4/4 가정) — 템포 없으면 120BPM 가정 폴백
     const secPerBeat = this.tempo ? 60 / this.tempo.bpm : 0.5;
     const W = this.pitchWindowMeasures * 4 * secPerBeat;
+    // 좌측 음정 라벨 사이드바(멜로다인식) — 플롯은 그만큼 오른쪽에서 시작
+    const sidebarW = Math.max(24, Math.round(27 * fs));
+    const plotX = sidebarW;
+    const plotW = Math.max(10, cw - sidebarW);
     let t0: number;
-    let playheadX: number;
     if (this.pitchScrollMode === 'page') {
       // 페이지 모드: 창은 고정한 채 플레이헤드가 이동하되, 페이지를 창 폭의 75%씩만
       // 전진시킨다 — 플레이헤드가 75% 지점에 닿으면 다음 페이지로 넘어가고, 아직
@@ -877,13 +943,15 @@ export class PipController {
       const offset = this.tempo?.beat_offset ?? 0;
       const step = W * 0.75;
       t0 = offset + Math.floor((now - offset) / step) * step;
-      playheadX = ((now - t0) / W) * cw;
     } else {
       // 스크롤 모드: 플레이헤드 좌측 28% 고정, 오선이 흐른다
       t0 = now - W * 0.28;
-      playheadX = cw * 0.28;
     }
-    const x = (t: number) => ((t - t0) / W) * cw;
+    // 일시정지 중 드래그·Shift+휠로 옮긴 수동 뷰포트가 있으면 우선한다
+    if (this.paused && this.manualT0 != null) t0 = this.manualT0;
+    const x = (t: number) => plotX + ((t - t0) / W) * plotW;
+    const playheadX = x(now);
+    this.pitchView = { t0, W, plotX, plotW, staffBottom: padTop + staffH };
 
     // ── 곡 전체 고정 세로 스케일 (위아래 덧줄 여백 포함)
     const marginY = staffH * 0.16;
@@ -891,11 +959,42 @@ export class PipController {
     const semiPx = usable / Math.max(1, hi - lo);
     const y = (midi: number) => padTop + marginY + usable - (midi - lo) * semiPx;
 
-    // 오선 5줄 — 음역을 4등분한 시각 기준선
+    // ── 반음 격자 (멜로다인식): 검은건반 칸은 옅은 밴드, C 경계는 진한 선.
+    // 음역이 아주 넓어 칸이 뭉개지면(semiPx<3) 예전 오선 5줄로 폴백.
     ctx.fillStyle = colors.faint;
-    for (let i = 0; i < 5; i++) {
-      ctx.fillRect(0, padTop + marginY + (usable / 4) * i - 0.5, cw, 1);
+    if (semiPx >= 3) {
+      for (let m = lo; m <= hi; m++) {
+        if (BLACK_KEYS.has(((m % 12) + 12) % 12)) {
+          ctx.globalAlpha = 0.1;
+          ctx.fillRect(plotX, y(m) - semiPx / 2, plotW, semiPx);
+        }
+      }
+      for (let m = lo; m <= hi + 1; m++) {
+        const pc = ((m % 12) + 12) % 12;
+        ctx.globalAlpha = pc === 0 ? 0.55 : 0.16; // C 아래 경계(B와의 사이)는 진하게
+        ctx.fillRect(plotX, y(m) + semiPx / 2 - 0.5, plotW, 1);
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      for (let i = 0; i < 5; i++) {
+        ctx.fillRect(plotX, padTop + marginY + (usable / 4) * i - 0.5, plotW, 1);
+      }
     }
+    // ── 사이드바: 배경 + 영문 음정 라벨 — 칸 밀도에 따라 전부/흰건반/C만
+    ctx.fillStyle = colors.faint;
+    ctx.globalAlpha = 0.22;
+    ctx.fillRect(0, padTop, sidebarW, staffH);
+    ctx.globalAlpha = 1;
+    ctx.font = `${Math.max(7, Math.min(10, Math.floor(semiPx + 2)))}px ui-monospace, monospace`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let m = lo; m <= hi; m++) {
+      const pc = ((m % 12) + 12) % 12;
+      if (semiPx < 9 && (semiPx >= 5 ? BLACK_KEYS.has(pc) : pc !== 0)) continue;
+      ctx.fillStyle = pc === 0 ? colors.text : colors.dim;
+      ctx.fillText(`${PITCH_NAMES_EN[pc]}${Math.floor(m / 12) - 1}`, sidebarW - 3, y(m));
+    }
+    ctx.textAlign = 'center';
     // 세로 눈금: 템포가 있으면 첫 비트에 정렬된 비트(옅게)/마디(진하게) 격자,
     // 없으면 1초 간격 폴백
     if (this.tempo) {
@@ -936,17 +1035,21 @@ export class PipController {
       const top = y(n.midi) - noteH / 2;
       const isCurrent = n.start <= now && now < n.end;
 
+      // 노트 채움은 반투명 — 채워진 뒤에도 격자·f0 곡선이 비쳐 보이게
       ctx.fillStyle = colors.dim;
+      ctx.globalAlpha = 0.55;
       ctx.beginPath();
       ctx.roundRect(x1, top, w, noteH, noteR);
       ctx.fill();
       if (now > n.start) {
         const sungW = Math.max(2, Math.min(w, x(now) - x1));
         ctx.fillStyle = colors.accent;
+        ctx.globalAlpha = 0.65;
         ctx.beginPath();
         ctx.roundRect(x1, top, sungW, noteH, noteR);
         ctx.fill();
       }
+      ctx.globalAlpha = 1;
       if (isCurrent) {
         // 지금 불러야 하는 노트: accent 글로우 + 밝은 테두리로 강조
         ctx.save();
@@ -1069,11 +1172,17 @@ export class PipController {
       ty += pronRowH;
     }
 
-    // ── 번역: 현재 라인 번역을 하단 중앙에
+    // ── 번역: 현재 라인 번역을 하단 중앙에 — 길면 가로 압축(찌그러짐) 대신 폰트 축소
     if (hasTr && page?.line.translation) {
+      const tr = page.line.translation;
+      const maxW = cw - 16;
       ctx.font = `${trPx}px system-ui, sans-serif`;
+      const tw = ctx.measureText(tr).width;
+      if (tw > maxW) {
+        ctx.font = `${Math.max(9, Math.floor(trPx * maxW / tw))}px system-ui, sans-serif`;
+      }
       ctx.fillStyle = colors.dim;
-      ctx.fillText(page.line.translation, cw / 2, ty + trH * 0.5, cw - 16);
+      ctx.fillText(tr, cw / 2, ty + trH * 0.5, maxW);
     }
 
     // ── 곡 키·BPM 라벨 (좌상단) — 서버 멜로디 분석이 추정한 키

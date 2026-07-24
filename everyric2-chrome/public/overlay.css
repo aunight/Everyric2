@@ -568,6 +568,7 @@
 }
 
 .ey-result-item:hover { background: var(--ey-elev-hover); border-color: var(--ey-accent); }
+.ey-result-item.ey-selected { border-color: var(--ey-accent); background: rgba(255, 122, 61, 0.12); }
 
 .ey-result-src {
   flex-shrink: 0;
@@ -815,6 +816,11 @@ body.ey-pip {
   line-height: 1.35;
   color: var(--ey-text);
   cursor: pointer;
+  /* 아주 긴 원문이 번역·발음 줄을 스테이지 밖으로 밀어내지 않게 상한 */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .ey-pip-line.current .ey-word.sung { color: var(--ey-accent); }
@@ -825,6 +831,12 @@ body.ey-pip {
   max-width: 100%;
   word-break: keep-all;
   overflow-wrap: break-word;
+  /* 번역은 밀려나 사라지지 않고 항상 최대 2줄 보이게 */
+  flex-shrink: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .ey-pip-tr:empty { display: none; }
@@ -836,6 +848,7 @@ body.ey-pip {
   max-width: 100%;
   word-break: keep-all;
   overflow-wrap: break-word;
+  flex-shrink: 0; /* 발음 줄도 번역처럼 밀려나 사라지지 않게 */
 }
 
 .ey-pip-pron:empty { display: none; }

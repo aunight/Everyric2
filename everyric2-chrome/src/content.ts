@@ -1,6 +1,7 @@
 import { detectSong, getCurrentVideoId, getVideoElement } from './lib/song-detector';
 import { SyncEngine, type SyncHandlers } from './lib/sync-engine';
 import { KaraokeAudio, collectMelodyNotes } from './lib/karaoke-audio';
+import { parseTriLineLyrics } from './lib/tri-line';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
 import { LyricsOverlay } from './ui/overlay';
@@ -262,6 +263,7 @@ function ensureOverlay(): LyricsOverlay {
       // 오프셋은 영상별 상태 — 서버에 저장해 다음 시청·다른 기기에서도 복원된다.
       // 링크로 빌려온 싱크(inst/커버)도 보는 영상 기준이라 영상마다 따로 저장된다.
       engine.setOffset(offsetSec);
+      karaokeAudio.setOffset(offsetSec);
       videoOffset = offsetSec;
       scheduleOffsetSave();
     },
@@ -921,6 +923,7 @@ function applyLyricsData(data: LyricsData | null): void {
   // 영상별 저장 오프셋 복원 (서버에 저장된 값, 없으면 0) — UI 라벨도 함께
   videoOffset = data?.userOffset ?? 0;
   panel.setOffsetValue(videoOffset);
+  karaokeAudio.setOffset(videoOffset);
   // 곡 전체 정렬 신뢰도가 매우 낮으면 경고 바 (설정으로 끌 수 있음)
   panel.setQualityWarning(
     settings.lowConfWarning && data?.synced && data.source === 'everyric'
@@ -1022,9 +1025,14 @@ async function waitForSongInfo(seq: number, maxRetries = 6, delayMs = 700): Prom
 async function handleGenerate(lyricsText: string): Promise<void> {
   const videoId = currentVideoId;
   const seq = searchSeq;
+  // 검색 복사 가사(원문/독음/번역 3줄 반복) 감지 — 원문만 정렬에 쓰고
+  // 독음·번역은 line_meta로 재활용한다 (LLM 번역 호출도 생략)
+  const tri = parseTriLineLyrics(lyricsText);
   // 빈 줄·앞뒤 공백을 걷어낸 실제 라인만 서버로 — LLM line_meta도 같은 배열로
   // 만들어 인덱스가 어긋나지 않게 한다 (서버 병합은 텍스트 매칭)
-  const srcLines = lyricsText.split('\n').map(s => s.trim()).filter(Boolean);
+  const srcLines = tri
+    ? tri.map(t => t.text)
+    : lyricsText.split('\n').map(s => s.trim()).filter(Boolean);
   if (!videoId || srcLines.length === 0) return;
   if (srcLines.length > 500) {
     ensureOverlay().showError(`가사가 너무 길어요 (${srcLines.length}줄) — 500줄 이하로 줄여 주세요`);
@@ -1057,7 +1065,7 @@ async function handleGenerate(lyricsText: string): Promise<void> {
     // line_meta로 넘긴다 — 서버가 독음(ko) 정렬 경로를 타고 발음/번역도 싱크에 저장된다.
     // 실패해도 싱크 생성 자체는 계속한다 (원문 정렬 폴백).
     if (!lineMeta || lineMeta.length === 0) {
-      lineMeta = await fetchLlmLineMeta(videoId, srcLines);
+      lineMeta = tri ?? await fetchLlmLineMeta(videoId, srcLines);
     }
 
     const panel = ensureOverlay();

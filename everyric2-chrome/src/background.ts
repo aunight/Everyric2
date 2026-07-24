@@ -151,7 +151,8 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     }
 
     case 'SYNC_LIST': {
-      const res = await listSyncs(await getServerConfig());
+      // 검색 필터가 생겨 후보를 넉넉히 받는다 — 서버 목록은 최신순
+      const res = await listSyncs(await getServerConfig(), 200);
       return { data: res ?? [] };
     }
 
