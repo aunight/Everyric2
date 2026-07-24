@@ -249,6 +249,25 @@ class AlignmentSettings(BaseSettings):
         "char-rate stays a secondary confirmation.",
     )
 
+    fuse_original_chars: bool = Field(
+        default=True,
+        description="Fuse measured original-text (ja) character timing into the pronunciation (ko) "
+        "alignment. On the ko path the ORIGINAL characters never touch the audio: their spans are a "
+        "three-stage back-mapping (aligned Korean syllable -> mora -> original char, "
+        "text/reading.py::map_pron_alignment_to_line), so even a perfectly placed line has a "
+        "synthesized INTRA-line distribution. Measured: ko-aligned songs light 38-59% of original "
+        "chars in 3+ char simultaneous clumps, ja-aligned songs only 2%. With this on, a second "
+        "alignment on the original text is always run in the ko path and each line's ko boundaries "
+        "and pron_segments are KEPT while the intra-line original-char spans are replaced by ja's "
+        "measured distribution, linearly mapped into the ko line span. Lines where ja itself "
+        "collapsed (_impossible_word_distribution) or yields fewer distinct timing anchors than the "
+        "back-mapping are left untouched. Cost is one extra CTC pass (~9s on a 4.7min song); the ko "
+        "and ja adapters share the mms-1b-all base so the language switch is an adapter swap "
+        "(0.23s, was 5.33s before adapter caching). The same ja pass is reused by the dual-align "
+        "safety net and the reverse-leak guard, so those no longer pay for their own. Set to false "
+        "to restore the pure back-mapping behaviour.",
+    )
+
     dual_align_conf: float = Field(
         default=0.002,
         description="Confidence floor for the dual-alignment safety net (0 disables). Once the "

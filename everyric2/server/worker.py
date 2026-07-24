@@ -1215,6 +1215,16 @@ def _dual_align_should_run(ko_conf: float | None, threshold: float) -> bool:
     return threshold > 0 and ko_conf is not None and ko_conf < threshold
 
 
+def _original_align_needed(ko_conf: float | None, dual_conf: float, fuse_enabled: bool) -> bool:
+    """독음(ko) 경로에서 원문(ja) 정렬을 한 번 돌려야 하는지 — 두 소비자의 합집합 비용 게이트.
+
+    ① 융합(``fuse_enabled``)은 라인 내부 원문 글자 분포를 ja 실측으로 갈아끼우므로 **상시**
+       ja가 필요하다, ② 이중정렬 안전망은 ko가 저신뢰일 때만 필요하다(``_dual_align_should_run``).
+    한 번 돌린 결과를 역누출 가드까지 셋이 공유하므로 정렬 패스는 최대 1회다.
+    """
+    return bool(fuse_enabled) or _dual_align_should_run(ko_conf, dual_conf)
+
+
 def _dual_align_prefers_original(ko_conf: float, ja_conf: float | None, min_ratio: float) -> bool:
     """ja 평균 신뢰도가 ko의 min_ratio배 이상이면 True(원문 채택). 바닥 근처 노이즈로
 
@@ -1301,6 +1311,18 @@ def _full_coverage_words(
     tokens = [w for w in (word_segments or []) if w.word]
     if not tokens:
         return []
+    out, covered = _scan_token_coverage(text, tokens)
+    _spread_uncovered_words(out, covered, line_start, line_end)
+    return out
+
+
+def _scan_token_coverage(text: str, tokens) -> tuple[list[dict[str, Any]], list[bool]]:
+    """본문 글자를 정렬 토큰에 순서대로 매칭 → (글자별 out 엔트리, 토큰 상속 여부).
+
+    ``_full_coverage_words``의 매칭 스캔 본체. 융합 판정(``_measured_anchor_count``)이
+    "어느 정렬의 토큰이 본문에서 실측 앵커를 더 많이 만드는가"를 **같은 규칙으로** 재려고
+    공유한다 — 규칙이 갈라지면 비교가 실제 직렬화 결과와 어긋난다.
+    """
     out: list[dict[str, Any]] = []
     covered: list[bool] = []  # out[k]가 정렬 토큰에서 타이밍을 상속했는지
     ti, wi, n, m = 0, 0, len(text), len(tokens)
@@ -1321,12 +1343,28 @@ def _full_coverage_words(
         elif tk is not None and text.find(tk.word, ti, ti + len(tk.word) + 4) < 0:
             wi += 1  # 표기 차이 스퓨리어스 토큰 — 버리고 같은 글자를 다음 토큰과 재평가
         else:
-            # 토큰이 못 덮는 글자 → 아래에서 앞뒤 앵커 사이에 비례 분배
+            # 토큰이 못 덮는 글자 → 호출부가 앞뒤 앵커 사이에 비례 분배
             out.append({"word": text[ti], "start": None, "end": None, "confidence": None})
             covered.append(False)
             ti += 1
-    _spread_uncovered_words(out, covered, line_start, line_end)
-    return out
+    return out, covered
+
+
+def _measured_anchor_count(text: str, word_segments) -> int:
+    """본문 ``text`` 위에서 이 정렬이 만드는 **서로 다른 시작 시각**의 개수 (직렬화와 동일 규칙).
+
+    라인 내부 카라오케 해상도는 '몇 글자를 덮었나'가 아니라 '라인 안에 서로 다른 시각이 몇
+    개 있나'다. 역매핑은 한 발음 음절의 스팬을 그 음절이 걸친 원문 글자 전부에 **그대로
+    복사**하므로 글자 커버리지는 100%여도 같은 시각이 3~5개씩 겹친다 — 이것이 실측에서
+    ko 정렬 곡의 3자 이상 동시 시작 38~59%(ja 정렬 곡 2%)로 나타난 그 현상이고, 화면에서
+    원문이 뭉텅이로 점등하는 직접 원인이다. 그래서 글자 수가 아니라 이 값으로 잰다.
+    본문에 안 나타나는 토큰은 직렬화에서 버려지므로(스퓨리어스) 여기서도 안 센다.
+    """
+    toks = [w for w in (word_segments or []) if w.word]
+    if not toks:
+        return 0
+    out, covered = _scan_token_coverage(text, toks)
+    return len({o["start"] for o, c in zip(out, covered) if c})
 
 
 def _resynth_word_segments(word_segments, start: float, end: float) -> None:
@@ -1396,6 +1434,88 @@ def _impossible_word_distribution(word_segments, start: float, end: float, max_c
         return False
     n_chars = sum(len(w.word) for w in toks)
     return width <= 0 or n_chars / width > max_char_rate
+
+
+def _fuse_original_char_timing(
+    results, ja_results, fixes, max_char_rate: float = 0.0, label: str = "fuse"
+) -> set[int]:
+    """ko 라인 경계는 그대로 두고 **라인 내부 원문 글자 분포만** ja 정렬 실측값으로 교체.
+
+    독음(ko) 경로에서 원문 글자는 오디오를 한 번도 만지지 않는다 — 스팬이 '정렬된 한글
+    음절 → 모라 → 원문 글자'의 3단 역매핑 합성물이라(``map_pron_alignment_to_line``),
+    라인 경계가 완벽해도 **내부 분포**가 뭉친다(실측: ko 정렬 곡은 원문 글자의 3자 이상
+    동시 시작이 38~59%, ja 정렬 곡은 2%). 라인 승자 선택으로는 안 풀리는 이유가 이것이다.
+
+    그래서 라인 단위로 융합한다: ko의 [start,end]와 pron_segments는 **불변**이고, ja가 같은
+    라인 인덱스에서 잰 글자 스팬을 그 라인 안으로 **선형 사상**해 word_segments로 갈아끼운다.
+    사상 구간은 ja 토큰의 실제 extent[min start, max end] → ko 라인 [start,end]다 (ja 라인
+    경계가 아니라 토큰 extent를 쓰므로 결과가 항상 ko 라인 안에 들어오고 라인을 꽉 덮는다 —
+    ``_resynth_word_segments``의 균등 분배와 같은 봉투에 ja의 상대 분포만 실은 꼴이다).
+
+    다음 라인은 융합하지 않고 기존 역매핑을 유지한다:
+      - ja 토큰이 없거나 라인 텍스트가 대응하지 않음(인덱스 어긋남 방어),
+      - ja가 그 라인에서 붕괴(``_impossible_word_distribution`` — 뭉침/경계 이탈/선두 고립),
+      - ja가 그 라인에서 만드는 실측 앵커가 역매핑보다 **적음**(``_measured_anchor_count``) —
+        한자가 OOV로 빠져 ja 토큰이 한두 개만 남은 라인에서 해상도가 오히려 내려가는 것을
+        막는다. 글자 커버리지가 아니라 앵커 수로 재는 이유는 역매핑이 한 음절 스팬을 여러
+        글자에 복사해 **커버리지 100% + 앵커 1개**를 만들기 때문이다 — 그 라인이야말로
+        융합이 노리는 대상이라 커버리지로 재면 정확히 반대로 걸러진다.
+
+    라인 conf(``r.confidence``)는 그대로 두고 글자 conf만 ja 실측값을 싣는다 — 그 라인의
+    타이밍이 ja에서 왔으니 글자 conf도 ja가 맞다. 결과적으로 ko가 아무 스팬도 못 만든
+    라인(``word_segments`` None)은 직렬화 백필을 통해 quality_score에 ja conf로 기여하게
+    되는데, quality_score는 보고용이고 파이프라인 게이트(재합성의 곡 단위 conf)는 호출부가
+    **융합 전에** 확정하므로 판정에는 영향이 없다.
+
+    ja_results는 제자리 수정하지 않는다(WordSegment를 새로 만든다) — 누출 스플라이스가
+    ja 객체를 results에 그대로 꽂아둔 경우가 있어 공유 객체를 흔들면 안 된다.
+    반환: 융합된 라인 인덱스 집합. fixes에 ``label``을 남긴다(확장 디버그 표시).
+    """
+    from everyric2.inference.prompt import WordSegment
+
+    fused: set[int] = set()
+    if not ja_results or len(ja_results) != len(results):
+        return fused
+    for i, r in enumerate(results):
+        ja = ja_results[i]
+        if ja.text != r.text:
+            continue
+        toks = [w for w in (ja.word_segments or []) if w.word]
+        if not toks:
+            continue
+        if _impossible_word_distribution(toks, ja.start_time, ja.end_time, max_char_rate):
+            continue
+        lo = min(w.start for w in toks)
+        hi = max(w.end for w in toks)
+        target = r.end_time - r.start_time
+        if hi - lo <= 0 or target <= 0:
+            continue
+        if _measured_anchor_count(r.text, toks) < _measured_anchor_count(
+            r.text, r.word_segments
+        ):
+            continue
+        scale = target / (hi - lo)
+        new = [
+            WordSegment(
+                word=w.word,
+                start=r.start_time + (w.start - lo) * scale,
+                end=r.start_time + (w.end - lo) * scale,
+                confidence=w.confidence,
+            )
+            for w in toks
+        ]
+        # 단조 비감소 보장 — ja가 비단조여도 직렬화 계약(단조)이 깨지지 않게 접는다.
+        prev = r.start_time
+        for w in new:
+            w.start = max(w.start, prev)
+            w.end = max(w.end, w.start)
+            prev = w.end
+        r.word_segments = new
+        fused.add(i)
+        labels = fixes.setdefault(i, [])
+        if label not in labels:
+            labels.append(label)
+    return fused
 
 
 def _synthesize_collapsed_timing(
@@ -1850,15 +1970,31 @@ def _run_alignment(
         # 합성보컬은 posterior가 균일 바닥이라 ko가 성공해도 곡 전체가 저품질일 수 있다.
         # ko 평균 신뢰도가 임계 미만이면 ja 원문 정렬도 돌려 명확히 나은 쪽을 채택한다
         # (熱異常: ja도 같이 붕괴 → margin 미달로 ko 유지; 발음 정렬만 나쁜 곡은 ja 채택).
-        # ja_alignment: 여기서 돌린 ja 결과를 아래 역누출 가드가 재사용한다(중복 정렬 회피).
+        # 여기에 더해, 원문(ja) 정렬은 융합 스위치가 켜져 있으면 **상시** 돌린다 — ko 경로의 원문 글자
+        # 타이밍은 역매핑 합성물이라 라인 내부 분포를 ja 실측으로 갈아끼우려면 항상 필요하다
+        # (아래 _fuse_original_char_timing). 비용은 CTC 1패스(4.7분 곡 ~9s)뿐이다: ko/ja는
+        # 같은 mms-1b-all 베이스라 언어 전환이 어댑터 스왑(0.23s)이다. 여기서 한 번 돌린
+        # 결과를 이중정렬 안전망과 역누출 가드가 모두 재사용한다(중복 정렬 0).
         ja_alignment = None
         if alignment_text == "pronunciation":
             ko_conf = _avg_line_confidence(results)
-            if _dual_align_should_run(ko_conf, settings.alignment.dual_align_conf):
+            dual_check = _dual_align_should_run(ko_conf, settings.alignment.dual_align_conf)
+            if _original_align_needed(
+                ko_conf,
+                settings.alignment.dual_align_conf,
+                settings.alignment.fuse_original_chars,
+            ):
                 try:
                     ja_alignment = engine.align(
                         align_audio, lyric_lines, language=language or "auto"
                     )
+                except Exception:
+                    logger.exception(
+                        "Original-text (ja) alignment failed; keeping pronunciation alignment "
+                        "as-is (no dual-align cross-check, no original-char fusion)"
+                    )
+            if dual_check and ja_alignment is not None:
+                try:
                     ja_conf = _avg_line_confidence(ja_alignment)
                     if _dual_align_prefers_original(
                         ko_conf, ja_conf, settings.alignment.dual_align_min_ratio
@@ -2075,6 +2211,31 @@ def _run_alignment(
             except Exception:
                 logger.exception("VAD timing post-process failed; using raw alignment")
 
+        # 곡 단위 평균 신뢰도는 **융합 전에** 확정한다 — 융합은 글자 conf를 ja 실측값으로
+        # 갈아끼우므로, 라인 conf가 비어 글자 conf 기하평균으로 백필되는 라인이 있으면
+        # 아래 재합성의 곡 단위 게이트가 융합 여부에 따라 흔들린다.
+        song_conf = _avg_line_confidence(results)
+
+        # ko/ja 융합 (스냅·클램프로 라인 경계가 확정된 뒤, 재합성 직전): ko 라인 경계와
+        # pron_segments는 그대로 두고 라인 **내부** 원문 글자 분포만 ja 실측값으로 교체한다.
+        # 이미 합성물(3단 역매핑)인 부분만 진짜 측정값으로 갈아끼우는 것이라 회귀 표면이 작다.
+        # 재합성보다 **먼저** 도는 이유: 융합으로 분포가 정상화된 라인은 아래 구조 게이트
+        # (_impossible_word_distribution)에 더 이상 안 걸려 균등 분배로 덮이지 않는다 —
+        # 균등 분배는 더 나은 실측값이 없을 때의 폴백이어야 한다. 반대로 leak 라벨 라인은
+        # 재합성이 그대로 덮으므로(기존 규칙 유지) 그 경로 동작은 바뀌지 않는다.
+        if pron_data is not None and settings.alignment.fuse_original_chars:
+            fused_lines = _fuse_original_char_timing(
+                results,
+                ja_alignment,
+                fixes,
+                settings.alignment.mass_leak_min_char_rate,
+            )
+            if fused_lines:
+                logger.info(
+                    f"Fused measured original-text char timing into {len(fused_lines)}/"
+                    f"{len(results)} line(s) (ko line bounds and pron_segments kept)"
+                )
+
         # 보정 마지막(스냅·클램프 이후, 직렬화 전): 붕괴 곡/누출 라인의 라인 내부 word/pron
         # 타이밍을 균등 비례로 재합성한다. 라인 경계는 유지하고 무의미한 CTC 내부 분포만 폐기.
         # 멜로디 노트는 라인 스팬 기반(word/pron 무소비)이라 영향 없음.
@@ -2082,7 +2243,7 @@ def _run_alignment(
             results,
             pron_data,
             fixes,
-            _avg_line_confidence(results),
+            song_conf,
             settings.alignment.synth_all_lines_conf,
             settings.alignment.mass_leak_min_char_rate,
         )
@@ -2132,11 +2293,16 @@ def _run_alignment(
                     "active_ratio": round(vocal / dur, 2),
                     "clamped": i in clamped_lines,
                 }
-                # 보정된 라인은 보정 전 원본 타이밍 + 적용 규칙 라벨을 함께 내려준다
+                # 보정된 라인은 보정 전 원본 타이밍 + 적용 규칙 라벨을 함께 내려준다.
+                # orig(고스트)는 라인 경계가 실제로 움직였을 때만 — 융합(fuse)처럼 라인
+                # 내부만 바꾸는 보정은 경계가 그대로라 고스트가 현재 위치와 겹쳐 그려지고,
+                # ko 경로에선 거의 전 라인에 붙어 디버그 화면을 못 쓰게 만든다.
                 fx = fixes.get(i)
                 if fx:
-                    seg["debug"]["orig"] = [round(raw_spans[i][0], 2), round(raw_spans[i][1], 2)]
                     seg["debug"]["fixes"] = fx
+                    os_, oe_ = raw_spans[i]
+                    if abs(os_ - r.start_time) > 0.01 or abs(oe_ - r.end_time) > 0.01:
+                        seg["debug"]["orig"] = [round(os_, 2), round(oe_, 2)]
             timestamps.append(seg)
 
         # 가라오케용 음정(MIDI 노트) 주석 — 실패해도 싱크 생성 자체는 계속한다.
