@@ -237,6 +237,18 @@ class AlignmentSettings(BaseSettings):
         "near-zero slot. Below this the cluster is treated as real fast singing and left untouched.",
     )
 
+    mass_leak_max_coverage: float = Field(
+        default=0.3,
+        description="PRIMARY gate for the mass-leak snap: a line only counts as a leaked cram when "
+        "its own VAD vocal coverage (fraction of the line span overlapping detected vocal) is below "
+        "this — i.e. the line is floating on silence, the hard acoustic signature of a genuinely "
+        "misplaced reprise line. Lines sitting on real vocal are NEVER moved. This protects "
+        "ultra-fast songs (消失: sung lines are <1.5s apart and dense, so the spacing/char-rate "
+        "signals alone false-positived normal lines placed correctly on 35-42s vocal and shoved them "
+        "+24-38s — the vocal-coverage gate is what tells a correct dense line from a leaked one). "
+        "char-rate stays a secondary confirmation.",
+    )
+
     dual_align_conf: float = Field(
         default=0.002,
         description="Confidence floor for the dual-alignment safety net (0 disables). Once the "

@@ -249,19 +249,20 @@ def test_undershoot_no_following_region_not_touched():
     assert results[0].start_time == pytest.approx(250.0)
 
 
-def test_undershoot_not_applied_when_crossing_next_line():
-    # 스냅 결과가 다음 라인 시작을 침범하면(목표 온셋 > 다음 라인 시작) 오탐으로 보고
-    # 그 라인은 건드리지 않는다 (순서 역전 방지)
+def test_undershoot_snaps_stranded_pair_in_order():
+    # 무음에 나란히 좌초한 두 줄(리프라이즈 등): 예전엔 첫 줄이 아직 안 옮겨진 둘째 줄에
+    # 막혀 스킵되고 둘째 줄만 회복됐다(리프라이즈 1번째 줄만 잔존 버그). 이제 첫 줄부터
+    # 다음 온셋 이후로 스냅하되 순서(첫 줄 < 둘째 줄)를 유지한다.
     results = [
-        _line("좌초", 146.0, 147.0),
-        _line("먼저 온 다음 줄", 150.0, 152.0),
+        _line("좌초1", 146.0, 147.0),
+        _line("좌초2", 150.0, 152.0),
     ]
     vad = _vad((165.0, 200.0))
     clamped: set[int] = set()
     _snap_silence_undershoot(results, vad, clamped)
-    # 라인0 목표 온셋 164.85 >= 다음 라인 시작 150.0 → 라인0은 스킵
-    assert 0 not in clamped
-    assert results[0].start_time == pytest.approx(146.0)
+    assert 0 in clamped and 1 in clamped
+    assert results[0].start_time >= 164.0
+    assert results[0].start_time < results[1].start_time  # 순서 유지
 
 
 def test_shift_word_segments_rescales_into_window():

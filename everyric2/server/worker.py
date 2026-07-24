@@ -883,13 +883,21 @@ def _snap_silence_undershoot(results, vad_result, clamped: set[int]) -> None:
     regions = sorted(vad_result.regions, key=lambda reg: reg.start)
     if not regions:
         return
+
+    def _cover(line) -> float:
+        d = max(1e-6, line.end_time - line.start_time)
+        return sum(
+            max(0.0, min(reg.end, line.end_time) - max(reg.start, line.start_time))
+            for reg in regions
+        ) / d
+
+    last_snapped = float("-inf")
     for i, r in enumerate(results):
         if i in clamped:
             continue
         s, e = r.start_time, r.end_time
         dur = max(1e-6, e - s)
-        cover = sum(max(0.0, min(reg.end, e) - max(reg.start, s)) for reg in regions) / dur
-        if cover >= 0.25:
+        if _cover(r) >= 0.25:
             continue  # 라인이 발성과 유의미하게 겹침 → 정상 배치, 건드리지 않음
         nxt = next((reg for reg in regions if reg.start >= s), None)
         if nxt is None:
@@ -897,9 +905,18 @@ def _snap_silence_undershoot(results, vad_result, clamped: set[int]) -> None:
         if nxt.start - s < 1.5:
             continue  # 온셋 직전의 짧은 리드타임은 정상
         new_start = nxt.start - 0.15
-        next_line_start = results[i + 1].start_time if i + 1 < len(results) else float("inf")
+        # 침범 판정: 다음 라인이 발성 위(정상 배치)면 그 앞을 침범 못 하게 막는다. 다음 라인도
+        # 무음에 좌초(곧 뒤로 스냅)면 현재 위치로 막지 않는다 — 좌초 '쌍/블록'의 첫 줄이 아직
+        # 안 옮겨진 둘째 줄에 막혀 스킵되던 버그(리프라이즈 1번째 줄만 잔존) 방지.
+        nl = results[i + 1] if i + 1 < len(results) else None
+        next_line_start = (
+            float("inf") if (nl is None or _cover(nl) < 0.25) else nl.start_time
+        )
         if new_start >= next_line_start:
-            continue  # 다음 라인을 침범 → 오탐, 적용하지 않음
+            continue  # 정상 배치된 다음 라인을 침범 → 오탐, 적용하지 않음
+        new_start = max(new_start, last_snapped + 0.05)  # 연속 좌초 라인 순서 유지(겹침 방지)
+        if new_start >= next_line_start:
+            continue
         if e <= nxt.start:
             # 라인 전체가 무음에 갇힘 → 길이 보존하고 통째로 온셋으로 이동(다음 라인 앞까지)
             r.start_time = new_start
@@ -908,6 +925,7 @@ def _snap_silence_undershoot(results, vad_result, clamped: set[int]) -> None:
                 _shift_word_segments(r.word_segments, r.start_time, r.end_time)
         else:
             r.start_time = new_start  # 시작만 무음, 라인이 이미 리전에 걸침 → start만 스냅
+        last_snapped = r.start_time
         clamped.add(i)
 
 
@@ -917,7 +935,7 @@ def _snap_post_interlude_leak(
     clamped: set[int],
     min_gap_sec: float,
     min_char_rate: float,
-    max_cluster_spacing_sec: float = 1.5,
+    max_coverage: float = 0.3,
 ) -> None:
     """긴 간주 앞에 붕괴·밀집한 리프라이즈 블록을 간주 이후 발성에 재배치한다 (ja-free).
 
@@ -928,16 +946,18 @@ def _snap_post_interlude_leak(
     라는 하드 음향 사실에 앵커한다 — 유일하게 posterior에 오염되지 않은 신호다.
 
     각 긴 간주 [gs,ge]마다:
-      1. gap_end 직후 첫 발성에 정착한 라인 k를 찾고, 그 앞에서 gs 직전에 촘촘히(간격
-         <max_cluster_spacing) 몰린 크램 클러스터를 역추적한다(정상 마지막 라인은 정상
-         간격이라 자동 제외).
-      2. 정상적인 '간주 앞 빠른 구간'과 '누출 크램'을 가르기 위해, 클러스터 중 한 줄이라도
-         사람이 낼 수 없는 char rate(글자수/지속, >min_char_rate)로 불려야 한다 — 강제정렬이
-         풀 가사를 0초 슬롯에 욱여넣었다는 신호. 아니면 실제 빠른 구간으로 보고 건드리지 않는다.
+      1. gap_end 직후 첫 발성에 정착한 라인 k를 찾고, 그 앞에서 **VAD 발성 커버리지가 낮은
+         (max_coverage 미만 = 무음 위에 떠 있는)** 라인만 역추적해 누출 클러스터로 삼는다.
+         **발성 위에 정상 배치된 라인은 절대 이동하지 않는다** — 이 커버리지 게이트가 정상/누출을
+         가르는 1차 신호다 (消失는 초고속이라 정상 라인도 간격<1.5s·고밀도 → 간격/char-rate
+         만으로는 정상 라인을 오판, 발성 위 라인까지 밀어 회귀시켰다).
+      2. 2차: 클러스터 중 한 줄이라도 불가능한 char rate(글자수/지속, >min_char_rate)여야 한다
+         (강제정렬이 풀 가사를 0초 슬롯에 욱여넣은 잔해 신호).
       3. 클러스터부터 다음 간주(없으면 곡 끝) 전까지의 블록을 간주 이후 발성 리전들에
-         (리전 길이 비례로) 재배치한다 — 발성이 있는 곳에 라인을 몰아준다.
+         리전 길이 비례로 재배치하되, **어떤 라인도 (간주 길이+여유) 이상 이동하지 않도록**
+         상한을 두고 단조성을 유지한다.
 
-    정상적으로 간주를 대기한 싱크(커버: gs 직전 라인 1개, 정상 간격)는 클러스터가 비어 무변경.
+    발성 위에 정상 배치된 라인들(消失 가창, 커버 등)은 클러스터가 비어 무변경.
     """
     if min_gap_sec <= 0:
         return
@@ -950,18 +970,30 @@ def _snap_post_interlude_leak(
     ]
     if not interludes:
         return
+
+    def _coverage(i: int) -> float:
+        r = results[i]
+        dur = max(1e-6, r.end_time - r.start_time)
+        ov = sum(
+            max(0.0, min(reg.end, r.end_time) - max(reg.start, r.start_time)) for reg in regions
+        )
+        return ov / dur
+
+    def _char_rate(i: int) -> float:
+        dur = max(0.1, results[i].end_time - results[i].start_time)
+        return len(re.sub(r"\s", "", results[i].text or "")) / dur
+
     for idx, (gs, ge) in enumerate(interludes):
         seg_end = interludes[idx + 1][0] if idx + 1 < len(interludes) else float("inf")
         k = next((i for i in range(n) if results[i].start_time >= ge - 2.0), None)
         if not k:  # None 또는 0 — 간주 앞 라인이 없음
             continue
+        # 1차 게이트: 발성 커버리지<max_coverage(무음 위)인 라인만 누출로. 발성 위(정상) 라인을
+        # 만나면 멈춘다 — 이 커버리지 경계가 클러스터 범위를 정한다(간격 신호는 消失 초고속에서
+        # 정상 라인을 오판하므로 쓰지 않는다).
         cluster: list[int] = []
         j = k - 1
-        while (
-            j >= 1
-            and results[j].start_time < gs
-            and results[j].start_time - results[j - 1].start_time < max_cluster_spacing_sec
-        ):
+        while j >= 1 and results[j].start_time < ge - 0.5 and _coverage(j) < max_coverage:
             cluster.append(j)
             j -= 1
         if not cluster:
@@ -969,11 +1001,7 @@ def _snap_post_interlude_leak(
         first_leaked = min(cluster)
         if results[first_leaked].start_time > ge - min_gap_sec:
             continue  # 뒤로 크게 밀리지 않음 — 대량 누출 아님
-        # 불가능한 char rate 게이트 (정상 빠른 구간 오탐 방지)
-        def _char_rate(i: int) -> float:
-            dur = max(0.1, results[i].end_time - results[i].start_time)
-            return len(re.sub(r"\s", "", results[i].text or "")) / dur
-
+        # 2차 게이트: 불가능한 char rate (정상 빠른 구간 추가 방어)
         if max(_char_rate(i) for i in cluster) < min_char_rate:
             continue
         block_last = k
@@ -998,11 +1026,14 @@ def _snap_post_interlude_leak(
                 acc += d
             return post_regions[-1][1]
 
+        # 이동량 상한(간주 길이+여유)과 단조성을 지키며 발성 리전에 비례 재배치
+        move_cap = (ge - gs) + 5.0
+        prev_start = -1.0
         for pos, i in enumerate(block):
-            new_start = _vocal_time(pos / m)
-            new_end = _vocal_time((pos + 1) / m)
-            if new_end <= new_start:
-                new_end = new_start + 0.1
+            new_start = min(_vocal_time(pos / m), results[i].start_time + move_cap)
+            new_start = max(new_start, prev_start)
+            new_end = max(_vocal_time((pos + 1) / m), new_start + 0.1)
+            prev_start = new_start
             results[i].start_time = new_start
             results[i].end_time = new_end
             if results[i].word_segments:
@@ -1816,6 +1847,7 @@ def _run_alignment(
                         snapped,
                         settings.alignment.mass_leak_min_gap_sec,
                         settings.alignment.mass_leak_min_char_rate,
+                        settings.alignment.mass_leak_max_coverage,
                     )
                     _diff_fixes(fixes, "snap", snap_before, pp.results)
                 results, clamped_lines = _clamp_stretched_lines(pp.results, vad_result, fixes=fixes)
