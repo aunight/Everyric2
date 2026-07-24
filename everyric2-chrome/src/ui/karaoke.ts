@@ -66,7 +66,11 @@ export function appendKaraokeSpans(
   const synth = synthesizeCharTimings(line);
   if (synth) {
     el.replaceChildren();
-    for (const s of synth) el.append(makeWordEl(s));
+    for (const s of synth) {
+      const w = makeWordEl(s);
+      w.classList.add('ey-word-synth'); // 디버그 모드에서 합성(비례 배분) 타이밍임을 표시
+      el.append(w);
+    }
     return;
   }
   el.replaceChildren(line.text);

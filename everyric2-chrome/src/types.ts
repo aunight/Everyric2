@@ -215,6 +215,8 @@ export interface JobStatusResponse {
 
 export interface Settings {
   autoSearch: boolean;
+  /** 쇼츠(/shorts/)에서도 가사창 자동 열기 허용 — 기본 꺼짐 */
+  autoSearchShorts: boolean;
   fontSize: 'small' | 'medium' | 'large';
   theme: 'auto' | 'dark' | 'light';
   serverUrl: string;
@@ -241,6 +243,8 @@ export interface Settings {
   pitchFontScale: number;
   /** 긴 묵음 뒤 가사 시작 전 4·3·2·1 카운트다운 표시 */
   pitchCountdown: boolean;
+  /** 음정 모델 RAW f0 곡선을 디버그 모드와 무관하게 레인에 상시 표시 */
+  pitchF0Curve: boolean;
   /** PiP 하단 가라오케 음정 바 표시 (노트 데이터가 있는 곡에서만) */
   pitchGuide: boolean;
   /** 가라오케 창에서 노트를 신디사이즈로 재생 */

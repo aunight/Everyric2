@@ -191,7 +191,10 @@ function watchVideoBinding(): void {
  * 브이로그/게임 영상에서 노래를 찾겠다고 패널이 뜨는 것을 막는다. */
 function shouldFollow(): boolean {
   if (overlay?.isVisible()) return true; // 사용자가 열어둔 패널은 항상 따라간다
-  return settings.autoSearch && isLikelyMusicVideo();
+  if (!settings.autoSearch) return false;
+  // 쇼츠는 기본적으로 자동으로 열지 않는다 (설정으로 허용 가능, 수동 열기는 그대로)
+  if (!settings.autoSearchShorts && location.pathname.startsWith('/shorts/')) return false;
+  return isLikelyMusicVideo();
 }
 
 /** 음악 영상 판별 — 유튜브 자체 신호 우선, 없으면 채널/제목 휴리스틱 */
@@ -466,6 +469,9 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   }
   if (patch.micOctave !== undefined) {
     pip.setMicOctave(settings.micOctave);
+  }
+  if (patch.pitchF0Curve !== undefined) {
+    pip.setShowF0(settings.pitchF0Curve);
   }
 
   // 저신뢰 경고 토글 즉시 반영
@@ -947,6 +953,7 @@ function applyLyricsData(data: LyricsData | null): void {
       pip.setTempo(data.tempo ?? null);
       pip.setKey(data.key ?? null);
       pip.setDebugMeta(data.debugMeta ?? null);
+      pip.setShowF0(settings.pitchF0Curve);
       pip.setLines(data.lines);
       karaokeAudio.setNotes(collectMelodyNotes(data.lines));
       karaokeAudio.setTempo(data.tempo ?? null);
@@ -1390,6 +1397,7 @@ async function handlePipToggle(): Promise<void> {
   pip.setTempo(currentData.tempo ?? null);
   pip.setKey(currentData.key ?? null);
   pip.setDebugMeta(currentData.debugMeta ?? null);
+  pip.setShowF0(settings.pitchF0Curve);
   pip.setLines(currentData.lines);
   karaokeAudio.setNotes(collectMelodyNotes(currentData.lines));
   karaokeAudio.setTempo(currentData.tempo ?? null);

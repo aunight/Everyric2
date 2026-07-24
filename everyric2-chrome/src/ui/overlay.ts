@@ -1116,6 +1116,11 @@ export class LyricsOverlay {
     autoSearch.checked = this.settings.autoSearch;
     autoSearch.addEventListener('change', () => this.callbacks.onSettingsChange({ autoSearch: autoSearch.checked }));
 
+    const autoSearchShorts = h('input', { attrs: { type: 'checkbox' } });
+    autoSearchShorts.checked = this.settings.autoSearchShorts;
+    autoSearchShorts.addEventListener('change', () =>
+      this.callbacks.onSettingsChange({ autoSearchShorts: autoSearchShorts.checked }));
+
     const fontSelect = this.buildSelect(
       [['small', '작게'], ['medium', '보통'], ['large', '크게']],
       this.settings.fontSize,
@@ -1186,6 +1191,11 @@ export class LyricsOverlay {
     pitchCountdown.checked = this.settings.pitchCountdown;
     pitchCountdown.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ pitchCountdown: pitchCountdown.checked }));
+
+    const pitchF0Curve = h('input', { attrs: { type: 'checkbox' } });
+    pitchF0Curve.checked = this.settings.pitchF0Curve;
+    pitchF0Curve.addEventListener('change', () =>
+      this.callbacks.onSettingsChange({ pitchF0Curve: pitchF0Curve.checked }));
 
     const melodyPlayback = h('input', { attrs: { type: 'checkbox' } });
     melodyPlayback.checked = this.settings.melodyPlayback;
@@ -1261,6 +1271,7 @@ export class LyricsOverlay {
 
     return h('div', { className: 'ey-settings' },
       h('div', { className: 'ey-settings-row' }, h('label', { text: '자동 가사 검색 (음악 영상만)', attrs: { title: '유튜브 음악 메타·채널·제목으로 음악 영상을 판별해 자동으로 가사창을 엽니다. 꺼도 툴바 아이콘으로 수동으로 열 수 있어요.' } }), autoSearch),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: '쇼츠에서도 자동 검색', attrs: { title: '기본은 꺼짐 — 쇼츠에서는 가사창이 자동으로 열리지 않아요. 툴바 아이콘으로 수동으로는 언제든 열 수 있어요.' } }), autoSearchShorts),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '폰트 크기' }), fontSelect),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '테마' }), themeSelect),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 번역 표시' }), showTranslation),
@@ -1274,6 +1285,7 @@ export class LyricsOverlay {
       h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 바 진행 방식' }), pitchMode),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 바 글자 크기' }), pitchFont),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 시작 카운트다운' }), pitchCountdown),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 원본 곡선(f0) 표시', attrs: { title: '음정 모델이 추출한 원본 멜로디 곡선을 레인에 파란 선으로 표시합니다. 디버그 모드와 무관하게 켜고 끌 수 있어요.' } }), pitchF0Curve),
       h('div', { className: 'ey-settings-row' },
         h('label', { text: '멜로디 재생 (가라오케 창)', attrs: { title: '전사된 노트를 신디사이즈로 재생합니다. 가라오케 창이 열려 있을 때만 소리가 나요.' } }),
         h('span', { className: 'ey-settings-inline' }, melodyVolume, melodyPlayback)),

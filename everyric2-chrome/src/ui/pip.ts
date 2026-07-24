@@ -100,6 +100,7 @@ const FIX_COLORS: Record<string, string> = {
   pull: '#4dabf7',    // 간주 후 시작 당김
   tail: '#ffa94d',    // 끝음 연장
   snap: '#da77f2',    // 무음 온셋 스냅
+  leak: '#20c997',    // 간주 역방향 누출 — ja 타이밍 스플라이스
 };
 
 interface PitchNote {
@@ -188,6 +189,8 @@ export class PipController {
   private pitchPointer: { id: number; startX: number; startT0: number; moved: boolean } | null = null;
   private paused = false;
   private lastTime = 0;
+  /** RAW f0 곡선 상시 표시 (설정 pitchF0Curve) — 디버그 언더레이와 독립 */
+  private showF0 = true;
   private pitchDividerEl: HTMLDivElement | null = null;
   private pitch: PitchData = { pages: [], notes: [], words: [], lo: 57, hi: 71 };
   private pitchEnabled = true;
@@ -756,6 +759,11 @@ export class PipController {
     this.showConfidence = enabled;
   }
 
+  /** RAW f0 곡선 상시 표시 토글 (설정 pitchF0Curve) */
+  setShowF0(enabled: boolean): void {
+    this.showF0 = enabled;
+  }
+
   /** 멜로디/메트로놈 토글 버튼 활성 상태 반영 — 세부 버튼은 메트로놈+레인이 켜졌을 때만 */
   setAudioState(melody: boolean, metronome: boolean): void {
     this.metroOn = metronome;
@@ -1015,9 +1023,12 @@ export class PipController {
     }
     ctx.globalAlpha = 1;
 
-    // ── 디버그 배경 레이어: VAD 가창/간주 스트립 + star 흡수 밴드 + RAW f0 곡선
+    // ── 디버그 배경 레이어: VAD 가창/간주 스트립 + star 흡수 밴드 + RAW f0 곡선.
+    // f0 곡선만은 설정(pitchF0Curve)으로 디버그 없이도 상시 표시 가능
     if (this.showConfidence) {
       this.renderDebugUnderlay(ctx, t0, W, x, y, lo, hi, cw, padTop, staffH);
+    } else if (this.showF0) {
+      this.renderF0Curve(ctx, t0, W, x, y, lo, hi);
     }
 
     // ── 노트 막대 + 계이름(위) + 발음(아래) — 시간 창 안의 노트만
@@ -1254,24 +1265,34 @@ export class PipController {
       ctx.fillStyle = 'rgba(218, 119, 242, 0.5)';
       ctx.fillRect(clampX(x(s)), stripY - 3, Math.max(1, clampX(x(e)) - clampX(x(s))), 2);
     }
-    const f0 = meta.f0_curve;
-    if (f0 && f0.dt > 0 && f0.midi.length > 0) {
-      ctx.strokeStyle = 'rgba(77, 171, 247, 0.65)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      let pen = false;
-      const i0 = Math.max(0, Math.floor((t0 - f0.t0) / f0.dt));
-      const i1 = Math.min(f0.midi.length - 1, Math.ceil((t0 + W - f0.t0) / f0.dt));
-      for (let i = i0; i <= i1; i++) {
-        const m = f0.midi[i];
-        if (m == null) { pen = false; continue; }
-        const px = x(f0.t0 + i * f0.dt);
-        const py = y(Math.max(lo, Math.min(hi, m)));
-        if (pen) ctx.lineTo(px, py);
-        else { ctx.moveTo(px, py); pen = true; }
-      }
-      ctx.stroke();
+    this.renderF0Curve(ctx, t0, W, x, y, lo, hi);
+  }
+
+  /** 음정 모델 RAW f0 곡선 — 디버그 언더레이의 일부지만, 설정(pitchF0Curve)으로
+   *  디버그 모드 없이도 단독 표시된다 */
+  private renderF0Curve(
+    ctx: CanvasRenderingContext2D,
+    t0: number, W: number,
+    x: (t: number) => number, y: (midi: number) => number,
+    lo: number, hi: number,
+  ): void {
+    const f0 = this.debugMeta?.f0_curve;
+    if (!f0 || f0.dt <= 0 || f0.midi.length === 0) return;
+    ctx.strokeStyle = 'rgba(77, 171, 247, 0.65)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    let pen = false;
+    const i0 = Math.max(0, Math.floor((t0 - f0.t0) / f0.dt));
+    const i1 = Math.min(f0.midi.length - 1, Math.ceil((t0 + W - f0.t0) / f0.dt));
+    for (let i = i0; i <= i1; i++) {
+      const m = f0.midi[i];
+      if (m == null) { pen = false; continue; }
+      const px = x(f0.t0 + i * f0.dt);
+      const py = y(Math.max(lo, Math.min(hi, m)));
+      if (pen) ctx.lineTo(px, py);
+      else { ctx.moveTo(px, py); pen = true; }
     }
+    ctx.stroke();
   }
 
   /**

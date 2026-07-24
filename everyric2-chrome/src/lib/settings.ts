@@ -2,6 +2,7 @@ import type { PanelGeometry, Settings } from '../types';
 
 export const DEFAULT_SETTINGS: Settings = {
   autoSearch: true,
+  autoSearchShorts: false,
   fontSize: 'medium',
   theme: 'auto',
   serverUrl: 'https://everyric.moref.co',
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pitchScrollMode: 'page',
   pitchFontScale: 1.2,
   pitchCountdown: true,
+  pitchF0Curve: true,
   lowConfWarning: true,
   notifyOnComplete: true,
   debugInfo: false,
