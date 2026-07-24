@@ -22,6 +22,9 @@ class TranslationLine:
     original: str
     translation: str
     pronunciation: str | None = None
+    # NIM 응답이 잘려(max_tokens 소진) 복구/재분할 후에도 이 라인만 살려내지 못한 경우 True.
+    # 전체 500 대신 원문만 담아 반환하되, 어떤 라인이 실패했는지 결과에 남긴다.
+    failed: bool = False
 
 
 @dataclass
@@ -67,6 +70,14 @@ def _kana_readings(text: str) -> list[str] | None:
     except Exception:
         logger.exception("kana reading hints failed; prompting without them")
         return None
+
+# 발음 JSON 잘림(NIM max_tokens 소진) 복구 파라미터.
+# - THRESHOLD 초과면 처음부터 배치로 나눠 요청(잘림 예방).
+# - SIZE: 한 배치 라인 수. 8192 예산 안에서 30줄 발음 JSON은 안전(실측).
+# - MAX_SPLIT_DEPTH: 잘림 복구 시 재귀 재분할 깊이 상한(요청 폭주 방지).
+_PRON_BATCH_THRESHOLD = 60
+_PRON_BATCH_SIZE = 30
+_PRON_MAX_SPLIT_DEPTH = 4
 
 TONE_PROMPTS = {
     "literal": "Translate literally, preserving the original meaning as closely as possible.",
@@ -419,56 +430,20 @@ class OpenAICompatibleTranslator(BaseTranslator):
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
             text, source_lang
         )
-        prompt = self._build_prompt(text, source_lang, target_lang, include_pron, context)
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.settings.temperature,
-            "max_tokens": self.settings.max_tokens,
-            "stream": False,
-        }
-        payload.update(self._payload_extras())
 
         try:
-            content = ""
-            # 빈 응답(콘텐츠 필터/reasoning이 max_tokens 소진)은 1회 재시도 —
-            # HTML 태그·코드 조각이 섞인 가사에서 실측된 간헐 실패라 한 번이면 대부분 회복
-            for attempt in range(2):
-                response = requests.post(
-                    self.api_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=self.settings.timeout,
-                )
-
-                if not response.ok:
-                    raise RuntimeError(
-                        f"API error: {response.status_code} - {response.text[:200]}"
-                    )
-
-                result = response.json()
-                message = result["choices"][0]["message"]
-                content = message.get("content") or ""
-                if content.strip():
-                    break
-                logger.warning(
-                    f"Empty completion content (attempt {attempt + 1}/2); "
-                    f"{'retrying' if attempt == 0 else 'giving up'}"
-                )
-            if not content.strip():
-                raise RuntimeError(
-                    "Empty completion content (model may have spent max_tokens on reasoning)"
-                )
-
             if include_pron:
-                lines = self._parse_json_response(content, original_lines)
+                # 발음 JSON은 라인 수가 많으면 응답이 max_tokens에서 잘려 파싱이 통째로
+                # 실패한다(500). 프롬프트/요청/파싱/복구를 _translate_pron_lines에 위임해
+                # 잘림을 감지·복구하고, 최악의 경우에도 원문만 담아 부분 성공으로 마감한다.
+                lines = self._translate_pron_lines(
+                    original_lines, source_lang, target_lang, context
+                )
             else:
+                prompt = self._build_prompt(
+                    text, source_lang, target_lang, include_pron, context
+                )
+                content, _ = self._request_completion(prompt)
                 lines = self._parse_text_response(content, original_lines)
 
             return TranslationResult(
@@ -479,6 +454,205 @@ class OpenAICompatibleTranslator(BaseTranslator):
             raise RuntimeError(f"Connection failed to {self.api_url}: {e}") from e
         except Exception as e:
             raise RuntimeError(f"Translation failed: {e}") from e
+
+    def _headers(self) -> dict:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+    def _request_completion(
+        self, prompt: str, *, allow_empty: bool = False
+    ) -> tuple[str, str | None]:
+        """단발 chat/completions 호출. (content, finish_reason)를 돌려준다.
+
+        빈 응답(콘텐츠 필터/reasoning이 max_tokens 소진)은 1회 재시도한다. 그래도 비면
+        allow_empty=False면 예외를, True면 ("", finish_reason)을 돌려줘 호출자가 잘림과
+        동일하게 복구·재분할하도록 한다.
+        """
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.settings.temperature,
+            "max_tokens": self.settings.max_tokens,
+            "stream": False,
+        }
+        payload.update(self._payload_extras())
+
+        content = ""
+        finish_reason: str | None = None
+        for attempt in range(2):
+            response = requests.post(
+                self.api_url,
+                json=payload,
+                headers=self._headers(),
+                timeout=self.settings.timeout,
+            )
+
+            if not response.ok:
+                raise RuntimeError(f"API error: {response.status_code} - {response.text[:200]}")
+
+            result = response.json()
+            choice = result["choices"][0]
+            content = choice["message"].get("content") or ""
+            finish_reason = choice.get("finish_reason")
+            if content.strip():
+                break
+            logger.warning(
+                "Empty completion content (attempt %d/2, finish_reason=%s); %s",
+                attempt + 1,
+                finish_reason,
+                "retrying" if attempt == 0 else "giving up",
+            )
+
+        if not content.strip() and not allow_empty:
+            raise RuntimeError(
+                "Empty completion content (model may have spent max_tokens on reasoning)"
+            )
+        return content, finish_reason
+
+    def _translate_pron_lines(
+        self,
+        original_lines: list[str],
+        source_lang: str,
+        target_lang: str,
+        context: str | None,
+    ) -> list[TranslationLine]:
+        """발음 포함 번역. 긴 입력은 처음부터 배치로 나눠(잘림 예방) 각 배치를 복구
+        로직으로 처리한 뒤 순서대로 이어붙인다."""
+        if len(original_lines) > _PRON_BATCH_THRESHOLD:
+            out: list[TranslationLine] = []
+            for start in range(0, len(original_lines), _PRON_BATCH_SIZE):
+                batch = original_lines[start : start + _PRON_BATCH_SIZE]
+                out.extend(
+                    self._translate_pron_batch(
+                        batch, source_lang, target_lang, context, depth=0
+                    )
+                )
+            return out
+        return self._translate_pron_batch(
+            original_lines, source_lang, target_lang, context, depth=0
+        )
+
+    def _translate_pron_batch(
+        self,
+        lines: list[str],
+        source_lang: str,
+        target_lang: str,
+        context: str | None,
+        depth: int,
+    ) -> list[TranslationLine]:
+        """한 배치를 요청하고, 응답이 잘렸으면(finish_reason=length 또는 완전 파싱 실패)
+        복구한다: ① 잘린 JSON에서 완전한 객체까지 살려내고 ② 못 살린 나머지 라인만 재요청,
+        진전이 없으면 ③ 라인을 절반으로 나눠 재귀. 깊이 한도를 넘거나 단일 라인도 실패하면
+        ④ 원문만 담고 failed=True로 표시해 부분 성공으로 마감(전체 500 방지)."""
+        text = "\n".join(lines)
+        prompt = self._build_prompt(text, source_lang, target_lang, True, context)
+        content, finish_reason = self._request_completion(prompt, allow_empty=True)
+
+        parsed = self._salvage_json_lines(content, lines)
+        # finish_reason=length여도 전 라인을 이미 완전 파싱했으면 잘림이 아니다(경계에서 정확히
+        # 멈춘 경우) — 불필요한 빈 재요청을 막는다.
+        truncated = len(parsed) < len(lines)
+        if not truncated:
+            return parsed[: len(lines)]
+
+        logger.warning(
+            "Pronunciation JSON incomplete (finish_reason=%s, content_len=%d, "
+            "parsed %d/%d lines, depth=%d) — recovering",
+            finish_reason,
+            len(content),
+            len(parsed),
+            len(lines),
+            depth,
+        )
+
+        if depth >= _PRON_MAX_SPLIT_DEPTH:
+            # 더 못 쪼갠다 — 살려낸 앞부분은 유지하고 나머지는 원문만 반환
+            return parsed + self._failed_lines(lines[len(parsed) :])
+
+        covered = len(parsed)
+        if covered > 0:
+            # 완전한 앞부분은 확보 — 못 받은 나머지 라인만 다시 요청
+            remainder = self._translate_pron_batch(
+                lines[covered:], source_lang, target_lang, context, depth + 1
+            )
+            return parsed + remainder
+
+        # 한 줄도 못 살렸다(빈/즉시 잘림) — 절반으로 쪼개 재귀, 단일 라인이면 폴백
+        if len(lines) > 1:
+            mid = len(lines) // 2
+            left = self._translate_pron_batch(
+                lines[:mid], source_lang, target_lang, context, depth + 1
+            )
+            right = self._translate_pron_batch(
+                lines[mid:], source_lang, target_lang, context, depth + 1
+            )
+            return left + right
+
+        return self._failed_lines(lines)
+
+    @staticmethod
+    def _failed_lines(lines: list[str]) -> list[TranslationLine]:
+        """복구 불가 라인 — 원문만 담고 translation/pronunciation은 비운 채 failed 표시."""
+        return [
+            TranslationLine(original=o, translation="", pronunciation=None, failed=True)
+            for o in lines
+        ]
+
+    def _salvage_json_lines(
+        self, response: str, original_lines: list[str]
+    ) -> list[TranslationLine]:
+        """(잘렸을 수도 있는) JSON 배열에서 완전한 객체까지만 순서대로 복구한다.
+
+        응답이 배열 중간에서 끊겨도 마지막 완전한 {..}까지 파싱한다. 예외를 던지지 않는다 —
+        살릴 게 없으면 []를 돌려줘 호출자가 재요청/폴백하게 한다. len<=len(original_lines).
+        """
+        text = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        if text.startswith("```"):
+            match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+            if match:
+                text = match.group(1).strip()
+
+        start = text.find("[")
+        if start == -1:
+            return []
+
+        results: list[TranslationLine] = []
+        for i, item in enumerate(self._decode_json_objects(text, start + 1)):
+            if not isinstance(item, dict):
+                continue
+            orig = item.get(
+                "original", original_lines[i] if i < len(original_lines) else ""
+            )
+            results.append(
+                TranslationLine(
+                    original=orig,
+                    translation=item.get("translation", ""),
+                    pronunciation=item.get("pronunciation"),
+                )
+            )
+        return results
+
+    @staticmethod
+    def _decode_json_objects(text: str, pos: int) -> list:
+        """text[pos:]의 JSON 배열 원소를 raw_decode로 하나씩 읽어 완전한 값만 모은다.
+        마지막 원소가 잘려 있으면 그 앞까지만 반환(truncation-safe)."""
+        decoder = json.JSONDecoder()
+        objs: list = []
+        n = len(text)
+        while pos < n:
+            while pos < n and text[pos] in " \t\r\n,":
+                pos += 1
+            if pos >= n or text[pos] == "]":
+                break
+            try:
+                obj, end = decoder.raw_decode(text, pos)
+            except json.JSONDecodeError:
+                break  # 마지막 원소가 잘림 — 여기서 중단
+            objs.append(obj)
+            pos = end
+        return objs
 
     def _payload_extras(self) -> dict:
         """엔진별 추가 페이로드 훅 — 기본은 없음."""

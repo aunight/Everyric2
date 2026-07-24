@@ -66,6 +66,9 @@ class TranslationLineResponse(BaseModel):
     original: str
     translation: str
     pronunciation: str | None = None
+    # NIM 응답 잘림으로 이 라인만 복구하지 못한 경우 True(원문만 채워짐). 확장은 무시해도
+    # 되지만, 부분 실패를 표시하거나 재시도 판단에 쓸 수 있게 결과에 남긴다.
+    failed: bool = False
 
 
 class TranslateResponse(BaseModel):
@@ -144,12 +147,23 @@ def translate_lyrics(request: TranslateRequest):
                 context=context,
             )
 
+        failed = [i for i, line in enumerate(result.lines) if getattr(line, "failed", False)]
+        if failed:
+            # 부분 실패 — 전체 500 대신 실패 라인만 원문으로 반환됐음을 서버 로그에 남긴다
+            logger.warning(
+                "Translation partially failed: %d/%d lines unrecovered (indices %s)",
+                len(failed),
+                len(result.lines),
+                failed,
+            )
+
         return TranslateResponse(
             lines=[
                 TranslationLineResponse(
                     original=line.original,
                     translation=line.translation,
                     pronunciation=line.pronunciation,
+                    failed=getattr(line, "failed", False),
                 )
                 for line in result.lines
             ],
