@@ -331,6 +331,32 @@ class TranslationSettings(BaseSettings):
     )
     target_language: str = Field(default="ko", description="Target language for translation")
     timeout: int = Field(default=120, description="API timeout in seconds")
+    batch_concurrency: int = Field(
+        default=4,
+        description="긴 가사를 나눈 번역 배치를 동시에 요청하는 개수. 배치는 서로 의존이 "
+        "없어(각자 자기 구간만 번역하고 결과를 인덱스 순서로 잇는다) 병렬로 돌려도 결과가 "
+        "같다. 순차 루프일 때 번역 시간이 배치 수에 선형 비례했다 — 실측(2026-07): NIM "
+        "자체는 30줄 1배치 8.3s(140 tok/s)인데 실사용 translate 평균 20.9s·중앙 8.9s·최대 "
+        "118.5s로, 중앙값이 1배치 시간과 거의 같고 긴 곡만 길어졌다(독음 포함이면 배치가 "
+        "60→30줄로 잘게 나뉘어 배치 수가 2배). NIM 동시 요청 실측은 4건·8건 모두 200(429 "
+        "없음)이고 벽시계가 단건과 같아 실제로 병렬 처리된다 — 다만 분당 지속 한도(RPM)는 "
+        "확인되지 않아 기본값을 4로 잡는다. 배치 하나의 소요는 동시성을 올려도 줄지 않으므로 "
+        "그 이상은 이득 대비 429 위험만 커진다. 1이면 스레드를 만들지 않고 기존 순차 루프와 "
+        "동일하게 동작한다(즉시 되돌릴 수 있는 스위치). 1 미만은 1로 취급.",
+    )
+    rate_limit_retries: int = Field(
+        default=3,
+        description="429(rate limit) 응답에 대한 재시도 횟수 상한. 동시 요청이 늘면 미확인 "
+        "RPM 한도에 걸릴 수 있는데, 429는 '조금 뒤엔 되는' 실패라 상한 안에서 기다렸다 다시 "
+        "던진다. 상한을 넘으면 응답을 그대로 돌려줘 기존 실패 경로(API error 예외 → 배치 "
+        "부분 실패 처리)를 탄다. 0이면 재시도 없음.",
+    )
+    rate_limit_backoff_sec: float = Field(
+        default=2.0,
+        description="429 재시도 첫 대기(초). 재시도마다 2배로 늘고(2→4→8), 응답의 Retry-After가 "
+        "더 길면 그 값을 따르며, 어느 쪽이든 회당 30초 상한에서 멈춘다(게이트웨이 타임아웃 "
+        "600s 안에서 끝나야 한다). 대기하는 배치는 다른 배치의 진행을 막지 않는다.",
+    )
     max_tokens: int = Field(
         default=8192,
         description="Max completion tokens for OpenAI-compatible chat endpoints (openai/local/"

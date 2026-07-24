@@ -1,8 +1,12 @@
 import json
 import logging
 import os
+import random
 import re
+import threading
+import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +51,11 @@ _JA_CHAR_RE = re.compile(r"[぀-ヿ㐀-鿿]")
 _ALIGN_STRIP_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 
 _kakasi_reader = None
+# 발음 프롬프트를 만드는 _kana_readings는 번역 배치가 병렬로 돌면서 여러 스레드에서
+# 동시에 불린다. 지연 생성 싱글턴의 생성 경합(사전 중복 로드)과 변환기 내부 상태 공유를
+# 함께 막기 위해 변환 구간 전체를 잠근다 — 라인당 밀리초 수준이라 8초짜리 HTTP 호출
+# 옆에서는 직렬화 비용이 사실상 없다.
+_kakasi_lock = threading.Lock()
 
 # pykakasi가 문맥 없이 오독하거나 훈독이 갈리는 대표 항목 — 단일 확정값 대신 후보를
 # 함께 제시해 모델이 문맥으로 고르게 한다. 실측(pykakasi 2.3):
@@ -74,18 +83,19 @@ def _kana_readings(text: str) -> list[str] | None:
         return None
     global _kakasi_reader
     try:
-        if _kakasi_reader is None:
-            import pykakasi
+        with _kakasi_lock:
+            if _kakasi_reader is None:
+                import pykakasi
 
-            _kakasi_reader = pykakasi.kakasi()
-        readings = []
-        for ln in text.split("\n"):
-            ln = ln.strip()
-            readings.append(
-                "".join(item.get("hira", "") for item in _kakasi_reader.convert(ln))
-                if ln
-                else ""
-            )
+                _kakasi_reader = pykakasi.kakasi()
+            readings = []
+            for ln in text.split("\n"):
+                ln = ln.strip()
+                readings.append(
+                    "".join(item.get("hira", "") for item in _kakasi_reader.convert(ln))
+                    if ln
+                    else ""
+                )
         return readings if any(readings) else None
     except Exception:
         logger.exception("kana reading hints failed; prompting without them")
@@ -112,6 +122,13 @@ _PRON_BATCH_SIZE = 30
 _TEXT_BATCH_THRESHOLD = 120
 _TEXT_BATCH_SIZE = 60
 _MAX_SPLIT_DEPTH = 4
+
+# 429(rate limit) 백오프 상한 — Retry-After가 비상식적으로 크게 와도 한 번의 대기가
+# 게이트웨이 타임아웃(600s) 여유를 갉아먹지 않게 자른다.
+_RATE_LIMIT_MAX_WAIT_SEC = 30.0
+# 동시에 던진 배치들이 같은 순간에 429를 받으면 백오프도 같은 순간에 풀려 그대로 다시
+# 몰린다 — 대기에 이 비율만큼의 무작위 지연을 섞어 재시도를 흩뜨린다.
+_RATE_LIMIT_JITTER = 0.25
 
 # "저품질 배치" 판정 — 응답이 문법적으로 완전한데도 중간 구간의 번역/발음만 빈 값으로
 # 오는 현상(실측: 48줄 중 19~34번이 통째로 빈 값, 잘림 로그는 한 건도 없음)을 잡는다.
@@ -717,6 +734,54 @@ class OpenAICompatibleTranslator(BaseTranslator):
             "Authorization": f"Bearer {self.api_key}",
         }
 
+    @staticmethod
+    def _sleep(seconds: float) -> None:
+        """백오프 대기 — 테스트가 실제로 기다리지 않도록 주입 지점을 분리해 둔다."""
+        time.sleep(seconds)
+
+    @staticmethod
+    def _retry_delay(response, delay: float) -> float:
+        """다음 429 재시도까지의 대기 — Retry-After를 존중하되 상한과 지터를 씌운다."""
+        headers = getattr(response, "headers", None) or {}
+        try:
+            hinted = float(headers.get("Retry-After", ""))
+        except (TypeError, ValueError):
+            hinted = 0.0
+        wait = min(max(delay, hinted), _RATE_LIMIT_MAX_WAIT_SEC)
+        return wait + random.uniform(0.0, wait * _RATE_LIMIT_JITTER)
+
+    def _post_completion(self, payload: dict):
+        """chat/completions POST + 429(rate limit) 지수 백오프 재시도.
+
+        배치를 동시에 던지므로 분당 한도에 걸려 429가 올 수 있다(실측으로 확인된 건 동시
+        8건까지 429 없음 — 지속 RPM 한도는 미확인이다). 429는 '조금 뒤엔 되는' 실패라
+        상한 안에서 기다렸다 다시 던지고, 상한을 넘으면 429 응답을 그대로 돌려줘 기존
+        실패 경로(API error 예외 → 배치 부분 실패 처리)를 타게 한다. 대기하는 동안 다른
+        배치는 자기 스레드에서 계속 진행한다.
+        """
+        retries = max(0, self.settings.rate_limit_retries)
+        delay = max(0.0, self.settings.rate_limit_backoff_sec)
+        for attempt in range(retries + 1):
+            response = requests.post(
+                self.api_url,
+                json=payload,
+                headers=self._headers(),
+                timeout=self.settings.timeout,
+            )
+            if response.status_code != 429 or attempt >= retries:
+                return response
+            wait = self._retry_delay(response, delay)
+            logger.warning(
+                "%sRate limited (429) — retrying in %.1fs (attempt %d/%d)",
+                self._log_prefix(),
+                wait,
+                attempt + 1,
+                retries,
+            )
+            self._sleep(wait)
+            delay *= 2
+        return response
+
     def _request_completion(
         self, prompt: str, *, allow_empty: bool = False
     ) -> tuple[str, str | None]:
@@ -738,12 +803,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
         content = ""
         finish_reason: str | None = None
         for attempt in range(2):
-            response = requests.post(
-                self.api_url,
-                json=payload,
-                headers=self._headers(),
-                timeout=self.settings.timeout,
-            )
+            response = self._post_completion(payload)
 
             if not response.ok:
                 raise RuntimeError(f"API error: {response.status_code} - {response.text[:200]}")
@@ -777,29 +837,108 @@ class OpenAICompatibleTranslator(BaseTranslator):
         include_pron: bool,
     ) -> list[TranslationLine]:
         """긴 입력은 처음부터 배치로 나눠(잘림 예방) 각 배치를 복구 로직으로 처리한 뒤
-        순서대로 이어붙인다. 발음 배치는 라인당 출력이 커서 더 잘게 나눈다."""
+        순서대로 이어붙인다. 발음 배치는 라인당 출력이 커서 더 잘게 나눈다.
+
+        배치끼리는 의존이 없어(각자 자기 구간만 번역한다) 동시에 요청한다 — 순차 루프에서는
+        번역 시간이 배치 수에 선형 비례했다(실측: 30줄 1배치 8.3s, 실사용 평균 20.9s·최대
+        118.5s). 결합은 완료 순서가 아니라 배치 인덱스 순으로만 한다.
+        """
         threshold, size = (
             (_PRON_BATCH_THRESHOLD, _PRON_BATCH_SIZE)
             if include_pron
             else (_TEXT_BATCH_THRESHOLD, _TEXT_BATCH_SIZE)
         )
-        if len(original_lines) > threshold:
-            out: list[TranslationLine] = []
-            for start in range(0, len(original_lines), size):
-                out.extend(
-                    self._translate_batch(
-                        original_lines[start : start + size],
-                        source_lang,
-                        target_lang,
-                        context,
-                        include_pron=include_pron,
-                        depth=0,
-                    )
+        if len(original_lines) <= threshold:
+            return self._translate_batch(
+                original_lines,
+                source_lang,
+                target_lang,
+                context,
+                include_pron=include_pron,
+                depth=0,
+            )
+
+        batches = [
+            original_lines[start : start + size]
+            for start in range(0, len(original_lines), size)
+        ]
+        return [
+            line
+            for batch in self._run_batches(
+                batches, source_lang, target_lang, context, include_pron=include_pron
+            )
+            for line in batch
+        ]
+
+    def _batch_concurrency(self) -> int:
+        """동시에 던질 배치 수 (설정값, 최소 1)."""
+        return max(1, self.settings.batch_concurrency)
+
+    def _run_batches(
+        self,
+        batches: list[list[str]],
+        source_lang: str,
+        target_lang: str,
+        context: str | None,
+        *,
+        include_pron: bool,
+    ) -> list[list[TranslationLine]]:
+        """배치들을 설정된 동시성으로 실행하고 **입력 인덱스 순서**의 결과를 돌려준다.
+
+        결합이 완료 순서를 타면 가사가 통째로 뒤섞이므로 결과는 인덱스로만 되꽂는다
+        (submit 순서대로 future.result()를 기다리면 순서가 자동으로 보장된다).
+
+        한 배치가 예외로 죽어도 나머지 결과는 살린다 — 그 배치의 라인만 원문+failed로
+        마감해 배치 내부의 부분 실패 처리(_failed_line)와 같은 모양이 되게 한다. 다만
+        **모든** 배치가 실패하면 번역이 통째로 빈 채 '성공'으로 저장되는 쪽이 더 나쁘므로
+        첫 예외를 그대로 올려 기존 실패 경로(500)를 탄다. 배치가 하나뿐인 짧은 곡은
+        이 규칙에 따라 예외가 그대로 전파돼 기존 동작과 동일하다.
+        """
+        results: list[list[TranslationLine]] = [[] for _ in batches]
+        failures: list[Exception] = []
+
+        def run(index: int) -> list[TranslationLine]:
+            return self._translate_batch(
+                batches[index],
+                source_lang,
+                target_lang,
+                context,
+                include_pron=include_pron,
+                depth=0,
+            )
+
+        def collect(index: int, produce) -> None:
+            # produce()는 항상 호출 스레드(메인)에서 실행/대기한다 — results·failures를
+            # 건드리는 것도 메인 스레드뿐이라 별도 락이 필요 없다.
+            try:
+                results[index] = produce()
+            except Exception as exc:
+                logger.exception(
+                    "%sTranslation batch %d/%d failed (%d lines) — keeping the other batches",
+                    self._log_prefix(),
+                    index + 1,
+                    len(batches),
+                    len(batches[index]),
                 )
-            return out
-        return self._translate_batch(
-            original_lines, source_lang, target_lang, context, include_pron=include_pron, depth=0
-        )
+                failures.append(exc)
+                results[index] = [self._failed_line(line) for line in batches[index]]
+
+        workers = min(self._batch_concurrency(), len(batches))
+        if workers <= 1:
+            # 동시성 1 — 스레드를 만들지 않고 기존 순차 루프 그대로 돈다
+            for i in range(len(batches)):
+                collect(i, lambda i=i: run(i))
+        else:
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="translate-batch"
+            ) as pool:
+                futures = [pool.submit(run, i) for i in range(len(batches))]
+                for i, future in enumerate(futures):
+                    collect(i, future.result)
+
+        if failures and len(failures) == len(batches):
+            raise failures[0]
+        return results
 
     def _translate_batch(
         self,
