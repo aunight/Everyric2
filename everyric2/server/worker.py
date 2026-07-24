@@ -1114,6 +1114,105 @@ def _full_coverage_words(text: str, word_segments) -> list[dict[str, Any]]:
     return out
 
 
+def _resynth_word_segments(word_segments, start: float, end: float) -> None:
+    """word_segments 시간을 라인 [start,end]에 글자 수 균등 비례로 재합성(제자리, confidence=None).
+
+    붕괴 곡은 라인 내부 CTC 분포(글자 뭉침 등)가 무의미하므로, 왜곡 분포를 선형 리스케일로
+    보존하는 대신 글자 수 균등 비례로 다시 깐다. word 문자열은 그대로라 직렬화의
+    _full_coverage_words 매핑은 동일하게 통과한다.
+    """
+    toks = [w for w in (word_segments or []) if w.word]
+    total = sum(len(w.word) for w in toks)
+    if total == 0 or end <= start:
+        return
+    span = end - start
+    acc = 0
+    for w in toks:
+        w.start = start + span * acc / total
+        acc += len(w.word)
+        w.end = start + span * acc / total
+        w.confidence = None
+
+
+def _resynth_pron_segments(pron_segments, start: float, end: float) -> None:
+    """pron_segments(음절 dict 목록) 시간을 [start,end]에 음절 수 균등 비례로 재합성(제자리)."""
+    n = len(pron_segments or [])
+    if n == 0 or end <= start:
+        return
+    span = end - start
+    for k, s in enumerate(pron_segments):
+        s["start"] = start + span * k / n
+        s["end"] = start + span * (k + 1) / n
+
+
+def _impossible_word_distribution(word_segments, start: float, end: float, max_char_rate: float) -> bool:
+    """라인 내부 word 분포가 물리적으로 불가능한지 — CTC 잔해 판별 (구조 신호).
+
+    붕괴 곡에서는 라인 conf가 위치 신호를 갖지 않으므로(실측 corr(라인 conf,|잔차|)=-0.19)
+    conf 대신 구조로 가른다:
+      ① 글자 뭉침 — 글자들이 라인 폭의 절반도 못 덮으면서 실효 발화 속도가
+         max_char_rate를 넘는다(강제정렬이 글자를 한 구석에 욱여넣은 잔해).
+         라인 자체가 짧은 초고속 랩은 글자가 라인 폭을 다 덮으므로 걸리지 않는다.
+      ② 경계 이탈 — word가 라인 [start,end] 밖을 1초 넘게 가리킨다
+         (경계는 스냅/가드가 잡은 값이라 내부가 밖을 가리키면 잔해).
+    """
+    if max_char_rate <= 0:
+        return False
+    toks = [w for w in (word_segments or []) if w.word]
+    if len(toks) < 4:
+        return False
+    first = min(w.start for w in toks)
+    last = max(w.end for w in toks)
+    if first < start - 1.0 or last > end + 1.0:
+        return True
+    span = end - start
+    if span <= 0:
+        return False
+    width = last - first
+    if width >= span * 0.5:
+        return False
+    n_chars = sum(len(w.word) for w in toks)
+    return width <= 0 or n_chars / width > max_char_rate
+
+
+def _synthesize_collapsed_timing(
+    results, pron_data, fixes, song_conf, threshold, max_char_rate=0.0
+) -> set[int]:
+    """붕괴 곡/누출 라인의 라인 내부(word/pron) 타이밍을 균등 비례 합성으로 교체 (보정 마지막).
+
+    CTC가 그럴듯하게 잡은 라인은 보존하고 잔해만 교체한다. 대상 = 합집합:
+      (a) 곡 avg conf < threshold — 예비 스위치(기본 0=비활성): 전 라인,
+      (b) fixes에 'leak' 라벨(스플라이스/폴백/대량 스냅으로 옮겨진) 라인 —
+          이동된 내부 분포는 더 이상 오디오와 대응하지 않는다,
+      (c) 내부 분포가 물리적으로 불가능한 라인(_impossible_word_distribution,
+          max_char_rate>0일 때).
+    라인 경계 [start,end]는 유지(스냅/가드가 잡아둔 값)하고 내부만 재합성한다. 이미 무효화된
+    (None) pron_segments는 그대로 둔다. 반환: 재합성된 라인 인덱스 집합.
+    """
+    low_conf = threshold > 0 and song_conf is not None and song_conf < threshold
+    targets = {
+        i
+        for i, r in enumerate(results)
+        if low_conf
+        or "leak" in fixes.get(i, [])
+        or _impossible_word_distribution(
+            r.word_segments, r.start_time, r.end_time, max_char_rate
+        )
+    }
+    for i in targets:
+        r = results[i]
+        # 라인 conf가 word 기하평균 백필에 의존하면 재합성(word conf=None) 후 사라진다 —
+        # 직렬화 백필과 동일하게 재합성 전에 라인 conf를 확정해 quality_score를 보존한다.
+        if r.confidence is None and r.word_segments:
+            r.confidence = _geomean([w.confidence for w in r.word_segments])
+        _resynth_word_segments(r.word_segments, r.start_time, r.end_time)
+        if pron_data:
+            pd = pron_data.get(i)
+            if pd and pd.get("pron_segments"):
+                _resynth_pron_segments(pd["pron_segments"], r.start_time, r.end_time)
+    return targets
+
+
 def _star_swallowed_vocal(star_spans, vad_regions) -> float:
     """단일 star span이 실제 VAD 발성 구간을 삼킨 최대 겹침 길이(초).
 
@@ -1725,6 +1824,22 @@ def _run_alignment(
                 logger.info(f"Timing post-process: {pp.stats}")
             except Exception:
                 logger.exception("VAD timing post-process failed; using raw alignment")
+
+        # 보정 마지막(스냅·클램프 이후, 직렬화 전): 붕괴 곡/누출 라인의 라인 내부 word/pron
+        # 타이밍을 균등 비례로 재합성한다. 라인 경계는 유지하고 무의미한 CTC 내부 분포만 폐기.
+        # 멜로디 노트는 라인 스팬 기반(word/pron 무소비)이라 영향 없음.
+        synth_lines = _synthesize_collapsed_timing(
+            results,
+            pron_data,
+            fixes,
+            _avg_line_confidence(results),
+            settings.alignment.synth_all_lines_conf,
+            settings.alignment.mass_leak_min_char_rate,
+        )
+        if synth_lines:
+            logger.info(
+                f"Re-synthesized uniform intra-line timing on {len(synth_lines)} line(s)"
+            )
 
         timestamps = []
         for i, r in enumerate(results):

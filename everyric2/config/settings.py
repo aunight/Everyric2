@@ -257,6 +257,20 @@ class AlignmentSettings(BaseSettings):
         "margin preserves the pronunciation alignment's syllable value unless ja is decisively better.",
     )
 
+    synth_all_lines_conf: float = Field(
+        default=0.0,
+        description="OPT-IN whole-song synth floor (default 0 = disabled). The DEFAULT intra-line "
+        "re-synthesis is PER-LINE and structural: only lines the guard moved (a 'leak' fix label) or "
+        "lines whose word distribution is physically impossible (chars crammed faster than "
+        "mass_leak_min_char_rate within their span, or word spans falling outside the line bounds) "
+        "get uniformly re-synthesized — CTC's good lines are preserved. Song-level confidence is NOT "
+        "used for selection (熱異常: corr(line conf, |residual|) = -0.19 — conf has no discriminative "
+        "power on collapsed songs). This field only enables an additional whole-song fallback: when "
+        ">0 and the song's avg confidence is below it, EVERY line is re-synthesized regardless of the "
+        "structural signals. Left at 0 by default because it discards accurate CTC timing on songs "
+        "like 消失 (quality 0.00106) whose sung lines are ±0.5s correct.",
+    )
+
 
 class TranslationSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EVERYRIC_TRANSLATE_")
