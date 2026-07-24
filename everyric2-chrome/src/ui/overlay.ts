@@ -297,19 +297,17 @@ export class LyricsOverlay {
           },
         },
       });
-      if (line.words && line.words.length > 0) {
-        appendKaraokeSpans(el, line, word => {
-          // 신뢰도 등급 클래스 — .ey-show-conf(디버그 모드)에서만 색이 입혀진다.
-          // 값은 CTC 프레임 로그확률의 기하평균(0~1) — 절대값이 작아 로그 스케일로 버킷:
-          // <1e-4(로그 -9 이하)=낮음, <2e-2(로그 -4 이하)=중간
-          const conf = word.confidence;
-          // 버킷 색은 레인(pip.ts confBucketColor)과 동일: 빨강<1e-4, 노랑<2e-2, 초록=양호
-          const confClass = conf == null ? '' : conf < 1e-4 ? ' ey-conf-low' : conf < 2e-2 ? ' ey-conf-mid' : ' ey-conf-ok';
-          return h('span', { className: `ey-word${confClass}`, text: word.word, attrs: { 'data-start': String(word.start) } });
-        });
-      } else {
-        el.textContent = line.text;
-      }
+      // words가 없어도 호출 — appendKaraokeSpans가 음절 타이밍/라인 구간 비례
+      // 배분으로 폴백해, 라인이 한 번에 통째로 켜지는 표시를 피한다
+      appendKaraokeSpans(el, line, word => {
+        // 신뢰도 등급 클래스 — .ey-show-conf(디버그 모드)에서만 색이 입혀진다.
+        // 값은 CTC 프레임 로그확률의 기하평균(0~1) — 절대값이 작아 로그 스케일로 버킷:
+        // <1e-4(로그 -9 이하)=낮음, <2e-2(로그 -4 이하)=중간
+        const conf = word.confidence;
+        // 버킷 색은 레인(pip.ts confBucketColor)과 동일: 빨강<1e-4, 노랑<2e-2, 초록=양호
+        const confClass = conf == null ? '' : conf < 1e-4 ? ' ey-conf-low' : conf < 2e-2 ? ' ey-conf-mid' : ' ey-conf-ok';
+        return h('span', { className: `ey-word${confClass}`, text: word.word, attrs: { 'data-start': String(word.start) } });
+      });
       if (line.pronunciation) {
         // 음절 타이밍(pronSegments)이 있으면 단어처럼 부른 만큼 색이 차오르게 스팬으로
         // (사이 텍스트는 appendTimedSpans가 인접 span에 끼워 넣어 흰 글자 없이 칠해진다)

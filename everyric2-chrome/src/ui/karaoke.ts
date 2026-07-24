@@ -60,8 +60,38 @@ export function appendKaraokeSpans(
   makeWordEl: (word: WordSegment) => HTMLElement,
 ): void {
   const mapped = appendTimedSpans(el, line.text, line.words ?? [], w => w.word, makeWordEl);
-  if (mapped === 0) {
-    // 아무 토큰도 매핑 못 함 — 본문만 표시 (카라오케 필 없이)
-    el.replaceChildren(line.text);
+  if (mapped > 0) return;
+  // words가 없거나 표기 차이로 전 토큰 매핑 실패 — 라인이 통째로 켜지는 대신
+  // 음절 타이밍(pronSegments)이나 라인 구간으로 글자에 시간을 비례 배분한다
+  const synth = synthesizeCharTimings(line);
+  if (synth) {
+    el.replaceChildren();
+    for (const s of synth) el.append(makeWordEl(s));
+    return;
   }
+  el.replaceChildren(line.text);
+}
+
+/** words 매핑이 전멸한 라인용 합성 글자 타이밍 — 독음 음절 span(정확)이 있으면
+ * 그 구간을, 없으면 라인 [time, endTime]을 글자 수로 비례 분할한다 */
+function synthesizeCharTimings(line: LyricLine): WordSegment[] | null {
+  const chars = [...line.text];
+  if (chars.length === 0) return null;
+  const segs = line.pronSegments;
+  let t0: number | null = null;
+  let t1: number | null = null;
+  if (segs && segs.length > 0) {
+    t0 = segs[0].start;
+    t1 = segs[segs.length - 1].end;
+  } else if (line.time != null && line.endTime != null) {
+    t0 = line.time;
+    t1 = line.endTime;
+  }
+  if (t0 == null || t1 == null || !(t1 > t0)) return null;
+  const span = t1 - t0;
+  return chars.map((ch, i) => ({
+    word: ch,
+    start: t0 + (span * i) / chars.length,
+    end: t0 + (span * (i + 1)) / chars.length,
+  }));
 }

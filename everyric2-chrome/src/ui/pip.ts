@@ -1465,15 +1465,13 @@ export class PipController {
       this.currentEl.textContent = '♪';
       return;
     }
-    if (current.words && current.words.length > 0) {
-      appendKaraokeSpans(this.currentEl, current, word => {
-        const el = h('span', { className: 'ey-word', text: word.word });
-        this.wordEls.push({ start: word.start, el });
-        return el;
-      });
-    } else {
-      this.currentEl.textContent = current.text;
-    }
+    // words가 없어도 호출한다 — appendKaraokeSpans가 음절 타이밍/라인 구간으로
+    // 비례 배분 폴백을 만들어 라인이 통째로 켜지는 것을 피한다
+    appendKaraokeSpans(this.currentEl, current, word => {
+      const el = h('span', { className: 'ey-word', text: word.word });
+      this.wordEls.push({ start: word.start, el });
+      return el;
+    });
   }
 }
 
