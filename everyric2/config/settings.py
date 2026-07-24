@@ -215,6 +215,48 @@ class AlignmentSettings(BaseSettings):
         "when ja and ko disagree grossly.",
     )
 
+    mass_leak_min_gap_sec: float = Field(
+        default=12.0,
+        description="Interlude length (seconds of VAD silence) that arms the ja-free mass-leak "
+        "re-spacing snap. On synthetic vocals (e.g. 足立レイ) the CTC posterior is a uniform floor "
+        "(熱異常: 92.5% of lines conf<0.001) so BOTH ko and ja alignments lose all acoustic anchors "
+        "and a whole reprise block skips the interlude, collapsing forward (熱異常: reprise leads "
+        "idx51-52 crammed at 129.9/130.7s before the 32.7s silence 132.8->165.5, rest compressed, "
+        "median -14.75s). The ja cross-check cannot help (ja is equally collapsed), so the snap "
+        "anchors on the interlude silence — a hard acoustic fact independent of the posterior — and "
+        "only for gaps this long (a short break cannot hide a reprise). Set to 0 to disable.",
+    )
+
+    mass_leak_min_char_rate: float = Field(
+        default=11.0,
+        description="Impossible-cram gate for the mass-leak snap (characters per second). To tell a "
+        "genuinely leaked reprise crammed before an interlude from a legitimately fast pre-break "
+        "section, the snap requires at least one line in the pre-interlude cluster to sing faster "
+        "than this — a rate no human sung/rapped line reaches (熱異常 idx51: 11 chars in 0.8s = "
+        "~13.8/s), which only happens when forced alignment squeezed a full lyric line into a "
+        "near-zero slot. Below this the cluster is treated as real fast singing and left untouched.",
+    )
+
+    dual_align_conf: float = Field(
+        default=0.002,
+        description="Confidence floor for the dual-alignment safety net (0 disables). Once the "
+        "pronunciation (ko) path is chosen it is kept even at very low quality, so a synthetic "
+        "vocal whose CTC posterior is a uniform floor never gets a second opinion. When the ko "
+        "alignment's song-level average line confidence falls below this, the original-text (ja) "
+        "alignment is also run and whichever scores higher is adopted. Measured: 熱異常 original ko "
+        "quality 0.0005 vs its cover 0.0076 — 0.002 sits between, so only genuinely floor-confidence "
+        "songs pay for the extra alignment.",
+    )
+
+    dual_align_min_ratio: float = Field(
+        default=1.5,
+        description="Margin the original-text (ja) alignment must beat the ko alignment by, in "
+        "average line confidence, before the dual-align safety net switches to it (ja_conf >= "
+        "ko_conf * this). A plain higher-is-better comparison would flip on noise when both scores "
+        "are near the floor (熱異常: ja is equally collapsed, so it must NOT win); requiring a clear "
+        "margin preserves the pronunciation alignment's syllable value unless ja is decisively better.",
+    )
+
 
 class TranslationSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EVERYRIC_TRANSLATE_")

@@ -911,6 +911,110 @@ def _snap_silence_undershoot(results, vad_result, clamped: set[int]) -> None:
         clamped.add(i)
 
 
+def _snap_post_interlude_leak(
+    results,
+    vad_result,
+    clamped: set[int],
+    min_gap_sec: float,
+    min_char_rate: float,
+    max_cluster_spacing_sec: float = 1.5,
+) -> None:
+    """긴 간주 앞에 붕괴·밀집한 리프라이즈 블록을 간주 이후 발성에 재배치한다 (ja-free).
+
+    합성보컬은 CTC posterior가 균일 바닥이라 음향 앵커가 전멸해, 긴 간주 뒤 리프라이즈
+    블록이 간주를 통째로 건너뛰어 앞으로 붕괴한다 (熱異常 실측: 32.7s 간주 132.8→165.5
+    직전에 리프라이즈 선두 idx51-52가 129.9/130.7로 크램, 이후 블록은 gap_end엔 닿았으나
+    압축돼 중앙값 -14.75s). ja 대조(_leaked_runs)는 ja도 같이 붕괴해 무력하므로, 간주(무음)
+    라는 하드 음향 사실에 앵커한다 — 유일하게 posterior에 오염되지 않은 신호다.
+
+    각 긴 간주 [gs,ge]마다:
+      1. gap_end 직후 첫 발성에 정착한 라인 k를 찾고, 그 앞에서 gs 직전에 촘촘히(간격
+         <max_cluster_spacing) 몰린 크램 클러스터를 역추적한다(정상 마지막 라인은 정상
+         간격이라 자동 제외).
+      2. 정상적인 '간주 앞 빠른 구간'과 '누출 크램'을 가르기 위해, 클러스터 중 한 줄이라도
+         사람이 낼 수 없는 char rate(글자수/지속, >min_char_rate)로 불려야 한다 — 강제정렬이
+         풀 가사를 0초 슬롯에 욱여넣었다는 신호. 아니면 실제 빠른 구간으로 보고 건드리지 않는다.
+      3. 클러스터부터 다음 간주(없으면 곡 끝) 전까지의 블록을 간주 이후 발성 리전들에
+         (리전 길이 비례로) 재배치한다 — 발성이 있는 곳에 라인을 몰아준다.
+
+    정상적으로 간주를 대기한 싱크(커버: gs 직전 라인 1개, 정상 간격)는 클러스터가 비어 무변경.
+    """
+    if min_gap_sec <= 0:
+        return
+    regions = sorted(vad_result.regions, key=lambda reg: reg.start)
+    if len(regions) < 2:
+        return
+    n = len(results)
+    interludes = [
+        (a.end, b.start) for a, b in zip(regions, regions[1:]) if b.start - a.end >= min_gap_sec
+    ]
+    if not interludes:
+        return
+    for idx, (gs, ge) in enumerate(interludes):
+        seg_end = interludes[idx + 1][0] if idx + 1 < len(interludes) else float("inf")
+        k = next((i for i in range(n) if results[i].start_time >= ge - 2.0), None)
+        if not k:  # None 또는 0 — 간주 앞 라인이 없음
+            continue
+        cluster: list[int] = []
+        j = k - 1
+        while (
+            j >= 1
+            and results[j].start_time < gs
+            and results[j].start_time - results[j - 1].start_time < max_cluster_spacing_sec
+        ):
+            cluster.append(j)
+            j -= 1
+        if not cluster:
+            continue
+        first_leaked = min(cluster)
+        if results[first_leaked].start_time > ge - min_gap_sec:
+            continue  # 뒤로 크게 밀리지 않음 — 대량 누출 아님
+        # 불가능한 char rate 게이트 (정상 빠른 구간 오탐 방지)
+        def _char_rate(i: int) -> float:
+            dur = max(0.1, results[i].end_time - results[i].start_time)
+            return len(re.sub(r"\s", "", results[i].text or "")) / dur
+
+        if max(_char_rate(i) for i in cluster) < min_char_rate:
+            continue
+        block_last = k
+        while block_last + 1 < n and results[block_last + 1].start_time < seg_end:
+            block_last += 1
+        post_regions = [
+            (reg.start, reg.end) for reg in regions if reg.start >= ge - 0.5 and reg.start < seg_end
+        ]
+        block = list(range(first_leaked, block_last + 1))
+        m = len(block)
+        vocal = sum(e - s for s, e in post_regions)
+        if not post_regions or m < 2 or vocal <= 0:
+            continue
+
+        def _vocal_time(frac: float) -> float:
+            target = frac * vocal
+            acc = 0.0
+            for s, e in post_regions:
+                d = e - s
+                if acc + d >= target:
+                    return s + (target - acc)
+                acc += d
+            return post_regions[-1][1]
+
+        for pos, i in enumerate(block):
+            new_start = _vocal_time(pos / m)
+            new_end = _vocal_time((pos + 1) / m)
+            if new_end <= new_start:
+                new_end = new_start + 0.1
+            results[i].start_time = new_start
+            results[i].end_time = new_end
+            if results[i].word_segments:
+                _shift_word_segments(results[i].word_segments, new_start, new_end)
+            clamped.add(i)
+        logger.warning(
+            f"Mass post-interlude leak at [{gs:.1f}-{ge:.1f}]s: re-spaced {m} lines "
+            f"(idx {first_leaked}..{block_last}) across {vocal:.1f}s of post-interlude vocal; "
+            f"leaked cluster {sorted(cluster)}"
+        )
+
+
 def _shift_word_segments(word_segments, new_start: float, new_end: float) -> None:
     """word_segments를 [new_start, new_end] 구간으로 선형 리스케일(제자리)."""
     if not word_segments:
@@ -936,6 +1040,34 @@ def _geomean(values: list[float]) -> float | None:
     if not xs:
         return None
     return math.exp(sum(math.log(v) for v in xs) / len(xs))
+
+
+def _avg_line_confidence(results) -> float | None:
+    """곡 단위 평균 라인 신뢰도 (quality_score와 동일 규칙: 라인 conf 또는 글자 conf 기하평균)."""
+    vals: list[float] = []
+    for r in results:
+        c = r.confidence
+        if c is None and r.word_segments:
+            c = _geomean([w.confidence for w in r.word_segments])
+        if c is not None:
+            vals.append(c)
+    return sum(vals) / len(vals) if vals else None
+
+
+def _dual_align_should_run(ko_conf: float | None, threshold: float) -> bool:
+    """ko 정렬 평균 신뢰도가 임계 미만이면 True — ja 교차정렬을 돌릴지의 비용 게이트.
+
+    threshold<=0(비활성)이거나 ko_conf가 임계 이상이면 두 번째 정렬을 아예 돌리지 않는다.
+    """
+    return threshold > 0 and ko_conf is not None and ko_conf < threshold
+
+
+def _dual_align_prefers_original(ko_conf: float, ja_conf: float | None, min_ratio: float) -> bool:
+    """ja 평균 신뢰도가 ko의 min_ratio배 이상이면 True(원문 채택). 바닥 근처 노이즈로
+
+    뒤집히지 않게 명확한 마진을 요구한다 (熱異常: ja도 같이 붕괴 → 채택 안 됨).
+    """
+    return ja_conf is not None and ja_conf >= ko_conf * min_ratio
 
 
 def _star_swallowed_vocal(star_spans, vad_regions) -> float:
@@ -1296,12 +1428,49 @@ def _run_alignment(
                 logger.info(f"Pronunciation coverage {coverage:.2f} < 0.9; using original text")
             results = engine.align(align_audio, lyric_lines, language=language or "auto")
 
-        # 독음 정렬의 star span (아래 VAD 확보 후 '발성 삼킴' 게이트에 쓴다) — 재정렬 전에 포착
+        # 독음 정렬의 star span (아래 VAD 확보 후 '발성 삼킴' 게이트에 쓴다) — 이중정렬/가드
+        # ja가 engine._last_star_spans를 덮으므로 어떤 재정렬보다 먼저 ko 정렬 직후 포착한다.
         pron_star_spans = (
             list(getattr(engine, "_last_star_spans", []))
             if alignment_text == "pronunciation"
             else []
         )
+
+        # 저신뢰 이중정렬 안전망: 커버리지≥0.9면 ko 정렬은 품질과 무관하게 유지되는데,
+        # 합성보컬은 posterior가 균일 바닥이라 ko가 성공해도 곡 전체가 저품질일 수 있다.
+        # ko 평균 신뢰도가 임계 미만이면 ja 원문 정렬도 돌려 명확히 나은 쪽을 채택한다
+        # (熱異常: ja도 같이 붕괴 → margin 미달로 ko 유지; 발음 정렬만 나쁜 곡은 ja 채택).
+        # ja_alignment: 여기서 돌린 ja 결과를 아래 역누출 가드가 재사용한다(중복 정렬 회피).
+        ja_alignment = None
+        if alignment_text == "pronunciation":
+            ko_conf = _avg_line_confidence(results)
+            if _dual_align_should_run(ko_conf, settings.alignment.dual_align_conf):
+                try:
+                    ja_alignment = engine.align(
+                        align_audio, lyric_lines, language=language or "auto"
+                    )
+                    ja_conf = _avg_line_confidence(ja_alignment)
+                    if _dual_align_prefers_original(
+                        ko_conf, ja_conf, settings.alignment.dual_align_min_ratio
+                    ):
+                        logger.warning(
+                            f"Low-confidence pronunciation alignment (avg conf {ko_conf:.5f} < "
+                            f"{settings.alignment.dual_align_conf}); original-text alignment scores "
+                            f"{ja_conf:.5f} (>= {settings.alignment.dual_align_min_ratio}x) — "
+                            f"adopting original text"
+                        )
+                        results = ja_alignment
+                        alignment_text = "original"
+                        pron_data = None
+                    else:
+                        ja_repr = f"{ja_conf:.5f}" if ja_conf is not None else "n/a"
+                        logger.info(
+                            f"Low-confidence pronunciation alignment (avg conf {ko_conf:.5f}) but "
+                            f"original text scores {ja_repr} "
+                            f"(< {settings.alignment.dual_align_min_ratio}x) — keeping pronunciation"
+                        )
+                except Exception:
+                    logger.exception("Dual-align cross-check failed; keeping pronunciation alignment")
 
         # VAD로 라인 경계 보정 — 가사에 없는 추임새/간주로 늘어진 라인을 실제 발성 구간으로
         report("타이밍 보정")
@@ -1341,8 +1510,11 @@ def _run_alignment(
                         or _straddles_interlude(results, settings.alignment.interlude_min_gap_sec)
                     )
                     if run_cross_check:
-                        ja_candidate = engine.align(
-                            align_audio, lyric_lines, language=language or "auto"
+                        # 이중정렬 안전망이 이미 돌린 ja가 있으면 재사용 (같은 audio/lyrics)
+                        ja_candidate = (
+                            ja_alignment
+                            if ja_alignment is not None
+                            else engine.align(align_audio, lyric_lines, language=language or "auto")
                         )
                         # 1) 역방향 누출(모든 간주): ja가 간주 이후에 두는데 ko가 앞으로 뺀
                         #    라인들의 변위 런 중 크게(>= leak_min) 밀린 것만 골라 그 라인들의
@@ -1458,6 +1630,15 @@ def _run_alignment(
                 if alignment_text == "pronunciation":
                     snap_before = [(r.start_time, r.end_time) for r in pp.results]
                     _snap_silence_undershoot(pp.results, vad_result, snapped)
+                    # 합성보컬 대량 역누출(긴 간주 앞 리프라이즈 붕괴)은 ja 대조로 못 잡으므로
+                    # 간주 무음에 앵커해 재배치 — 무음 언더슛 스냅 다음, 클램프 이전에 돌린다.
+                    _snap_post_interlude_leak(
+                        pp.results,
+                        vad_result,
+                        snapped,
+                        settings.alignment.mass_leak_min_gap_sec,
+                        settings.alignment.mass_leak_min_char_rate,
+                    )
                     _diff_fixes(fixes, "snap", snap_before, pp.results)
                 results, clamped_lines = _clamp_stretched_lines(pp.results, vad_result, fixes=fixes)
                 clamped_lines |= snapped
