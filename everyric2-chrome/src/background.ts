@@ -1,5 +1,5 @@
 import { fetchFromLrclib, getLrclibById, searchTracksLrclib } from './lib/lrclib';
-import { cancelJob, checkHealth, fetchCaptionLines, generateSync, getJobStatus, linkSync, listCaptionTracks, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type ServerConfig } from './lib/everyric-api';
+import { cancelJob, checkHealth, fetchCaptionLines, generateSync, generateSyncFromCaption, getJobStatus, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type ServerConfig } from './lib/everyric-api';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
 import { getSettings } from './lib/settings';
@@ -159,19 +159,22 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     case 'VOCARO_PAGE':
       return { data: await fetchSongPage(message.payload.slug) };
 
-    // 유튜브 자막은 서버(yt-dlp) 경유 — 워치 페이지에서 긁은 timedtext URL은
-    // POT(proof-of-origin) 강제로 브라우저 플레이어 밖에선 빈 응답이 온다 (실측)
-    case 'YT_CAPTION_TRACKS': {
-      const res = await listCaptionTracks(await getServerConfig(), message.payload.videoId);
-      return res ? { data: res.tracks } : { error: 'caption_tracks_failed' };
-    }
-
+    // 자막 **본문**은 서버(yt-dlp) 경유 — 워치 페이지에서 긁은 timedtext URL은
+    // POT(proof-of-origin) 강제로 브라우저 플레이어 밖에선 빈 응답이 온다 (실측).
+    // 트랙 **목록**은 content가 워치 페이지에서 직접 읽으므로 서버를 부르지 않는다.
     case 'YT_CAPTION_TEXT': {
       const res = await fetchCaptionLines(
         await getServerConfig(),
         message.payload.videoId, message.payload.lang, message.payload.auto,
       );
       return res ? { data: res.lines } : { error: 'caption_text_failed' };
+    }
+
+    // 자막을 보고 있다가 누른 '싱크 생성' — 서버가 자막을 직접 읽는 전용 경로.
+    // 아직 배포되지 않은 서버면 null이 오고, content가 기존 생성 경로로 폴백한다.
+    case 'GENERATE_FROM_CAPTION': {
+      const res = await generateSyncFromCaption(await getServerConfig(), message.payload.videoId);
+      return res ? { data: res } : { error: 'generate_from_caption_unavailable' };
     }
 
     default:

@@ -89,6 +89,54 @@ class SyncRepository:
         )
         return list(result.scalars().all())
 
+    async def list_titled(self, limit: int = 500) -> list[SyncResult]:
+        """title이 채워진 싱크를 영상별 1건(최신)으로 — 링크 후보 전수 스캔용.
+
+        created_at이 초 단위 문자열이라 같은 초에 만들어진 동일 영상 행이 둘 다 걸릴 수
+        있어 파이썬에서 한 번 더 dedupe한다."""
+        subquery = (
+            select(SyncResult.video_id, func.max(SyncResult.created_at).label("max_created"))
+            .where(SyncResult.title.is_not(None))
+            .group_by(SyncResult.video_id)
+            .subquery()
+        )
+        result = await self.session.execute(
+            select(SyncResult)
+            .join(
+                subquery,
+                (SyncResult.video_id == subquery.c.video_id)
+                & (SyncResult.created_at == subquery.c.max_created),
+            )
+            .where(SyncResult.title.is_not(None))
+            .order_by(SyncResult.created_at.desc())
+            .limit(limit * 2)
+        )
+        seen: set[str] = set()
+        rows: list[SyncResult] = []
+        for row in result.scalars().all():
+            if row.video_id in seen:
+                continue
+            seen.add(row.video_id)
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+        return rows
+
+    async def set_title_if_missing(
+        self, sync_result: SyncResult, title: str | None, artist: str | None = None
+    ) -> bool:
+        """title이 비어 있을 때만 조용히 채운다 (기존 값은 절대 덮어쓰지 않는다).
+
+        기회적 백필용 — 조회 요청이 제목을 실어 보내면 재생성 없이 기존 코퍼스에 제목이
+        쌓인다. 채웠으면 True."""
+        if not title or sync_result.title:
+            return False
+        sync_result.title = title.strip()[:256]
+        if artist and not sync_result.artist:
+            sync_result.artist = artist.strip()[:128]
+        await self.session.flush()
+        return True
+
     async def delete_by_video(self, video_id: str) -> int:
         """이 영상의 모든 싱크 삭제(초기화) — 잘못 붙여넣은 가사 등에서 완전히 새로 시작.
         삭제된 행 수를 반환."""
@@ -107,6 +155,8 @@ class SyncRepository:
         quality_score: float | None = None,
         audio_hash: str | None = None,
         extra: dict[str, Any] | None = None,
+        title: str | None = None,
+        artist: str | None = None,
     ) -> SyncResult:
         sync_result = SyncResult(
             video_id=video_id,
@@ -117,6 +167,8 @@ class SyncRepository:
             language=language,
             engine=engine,
             quality_score=quality_score,
+            title=(title.strip()[:256] if title else None),
+            artist=(artist.strip()[:128] if artist else None),
         )
         self.session.add(sync_result)
         await self.session.flush()
@@ -288,17 +340,30 @@ class SyncLinkRepository:
         return result.rowcount or 0
 
     async def upsert(
-        self, video_id: str, source_video_id: str, offset_sec: float, rate: float = 1.0
+        self,
+        video_id: str,
+        source_video_id: str,
+        offset_sec: float,
+        rate: float = 1.0,
+        verified: bool = False,
     ) -> SyncLink:
+        """verified=True는 반주 상관 검증(link-jobs)을 통과한 자동 링크만 쓴다 —
+        수동 링크 API는 검증 없이 오프셋을 박으므로 항상 False로 남는다."""
         existing = await self.get(video_id)
         if existing:
             existing.source_video_id = source_video_id
             existing.offset_sec = offset_sec
+            # 신규 삽입 시 rate가 누락돼 배속 링크가 1.0으로 저장되던 버그를 함께 바로잡는다
             existing.rate = rate
+            existing.verified = verified
             await self.session.flush()
             return existing
         link = SyncLink(
-            video_id=video_id, source_video_id=source_video_id, offset_sec=offset_sec
+            video_id=video_id,
+            source_video_id=source_video_id,
+            offset_sec=offset_sec,
+            rate=rate,
+            verified=verified,
         )
         self.session.add(link)
         await self.session.flush()
@@ -336,6 +401,31 @@ class LinkJobRepository:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def get_recent_attempt(
+        self, video_id: str, source_video_id: str, days: int
+    ) -> LinkJob | None:
+        """최근 N일 안에 끝난(done/failed) 같은 쌍의 잡 — 자동 재제출 쿨다운용.
+
+        get_active_pair는 진행 중(queued/processing) 중복만 막는다. 그래서 완료·실패한
+        쌍은 사용자가 그 영상을 열 때마다 다시 제출돼 GPU를 반복해 태울 수 있다 (온디맨드
+        자동 제출 경로가 생기며 실제 남용 경로가 됐다). 이력이 있으면 그 잡을 돌려준다.
+        days<=0이면 쿨다운 비활성으로 보고 항상 None."""
+        if days <= 0:
+            return None
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        result = await self.session.execute(
+            select(LinkJob)
+            .where(
+                LinkJob.video_id == video_id,
+                LinkJob.source_video_id == source_video_id,
+                LinkJob.status.in_(["done", "failed"]),
+                LinkJob.created_at >= since,
+            )
+            .order_by(LinkJob.created_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
 
     async def get_oldest_queued(self) -> LinkJob | None:
         """가장 오래 대기(queued)한 링크 잡 — 워커 claim이 sync 잡 다음으로 FIFO 소비한다."""

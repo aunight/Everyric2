@@ -23,6 +23,16 @@ def _line(text: str, start: float, end: float) -> SyncResult:
     return SyncResult(text=text, start_time=start, end_time=end)
 
 
+def _wline(text: str, start: float, end: float, w0: float, w1: float) -> SyncResult:
+    """글자 스팬이 [w0,w1]에 균등하게 깔린 라인 (라인 경계는 [start,end])."""
+    step = (w1 - w0) / len(text)
+    ws = [
+        WordSegment(word=c, start=w0 + i * step, end=w0 + (i + 1) * step, confidence=0.01)
+        for i, c in enumerate(text)
+    ]
+    return SyncResult(text=text, start_time=start, end_time=end, word_segments=ws)
+
+
 def _vad(*spans: tuple[float, float]) -> VADResult:
     regions = [VocalRegion(start=s, end=e, energy=0.1) for s, e in spans]
     total = max((e for _, e in spans), default=0.0)
@@ -109,6 +119,54 @@ def test_moderate_repeat_within_limit_is_not_clamped():
     assert results[2].end_time == pytest.approx(7.5)
 
 
+# --- 규칙 1b: 늘어난 라인 클램프 — 라인 정체는 '글자 질량 최대' 리전 ------------
+
+
+def test_stretched_clamp_keeps_end_when_body_is_in_last_region():
+    # OHcNQHbWrFY idx21「あなたはどうして怖くないの」재현: 라인 81.34→119.21이 간주를 덮고
+    # 실제 발성(글자 질량)은 마지막 리전(114.5~116.97)에 있다. 첫 리전(간주 초입 잔향)을
+    # 라인 정체로 가정하면 맞는 끝(정답 116.97에 근접한 119.21)을 버려 -35.69s가 된다.
+    r = _wline("あなたはどうして怖くないの", 81.34, 119.21, 114.5, 116.97)
+    vad = _vad((81.0, 83.2), (114.5, 116.97))
+    results, clamped = _clamp_stretched_lines([r], vad)
+
+    assert clamped == {0}
+    assert results[0].end_time == pytest.approx(117.27)  # 116.97 + 0.3 (잔향 리전 83.5가 아님)
+
+
+def test_stretched_clamp_uses_first_region_when_body_is_there():
+    # 반대 방향 보존: 글자 질량이 첫 리전에 있으면 예전과 동일하게 첫 리전 끝으로 클램프
+    r = _wline("あいうえお", 10.0, 30.0, 10.2, 12.0)
+    vad = _vad((10.0, 12.0), (26.0, 27.0))
+    results, clamped = _clamp_stretched_lines([r], vad)
+
+    assert clamped == {0}
+    assert results[0].end_time == pytest.approx(12.3)  # 12.0 + 0.3
+
+
+def test_stretched_clamp_body_region_survives_zero_length_word_spans():
+    # CTC 잔해는 글자 스팬이 길이 0으로 무너진다 — 겹침 길이로는 질량이 전부 0이라
+    # 중점 기준으로 세야 뒤쪽 리전을 정체로 찾는다
+    ws = [WordSegment(word=c, start=115.5, end=115.5, confidence=0.001) for c in "あいうえ"]
+    r = SyncResult(text="あいうえ", start_time=81.0, end_time=119.0, word_segments=ws)
+    vad = _vad((81.0, 83.0), (114.5, 116.9))
+    results, clamped = _clamp_stretched_lines([r], vad)
+
+    assert clamped == {0}
+    assert results[0].end_time == pytest.approx(117.2)  # 116.9 + 0.3
+
+
+def test_stretched_clamp_falls_back_to_first_region_without_word_mass():
+    # 글자가 어느 리전에도 안 떨어지면(전부 무음 위) 질량을 못 재므로 첫 리전 폴백
+    ws = [WordSegment(word=c, start=90.0, end=90.0, confidence=0.001) for c in "あいうえ"]
+    r = SyncResult(text="あいうえ", start_time=81.0, end_time=119.0, word_segments=ws)
+    vad = _vad((81.0, 83.0), (114.5, 116.9))
+    results, clamped = _clamp_stretched_lines([r], vad)
+
+    assert clamped == {0}
+    assert results[0].end_time == pytest.approx(83.3)  # 83.0 + 0.3
+
+
 # --- 규칙 2: 간주 후 시작 앵커 당기기 --------------------------------------
 
 
@@ -187,6 +245,53 @@ def test_pull_skipped_when_region_not_early_enough():
     _pull_post_interlude_starts(results, vad, clamped)
     assert clamped == set()
     assert results[1].start_time == pytest.approx(20.0)
+
+
+def test_pull_skipped_when_first_char_sits_on_vocal_onset():
+    # G5hScSFkib4 idx6/idx27 재현: raw 시작이 이미 정확(+0.37/+0.27)한데 앞선 리전 체인으로
+    # -3.30s/-6.91s 끌려갔다. 첫 글자가 실제 발성 온셋 위(±0.5s)면 당기지 않는다.
+    results = [
+        _line("앞", 0.0, 5.0),
+        _wline("あいうえ", 20.0, 24.0, 20.0, 23.6),  # 첫 글자가 리전 온셋 20.0에 정확히 얹힘
+    ]
+    vad = _vad((2.0, 4.0), (16.3, 18.0), (20.0, 24.0))  # 체인상 16.3까지 역추적 가능
+    clamped: set[int] = set()
+    _pull_post_interlude_starts(results, vad, clamped)
+
+    assert clamped == set()
+    assert results[1].start_time == pytest.approx(20.0)
+    assert results[1].word_segments[0].start == pytest.approx(20.0)  # 글자도 불변
+
+
+def test_pull_fires_for_mid_region_first_char_and_shifts_word_spans():
+    # 熱異常 재현(진짜 늦게 잡힌 라인): 첫 글자(171.8)가 리전(171.0~174.5) 한복판이라
+    # 온셋 가드에 안 걸리고 가창 블록 시작(165.5)으로 당겨진다. 이때 글자 스팬도 함께 이동
+    # — start만 옮기면 라인 시작과 글자 위치가 어긋나 이후 단계가 '글자가 라인 밖'으로 오판한다.
+    results = [
+        _line("간주 앞", 129.0, 131.8),
+        _wline("間奏後の歌", 171.8, 187.2, 171.8, 187.2),
+    ]
+    vad = _vad((132.2, 132.8), (165.5, 169.6), (171.0, 174.5), (176.0, 180.2))
+    clamped: set[int] = set()
+    _pull_post_interlude_starts(results, vad, clamped)
+
+    assert clamped == {1}
+    assert results[1].start_time == pytest.approx(165.35)
+    ws = results[1].word_segments
+    assert ws[0].start == pytest.approx(165.35)  # 글자 스팬이 라인과 함께 이동
+    assert ws[-1].end == pytest.approx(187.2)
+    assert all(ws[i].end <= ws[i + 1].start + 1e-9 for i in range(len(ws) - 1))  # 단조 유지
+
+
+def test_pull_onset_guard_inactive_without_word_segments():
+    # 글자 타이밍이 없으면 판정 근거가 없다 — 라인 start는 이미 보정 대상 값이라 못 쓴다.
+    # (기존 동작 보존: word_segments 없는 라인은 예전처럼 당겨진다)
+    results = [_line("앞", 0.0, 5.0), _line("뒤", 20.0, 24.0)]
+    vad = _vad((14.0, 24.0))
+    clamped: set[int] = set()
+    _pull_post_interlude_starts(results, vad, clamped)
+    assert clamped == {1}
+    assert results[1].start_time == pytest.approx(13.85)
 
 
 # --- 규칙 3: 소절 끝 늘임음 연장 --------------------------------------------

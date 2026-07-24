@@ -90,7 +90,13 @@ def test_link_resolves_with_positive_offset():
 
             resp = await get_sync("DSTDSTDST01")
             assert resp.found is True
-            assert resp.linked == {"source_video_id": "SRCSRCSRC01", "offset_sec": 10.0, "rate": 1.0}
+            # 수동 링크 API로 만든 링크라 verified=False (반주 상관 검증을 거치지 않았다)
+            assert resp.linked == {
+                "source_video_id": "SRCSRCSRC01",
+                "offset_sec": 10.0,
+                "rate": 1.0,
+                "verified": False,
+            }
             seg = resp.timestamps[0]
             assert seg["start"] == 11.0 and seg["end"] == 12.0
             assert seg["words"][0]["start"] == 11.0

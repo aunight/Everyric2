@@ -22,6 +22,12 @@ class SyncResult(Base):
     language: Mapped[str | None] = mapped_column(String(8))
     engine: Mapped[str] = mapped_column(String(16), default="ctc")
     quality_score: Mapped[float | None] = mapped_column(Float)
+    # 영상 제목/아티스트 — 커버 링크 후보 탐색이 코퍼스에서 같은 곡을 찾는 유일한 단서다
+    # (video_id만으로는 곡을 식별할 수 없다). 기존 행은 NULL로 남고, 조회 시 기회적으로
+    # 백필된다(SyncRepository.set_title_if_missing). 매칭은 title_match가 정규화해 수행하므로
+    # 유튜브 풀 제목을 그대로 저장해도 된다.
+    title: Mapped[str | None] = mapped_column(String(256))
+    artist: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -88,6 +94,10 @@ class SyncLink(Base):
     # 원곡 대비 재생 배속 (nightcore 1.25 등) — 소스 시간 t를 t/rate + offset으로 사상.
     # 1.0이면 순수 시프트(기존 동작).
     rate: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
+    # 반주 상관 검증(link-jobs)을 통과해 만들어진 링크인지. 수동 링크 API(POST /api/sync/link)는
+    # 검증 없이 임의 오프셋(0 포함)을 박을 수 있어 코퍼스에 틀린 링크가 남은 전례가 있다 —
+    # 조회 응답의 linked.verified로 내려보내 클라이언트가 구분할 수 있게 한다.
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

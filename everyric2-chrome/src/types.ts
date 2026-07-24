@@ -233,6 +233,10 @@ export interface Settings {
   apiKey: string;
   /** PiP에서 영상 영역이 차지하는 세로 비율 (0 = 자동 16:9) */
   pipVideoRatio: number;
+  /** PiP 창 너비(px) — 닫을 때 기억, 0 = 미설정(기존 기본값 440 사용) */
+  pipWidth: number;
+  /** PiP 창 높이(px) — 닫을 때 기억, 0 = 미설정(showVideo에 따라 500/260 사용) */
+  pipHeight: number;
   /** 가라오케 레인 높이(px) — 레인 위 디바이더 드래그로 조절 */
   pitchLaneHeight: number;
   /** 가라오케 레인 표시 구간(마디 수) — 서버 BPM 기준, 템포 없으면 120BPM 가정 폴백 */
@@ -245,6 +249,8 @@ export interface Settings {
   pitchCountdown: boolean;
   /** 음정 모델 RAW f0 곡선을 디버그 모드와 무관하게 레인에 상시 표시 */
   pitchF0Curve: boolean;
+  /** 발음 표기 위치: note = 노트마다 위에 부착, bottom = 화면 하단 중앙(진행률 그라데이션) */
+  pitchPronPosition: 'note' | 'bottom';
   /** PiP 하단 가라오케 음정 바 표시 (노트 데이터가 있는 곡에서만) */
   pitchGuide: boolean;
   /** 가라오케 창에서 노트를 신디사이즈로 재생 */
@@ -333,17 +339,9 @@ export type SearchCandidate =
   | { source: 'lrclib'; id: number; title: string; artist: string; duration: number; synced: boolean }
   | { source: 'vocaro'; slug: string; title: string; url: string };
 
-/** 유튜브 영상의 자막 트랙 — 서버(yt-dlp)가 나열한다.
- * 워치 페이지에서 긁은 timedtext URL은 POT 강제로 빈 응답이라 서버 경유가 유일 경로. */
-export interface CaptionTrack {
-  lang: string;
-  /** 표시용 이름 (예: "일본어", "한국어 (자동 생성)") */
-  label: string;
-  /** 자동 생성(asr) 여부 — 노래 자막으로는 신뢰도가 낮다 */
-  auto: boolean;
-}
-
-/** 자막 한 줄 (타이밍 포함) — 싱크 가사로 바로 표시하는 데 쓴다 */
+/** 자막 한 줄 (타이밍 포함) — 싱크 가사로 바로 표시하는 데 쓴다.
+ *  트랙 **목록**은 클라이언트가 워치 페이지에서 직접 읽는다(lib/yt-captions.ts).
+ *  **본문**만 서버 경유다 — timedtext URL은 POT 강제로 브라우저 플레이어 밖에선 빈 응답. */
 export interface CaptionLine {
   start: number;
   end: number;
@@ -369,8 +367,8 @@ export type BgRequest =
   | { type: 'SERVER_HEALTH' }
   | { type: 'VOCARO_LOOKUP'; payload: { title: string } }
   | { type: 'VOCARO_PAGE'; payload: { slug: string } }
-  | { type: 'YT_CAPTION_TRACKS'; payload: { videoId: string } }
-  | { type: 'YT_CAPTION_TEXT'; payload: { videoId: string; lang: string; auto: boolean } };
+  | { type: 'YT_CAPTION_TEXT'; payload: { videoId: string; lang: string; auto: boolean } }
+  | { type: 'GENERATE_FROM_CAPTION'; payload: { videoId: string } };
 
 export type ContentMessage =
   | { type: 'TOGGLE_OVERLAY' }

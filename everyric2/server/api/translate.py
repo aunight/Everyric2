@@ -60,6 +60,9 @@ class TranslateRequest(BaseModel):
     # 곡 컨텍스트 (선택) — LLM이 가사 맥락(제목/아티스트)을 알고 번역하게 한다
     title: str | None = Field(default=None, description="Song title for context")
     artist: str | None = Field(default=None, description="Artist name for context")
+    # 로그 상관용 (선택) — 지금까지 서버 로그에 어떤 곡인지 안 남아 품질 사고의 사후
+    # 추적이 불가능했다. 선택 필드라 기존 호출자는 그대로 동작한다.
+    video_id: str | None = Field(default=None, description="Video id, logged for diagnostics")
 
 
 class TranslationLineResponse(BaseModel):
@@ -76,6 +79,9 @@ class TranslateResponse(BaseModel):
     source_lang: str
     target_lang: str
     engine: str
+    # 원문 언어가 대상 언어와 같아 번역을 건너뛴 경우 True — translation이 전부 빈 문자열로
+    # 온다. 클라이언트가 '번역 실패'와 '번역할 것이 없음'을 구분하는 데 쓴다.
+    translation_skipped: bool = False
 
 
 @router.post("", response_model=TranslateResponse)
@@ -106,7 +112,8 @@ def translate_lyrics(request: TranslateRequest):
         object.__setattr__(settings, "tone", request.tone)
         settings.include_pronunciation = request.include_pronunciation
 
-        translator = LyricsTranslator(settings=settings)
+        translator = LyricsTranslator(settings=settings, log_label=request.video_id)
+        log_prefix = f"[{request.video_id}] " if request.video_id else ""
 
         context = None
         if request.title:
@@ -125,7 +132,9 @@ def translate_lyrics(request: TranslateRequest):
             bad = bad_pron_indices(result.lines)
             if bad:
                 logger.warning(
-                    f"Kana leaked into {len(bad)} pronunciation lines; retrying once"
+                    "%sKana leaked into %d pronunciation lines; retrying once",
+                    log_prefix,
+                    len(bad),
                 )
                 retry_lines = None
                 try:
@@ -147,15 +156,32 @@ def translate_lyrics(request: TranslateRequest):
                 context=context,
             )
 
+        skipped = getattr(result, "translation_skipped", False)
         failed = [i for i, line in enumerate(result.lines) if getattr(line, "failed", False)]
         if failed:
             # 부분 실패 — 전체 500 대신 실패 라인만 원문으로 반환됐음을 서버 로그에 남긴다
             logger.warning(
-                "Translation partially failed: %d/%d lines unrecovered (indices %s)",
+                "%sTranslation partially failed: %d/%d lines unrecovered (indices %s)",
+                log_prefix,
                 len(failed),
                 len(result.lines),
                 failed,
             )
+        elif not skipped:
+            # 절단도 아니고 스킵도 아닌데 비어 있는 라인 — 저품질 재요청 후에도 남은 경우다
+            blank = [
+                i
+                for i, line in enumerate(result.lines)
+                if len(line.original.strip()) >= 2 and not (line.translation or "").strip()
+            ]
+            if blank:
+                logger.warning(
+                    "%sTranslation left %d/%d lines empty after retry (indices %s)",
+                    log_prefix,
+                    len(blank),
+                    len(result.lines),
+                    blank,
+                )
 
         return TranslateResponse(
             lines=[
@@ -170,6 +196,7 @@ def translate_lyrics(request: TranslateRequest):
             source_lang=result.source_lang,
             target_lang=result.target_lang,
             engine=result.engine,
+            translation_skipped=skipped,
         )
     except Exception:
         # 내부 예외 문자열엔 API URL(키 포함 가능)·경로가 실릴 수 있다 — 클라엔 일반

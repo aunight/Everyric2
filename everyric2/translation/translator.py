@@ -34,14 +34,34 @@ class TranslationResult:
     target_lang: str
     engine: str
     tone: str
+    # 원문 언어가 대상 언어와 같아 번역을 건너뛴 경우 True (translation은 전부 빈 문자열).
+    # 클라이언트가 '번역 실패'와 '번역할 것이 없음'을 구분할 수 있게 결과에 남긴다.
+    translation_skipped: bool = False
 
 
 _HANGUL_RE = re.compile(r"[가-힣]")
 _ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
 _OTHER_LETTER_RE = re.compile(r"[^\x00-\x7F가-힣\s\W]")
 _JA_CHAR_RE = re.compile(r"[぀-ヿ㐀-鿿]")
+# 원문 대조용 정규화 — 공백·문장부호를 지운다 (모델이 원문을 되돌려줄 때의 사소한 정리 흡수)
+_ALIGN_STRIP_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 
 _kakasi_reader = None
+
+# pykakasi가 문맥 없이 오독하거나 훈독이 갈리는 대표 항목 — 단일 확정값 대신 후보를
+# 함께 제시해 모델이 문맥으로 고르게 한다. 실측(pykakasi 2.3):
+#   今更止められない → いまさら"やめ"られない (정답 とめ), 涙を止める → なみだを"やめる",
+#   風が止む → かぜが"とむ" (정답 やむ), 君にだけ → "くん"にだけ (노래에선 きみ)
+# 문맥으로 판별 가능한 것만 담는다 — 行く(いく/ゆく)나 明日(あした/あす)처럼 텍스트만으로
+# 정할 수 없는 것은 오히려 사전값보다 나빠질 수 있어 넣지 않는다.
+_AMBIGUOUS_READINGS: tuple[tuple[str, str], ...] = (
+    ("君", "きみ (you) / くん (name suffix)"),
+    ("止め", "とめ (stop something) / やめ (quit, give up)"),
+    ("止む", "やむ (rain/wind ceasing)"),
+    ("止ん", "やん (止んで = やんで)"),
+    ("開く", "ひらく (~を開く) / あく (~が開く)"),
+    ("空く", "あく (becomes vacant) / すく (お腹が空く)"),
+)
 
 
 def _kana_readings(text: str) -> list[str] | None:
@@ -71,13 +91,41 @@ def _kana_readings(text: str) -> list[str] | None:
         logger.exception("kana reading hints failed; prompting without them")
         return None
 
-# 발음 JSON 잘림(NIM max_tokens 소진) 복구 파라미터.
+
+def _reading_candidates(line: str) -> str:
+    """라인에 다의어 훈독이 있으면 후보 목록 주석을 만든다 (없으면 빈 문자열).
+
+    사전 참조값을 '정답'으로 박아두면 모델이 오독을 그대로 베낀다 — 갈리는 항목만
+    후보를 함께 보여 문맥으로 고르게 한다.
+    """
+    hits = [f"{key}={cands}" for key, cands in _AMBIGUOUS_READINGS if key in line]
+    return f"  [CANDIDATES: {'; '.join(hits)}]" if hits else ""
+
+
+# 구조화(JSON) 응답 잘림(NIM max_tokens 소진) 복구 파라미터.
 # - THRESHOLD 초과면 처음부터 배치로 나눠 요청(잘림 예방).
 # - SIZE: 한 배치 라인 수. 8192 예산 안에서 30줄 발음 JSON은 안전(실측).
 # - MAX_SPLIT_DEPTH: 잘림 복구 시 재귀 재분할 깊이 상한(요청 폭주 방지).
 _PRON_BATCH_THRESHOLD = 60
 _PRON_BATCH_SIZE = 30
-_PRON_MAX_SPLIT_DEPTH = 4
+# 발음 없는 번역 JSON은 라인당 출력이 절반 이하 — 배치를 크게 잡아 곡 맥락을 덜 끊는다
+_TEXT_BATCH_THRESHOLD = 120
+_TEXT_BATCH_SIZE = 60
+_MAX_SPLIT_DEPTH = 4
+
+# "저품질 배치" 판정 — 응답이 문법적으로 완전한데도 중간 구간의 번역/발음만 빈 값으로
+# 오는 현상(실측: 48줄 중 19~34번이 통째로 빈 값, 잘림 로그는 한 건도 없음)을 잡는다.
+_LOW_QUALITY_RATIO = 0.2
+_LOW_QUALITY_MIN_LINES = 2
+_LOW_QUALITY_MAX_RETRIES = 1
+# 원문이 이보다 짧으면(구두점·감탄사 등) 번역이 비어도 품질 문제로 보지 않는다
+_MEANINGFUL_ORIGINAL_CHARS = 2
+
+# 번역 스킵 게이트(원문 언어 == 대상 언어)의 보수 임계. 오판하면 번역이 통째로
+# 사라지므로 발음 게이트(_detect_lang_heuristic)보다 훨씬 엄격하게 잡는다.
+_SKIP_MIN_LETTERS = 20
+_SKIP_DOMINANT_RATIO = 0.85
+_SKIP_FOREIGN_TOLERANCE = 0.05
 
 TONE_PROMPTS = {
     "literal": "Translate literally, preserving the original meaning as closely as possible.",
@@ -89,8 +137,15 @@ TONE_PROMPTS = {
 
 
 class BaseTranslator(ABC):
+    # 로그 상관용 라벨(보통 video_id). 서버 로그에 곡이 안 남아 사후 추적이 불가능했다 —
+    # API가 요청마다 주입한다. 인스턴스는 요청당 새로 만들어지므로 스레드 간 누수는 없다.
+    log_label: str | None = None
+
     def __init__(self, settings: TranslationSettings | None = None):
         self.settings = settings or get_settings().translation
+
+    def _log_prefix(self) -> str:
+        return f"[{self.log_label}] " if self.log_label else ""
 
     @abstractmethod
     def translate(
@@ -138,12 +193,21 @@ class BaseTranslator(ABC):
             reading_block = ""
             readings = _kana_readings(text)
             if readings:
+                text_lines = text.split("\n")
+                numbered = "\n".join(
+                    f"{i + 1}. {r}"
+                    + _reading_candidates(text_lines[i] if i < len(text_lines) else "")
+                    for i, r in enumerate(readings)
+                )
                 reading_block = (
                     "\nREFERENCE READINGS (machine dictionary reading of each line, in order."
                     " The dictionary can misread context-dependent kanji — e.g. it may say"
-                    " くん for 君 where the song sings きみ. Use these as a base and correct"
-                    " such misreadings from the song's context):\n"
-                    + "\n".join(f"{i + 1}. {r}" for i, r in enumerate(readings))
+                    " くん for 君 where the song sings きみ, or やめられない for 止められない"
+                    " where the line means 'can't stop' (とめられない). Use these as a base and"
+                    " correct such misreadings from the song's context. Where a line ends with"
+                    " [CANDIDATES: ...], the dictionary reading is unreliable for that word —"
+                    " pick the candidate that fits the meaning of the sentence):\n"
+                    + numbered
                     + "\n"
                 )
             if target_lang == "ko":
@@ -153,9 +217,11 @@ class BaseTranslator(ABC):
                 pron_rule = (
                     "2. The full kana reading (ひらがな) of the ORIGINAL line — how the line"
                     " is actually sung. Convert every kanji to kana. FOLLOW the REFERENCE"
-                    " READINGS below; deviate only where the dictionary clearly misread a"
-                    " context-dependent kanji (e.g. 君 sung きみ, not くん) — okurigana words"
-                    " like 消え=きえ are reliable as given. Write particles as pronounced"
+                    " READINGS below; deviate where the dictionary misread a context-dependent"
+                    " kanji (e.g. 君 sung きみ not くん; 今更止められない is いまさらとめられない"
+                    " 'can't stop it', not やめられない 'can't quit') or where the line lists"
+                    " CANDIDATES — those are kun-readings the dictionary cannot pick without"
+                    " context, so choose by meaning. Write particles as pronounced"
                     " (は→わ, へ→え). Insert a space between sung phrases — a typical line"
                     " has 2-4 phrases (きみにだけ みえている) — but keep particles attached"
                     " to their word (きみにだけ, never きみ に だけ). Kana ONLY in this field."
@@ -185,78 +251,208 @@ Output as JSON array:
 {pron_example}
 
 IMPORTANT:
-- Keep the same number of lines, in the same order
+- Output exactly one object for EVERY input line, in the same order — including lines that
+  are a title, a repeat, an ad-lib, or already in {target}. Never skip, merge or add lines.
+- Copy "original" verbatim from the input line so the lines can be matched up
 - Output ONLY the JSON array, no explanations
 {pron_note}
 {reading_block}
 LYRICS:
 {text}"""
         else:
+            # 평문 줄바꿈 응답은 모델이 한 줄만 빠뜨려도 이후 전 라인이 한 칸씩 밀린다
+            # (실측: 0번 줄이 제목이라 가사로 안 보고 건너뛴 곡 31줄 전체가 밀림).
+            # 원문을 함께 돌려받아 라인 정합성을 검증할 수 있게 JSON으로 통일한다.
             return f"""Translate these song lyrics to {target}.
 {tone_instruction}
 {lyrics_guidance}{context_block}
 
-Keep the same line structure (same number of lines).
-Only output the translation, no explanations or notes.
+Output as JSON array:
+[{{"original": "原文", "translation": "translation"}}]
+
+IMPORTANT:
+- Output exactly one object for EVERY input line, in the same order — including lines that
+  are a title, a repeat, an ad-lib, or already in {target}. Never skip, merge or add lines.
+- Copy "original" verbatim from the input line so the lines can be matched up
+- Output ONLY the JSON array, no explanations
 
 LYRICS:
-{text}
+{text}"""
 
-TRANSLATION:"""
+    # ── 응답 파싱: 원문 대조로 라인을 맞춘다(위치 매칭 금지) ──────────────────────
 
-    def _parse_json_response(
-        self, response: str, original_lines: list[str]
-    ) -> list[TranslationLine]:
-        response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
-        response = response.strip()
+    def _extract_json_items(self, response: str) -> list[dict]:
+        """(잘렸을 수도 있는) JSON 배열에서 완전한 객체까지만 순서대로 뽑는다.
 
-        if response.startswith("```"):
-            match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
+        예외를 던지지 않는다 — 살릴 게 없으면 []를 돌려줘 호출자가 재요청/폴백하게 한다.
+        """
+        text = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        if text.startswith("```"):
+            match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
             if match:
-                response = match.group(1).strip()
+                text = match.group(1).strip()
 
-        try:
-            data = json.loads(response)
-            if isinstance(data, list):
-                results = []
-                for i, item in enumerate(data):
-                    if isinstance(item, dict):
-                        orig = item.get(
-                            "original", original_lines[i] if i < len(original_lines) else ""
-                        )
-                        results.append(
-                            TranslationLine(
-                                original=orig,
-                                translation=item.get("translation", ""),
-                                pronunciation=item.get("pronunciation"),
-                            )
-                        )
-                return results
-        except json.JSONDecodeError:
-            pass
+        start = text.find("[")
+        if start == -1:
+            return []
+        return [
+            item for item in self._decode_json_objects(text, start + 1) if isinstance(item, dict)
+        ]
 
-        array_match = re.search(r"\[.*\]", response, re.DOTALL)
-        if array_match:
+    @staticmethod
+    def _decode_json_objects(text: str, pos: int) -> list:
+        """text[pos:]의 JSON 배열 원소를 raw_decode로 하나씩 읽어 완전한 값만 모은다.
+        마지막 원소가 잘려 있으면 그 앞까지만 반환(truncation-safe)."""
+        decoder = json.JSONDecoder()
+        objs: list = []
+        n = len(text)
+        while pos < n:
+            while pos < n and text[pos] in " \t\r\n,":
+                pos += 1
+            if pos >= n or text[pos] == "]":
+                break
             try:
-                data = json.loads(array_match.group())
-                results = []
-                for i, item in enumerate(data):
-                    if isinstance(item, dict):
-                        orig = item.get(
-                            "original", original_lines[i] if i < len(original_lines) else ""
-                        )
-                        results.append(
-                            TranslationLine(
-                                original=orig,
-                                translation=item.get("translation", ""),
-                                pronunciation=item.get("pronunciation"),
-                            )
-                        )
-                return results
+                obj, end = decoder.raw_decode(text, pos)
             except json.JSONDecodeError:
-                pass
+                break  # 마지막 원소가 잘림 — 여기서 중단
+            objs.append(obj)
+            pos = end
+        return objs
 
-        raise ValueError(f"Failed to parse JSON response: {response[:200]}")
+    @staticmethod
+    def _align_key(text: str) -> str:
+        """정렬 대조용 정규화 — 공백·구두점 제거 + 소문자화.
+        모델이 원문을 되돌려줄 때 흔히 하는 사소한 정리(공백 정돈, 문장부호 생략)를 흡수한다."""
+        stripped = _ALIGN_STRIP_RE.sub("", text or "").casefold()
+        if stripped:
+            return stripped
+        # 기호만으로 된 라인(…, ♪)은 정규화하면 빈 문자열이 되어 대조가 불가능해진다 —
+        # 공백만 정리한 원문으로 대조한다 (빈 키는 '대조 불가'로만 남긴다)
+        return "".join((text or "").split()).casefold()
+
+    def _align_items(self, items: list[dict], lines: list[str]) -> list[TranslationLine | None]:
+        """응답 항목을 원문 텍스트로 입력 라인에 맞춘다. 길이는 항상 len(lines).
+
+        모델이 한 줄을 빠뜨리면 위치 매칭은 그 뒤 전 라인의 번역을 한 칸씩 민다
+        (실증: 0번 줄이 '실리카겔 - APEX'라는 제목 텍스트여서 모델이 가사로 취급하지
+        않고 누락 → 31줄 전체가 1칸씩 밀려 저장). 그래서 돌려받은 original을 입력과
+        순서대로 대조하고, 못 맞춘 자리는 None으로 남겨 호출자가 재요청하게 한다.
+        """
+        keys = [self._align_key(x) for x in lines]
+        slots: list[TranslationLine | None] = [None] * len(lines)
+        cursor = 0
+        matched = 0
+        echoed = 0
+        for item in items:
+            raw_original = str(item.get("original") or "")
+            key = self._align_key(raw_original)
+            if key:
+                echoed += 1
+            idx = next((k for k in range(cursor, len(lines)) if keys[k] == key), None) if key else None
+            if idx is None:
+                continue
+            slots[idx] = TranslationLine(
+                original=lines[idx],
+                translation=str(item.get("translation") or ""),
+                pronunciation=item.get("pronunciation"),
+            )
+            matched += 1
+            cursor = idx + 1
+
+        if matched == 0 and items and (echoed == 0 or len(items) == len(lines)):
+            # 대조할 근거가 없다 — 모델이 original을 아예 안 돌려줬거나(echoed==0) 통째로
+            # 고쳐 썼는데 줄 수는 정확히 같은 경우. 순서대로 채우되 입력 길이를 넘지 않는다.
+            logger.warning(
+                "%sTranslation response carried no matchable originals (%d items, %d lines)"
+                " — falling back to positional matching",
+                self._log_prefix(),
+                len(items),
+                len(lines),
+            )
+            for i, item in enumerate(items[: len(lines)]):
+                slots[i] = TranslationLine(
+                    original=lines[i],
+                    translation=str(item.get("translation") or ""),
+                    pronunciation=item.get("pronunciation"),
+                )
+        return slots
+
+    def _plain_text_slots(
+        self, response: str, lines: list[str]
+    ) -> list[TranslationLine | None]:
+        """모델이 JSON 지시를 무시하고 평문 줄바꿈으로 답했을 때의 폴백.
+
+        줄 수가 입력과 정확히 맞을 때만 위치로 짝짓는다. 예전 구현은 빈 줄을 버리고
+        무조건 위치로 붙여서, 모델이 한 줄에 빈 응답을 주면 그 줄부터 배열이 하나 줄고
+        이후 전 라인이 한 칸씩 밀렸다.
+        """
+        text = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        for prefix in ("TRANSLATION:", "Translation:", "번역:"):
+            if text.startswith(prefix):
+                text = text[len(prefix) :].strip()
+        if not text:
+            # 빈 응답을 '빈 줄 하나'로 읽어 성공 처리하면 안 된다 (잘림/필터링과 동일 취급)
+            return [None] * len(lines)
+
+        raw = [ln.strip() for ln in text.split("\n")]
+        nonempty = [ln for ln in raw if ln]
+        # 서론 한 줄("Here is the translation:")이 붙은 경우까지만 관용한다
+        without_preamble = nonempty[1:] if nonempty and nonempty[0].endswith(":") else []
+        for candidate in (raw, nonempty, without_preamble):
+            if candidate and len(candidate) == len(lines):
+                return [
+                    TranslationLine(original=orig, translation=trans, pronunciation=None)
+                    for orig, trans in zip(lines, candidate)
+                ]
+
+        logger.warning(
+            "%sPlain-text response has %d lines for %d inputs — refusing positional match",
+            self._log_prefix(),
+            len(nonempty),
+            len(lines),
+        )
+        return [None] * len(lines)
+
+    def _parse_aligned(
+        self, response: str, original_lines: list[str], include_pronunciation: bool
+    ) -> list[TranslationLine]:
+        """재요청 기전이 없는 엔진(Gemini)용 단발 파싱 — 맞춘 라인만 채우고 나머지는
+        원문만 담아 failed로 남긴다. 밀린 번역을 저장하느니 빈 라인이 낫다."""
+        slots = self._align_items(self._extract_json_items(response), original_lines)
+        if all(slot is None for slot in slots) and not include_pronunciation:
+            slots = self._plain_text_slots(response, original_lines)
+        if all(slot is None for slot in slots):
+            raise ValueError(f"Failed to parse translation response: {response[:200]}")
+        return [
+            slot if slot is not None else self._failed_line(orig)
+            for slot, orig in zip(slots, original_lines)
+        ]
+
+    @staticmethod
+    def _failed_line(original: str) -> TranslationLine:
+        """복구 불가 라인 — 원문만 담고 translation/pronunciation은 비운 채 failed 표시."""
+        return TranslationLine(
+            original=original, translation="", pronunciation=None, failed=True
+        )
+
+    @staticmethod
+    def _is_blank_output(
+        line: TranslationLine | None, original: str, include_pronunciation: bool
+    ) -> bool:
+        """원문은 유의미한데 번역(·발음)이 빈 라인인가 — '저품질 배치' 판정용.
+
+        실증: 48줄 중 19~34번의 번역·발음이 전부 빈 값인데 응답 JSON은 문법적으로 완전해
+        잘림 복구 경로가 발동하지 않았다(서버 로그에 잘림 경고가 한 건도 없음).
+        """
+        if line is None or line.failed:
+            return False
+        if len(original.strip()) < _MEANINGFUL_ORIGINAL_CHARS:
+            return False
+        if not (line.translation or "").strip():
+            return True
+        return include_pronunciation and not (line.pronunciation or "").strip()
+
+    # ── 언어 게이트 ─────────────────────────────────────────────────────────────
 
     def _detect_lang_heuristic(self, text: str) -> str:
         """한글/ASCII 비율 기반 언어 추정. source_lang="auto"일 때 발음 생략 게이트에만 쓰이는
@@ -281,23 +477,74 @@ TRANSLATION:"""
             lang = self._detect_lang_heuristic(text)
         return lang in ("en", "ko")
 
-    def _parse_text_response(
-        self, response: str, original_lines: list[str]
-    ) -> list[TranslationLine]:
-        response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
+    def _detect_lang_confident(self, text: str) -> str | None:
+        """번역 스킵 게이트 전용 언어 판정 — 확신할 때만 "ko"/"en", 아니면 None.
 
-        for prefix in ["TRANSLATION:", "Translation:", "번역:", "Here is", "Here's"]:
-            if response.strip().startswith(prefix):
-                response = response.strip()[len(prefix) :].strip()
+        _detect_lang_heuristic은 오판해도 발음만 빠지므로 임계가 느슨하다. 번역 스킵은
+        오판하면 번역이 통째로 사라지므로, 글자 수가 충분하고 다른 문자 체계가 거의 없고
+        한쪽이 압도적일 때만 판정한다.
+        """
+        hangul = len(_HANGUL_RE.findall(text))
+        ascii_letters = len(_ASCII_LETTER_RE.findall(text))
+        other_letters = len(_OTHER_LETTER_RE.findall(text))
+        total = hangul + ascii_letters + other_letters
+        if total < _SKIP_MIN_LETTERS:
+            return None
+        if other_letters / total > _SKIP_FOREIGN_TOLERANCE:
+            return None
+        if hangul / total >= _SKIP_DOMINANT_RATIO:
+            return "ko"
+        if ascii_letters / total >= _SKIP_DOMINANT_RATIO:
+            return "en"
+        return None
 
-        lines = [line.strip() for line in response.strip().split("\n") if line.strip()]
+    @staticmethod
+    def _norm_lang(code: str | None) -> str:
+        """"ko-KR"/"KO" 같은 표기를 기본 코드로 정규화."""
+        return (code or "").strip().lower().replace("_", "-").split("-")[0]
 
-        results = []
-        for i, trans in enumerate(lines):
-            orig = original_lines[i] if i < len(original_lines) else ""
-            results.append(TranslationLine(original=orig, translation=trans, pronunciation=None))
+    def _should_skip_translation(self, text: str, source_lang: str, target_lang: str) -> bool:
+        """원문 언어가 번역 대상 언어와 같으면 번역을 건너뛴다 (LLM 호출 자체를 안 한다).
 
-        return results
+        같은 언어로 '재번역'하면 원문과 다른 문장이 나온다 — 실증: 한국어 곡의
+        "저기요 제가요 가슴이 떨려서"가 "저기, 나야. 가슴이 너무 떨려"로 바뀌어 저장됐다.
+        자동 감지가 확실하지 않으면 스킵하지 않는다: 번역이 통째로 사라지는 쪽이 더 나쁘다.
+        """
+        target = self._norm_lang(target_lang)
+        if not target:
+            return False
+        source = self._norm_lang(source_lang)
+        if source and source != "auto":
+            # 호출자가 언어를 명시했다면 그 판단을 따른다
+            return source == target
+        return self._detect_lang_confident(text) == target
+
+    def _skipped_translation_result(
+        self,
+        original_lines: list[str],
+        source_lang: str,
+        target_lang: str,
+        engine: str,
+    ) -> TranslationResult:
+        """번역 스킵 결과 — 번역 필드는 비운다. 원문을 그대로 넣으면 클라이언트가 원문과
+        번역을 똑같이 두 줄로 표시한다."""
+        logger.info(
+            "%sSource language already %s — skipping translation for %d lines",
+            self._log_prefix(),
+            target_lang,
+            len(original_lines),
+        )
+        return TranslationResult(
+            lines=[
+                TranslationLine(original=orig, translation="", pronunciation=None)
+                for orig in original_lines
+            ],
+            source_lang=source_lang,
+            target_lang=target_lang,
+            engine=engine,
+            tone=self.settings.tone,
+            translation_skipped=True,
+        )
 
 
 class GeminiTranslator(BaseTranslator):
@@ -334,6 +581,10 @@ class GeminiTranslator(BaseTranslator):
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
             text, source_lang
         )
+        if not include_pron and self._should_skip_translation(text, source_lang, target_lang):
+            return self._skipped_translation_result(
+                original_lines, source_lang, target_lang, "gemini"
+            )
         prompt = self._build_prompt(text, source_lang, target_lang, include_pron, context)
 
         try:
@@ -357,10 +608,7 @@ class GeminiTranslator(BaseTranslator):
             result = response.json()
             content = result["candidates"][0]["content"]["parts"][0]["text"]
 
-            if include_pron:
-                lines = self._parse_json_response(content, original_lines)
-            else:
-                lines = self._parse_text_response(content, original_lines)
+            lines = self._parse_aligned(content, original_lines, include_pron)
 
             return TranslationResult(lines, source_lang, target_lang, "gemini", self.settings.tone)
 
@@ -430,24 +678,32 @@ class OpenAICompatibleTranslator(BaseTranslator):
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
             text, source_lang
         )
+        skip_translation = self._should_skip_translation(text, source_lang, target_lang)
+        if skip_translation and not include_pron:
+            return self._skipped_translation_result(
+                original_lines, source_lang, target_lang, self.engine_name
+            )
 
         try:
-            if include_pron:
-                # 발음 JSON은 라인 수가 많으면 응답이 max_tokens에서 잘려 파싱이 통째로
-                # 실패한다(500). 프롬프트/요청/파싱/복구를 _translate_pron_lines에 위임해
-                # 잘림을 감지·복구하고, 최악의 경우에도 원문만 담아 부분 성공으로 마감한다.
-                lines = self._translate_pron_lines(
-                    original_lines, source_lang, target_lang, context
-                )
-            else:
-                prompt = self._build_prompt(
-                    text, source_lang, target_lang, include_pron, context
-                )
-                content, _ = self._request_completion(prompt)
-                lines = self._parse_text_response(content, original_lines)
+            # 구조화 응답은 라인 수가 많으면 max_tokens에서 잘려 파싱이 통째로 실패한다(500).
+            # 프롬프트/요청/정렬/복구를 _translate_lines에 위임해 잘림·누락·저품질을 감지하고,
+            # 최악의 경우에도 원문만 담아 부분 성공으로 마감한다.
+            lines = self._translate_lines(
+                original_lines, source_lang, target_lang, context, include_pron=include_pron
+            )
+            if skip_translation:
+                # 원문 == 대상 언어인데 발음은 필요한 경우(ja→ja 등) — 발음만 남기고
+                # 무의미한 '재번역' 결과는 버린다
+                for line in lines:
+                    line.translation = ""
 
             return TranslationResult(
-                lines, source_lang, target_lang, self.engine_name, self.settings.tone
+                lines,
+                source_lang,
+                target_lang,
+                self.engine_name,
+                self.settings.tone,
+                translation_skipped=skip_translation,
             )
 
         except requests.exceptions.ConnectionError as e:
@@ -511,148 +767,174 @@ class OpenAICompatibleTranslator(BaseTranslator):
             )
         return content, finish_reason
 
-    def _translate_pron_lines(
+    def _translate_lines(
         self,
         original_lines: list[str],
         source_lang: str,
         target_lang: str,
         context: str | None,
+        *,
+        include_pron: bool,
     ) -> list[TranslationLine]:
-        """발음 포함 번역. 긴 입력은 처음부터 배치로 나눠(잘림 예방) 각 배치를 복구
-        로직으로 처리한 뒤 순서대로 이어붙인다."""
-        if len(original_lines) > _PRON_BATCH_THRESHOLD:
+        """긴 입력은 처음부터 배치로 나눠(잘림 예방) 각 배치를 복구 로직으로 처리한 뒤
+        순서대로 이어붙인다. 발음 배치는 라인당 출력이 커서 더 잘게 나눈다."""
+        threshold, size = (
+            (_PRON_BATCH_THRESHOLD, _PRON_BATCH_SIZE)
+            if include_pron
+            else (_TEXT_BATCH_THRESHOLD, _TEXT_BATCH_SIZE)
+        )
+        if len(original_lines) > threshold:
             out: list[TranslationLine] = []
-            for start in range(0, len(original_lines), _PRON_BATCH_SIZE):
-                batch = original_lines[start : start + _PRON_BATCH_SIZE]
+            for start in range(0, len(original_lines), size):
                 out.extend(
-                    self._translate_pron_batch(
-                        batch, source_lang, target_lang, context, depth=0
+                    self._translate_batch(
+                        original_lines[start : start + size],
+                        source_lang,
+                        target_lang,
+                        context,
+                        include_pron=include_pron,
+                        depth=0,
                     )
                 )
             return out
-        return self._translate_pron_batch(
-            original_lines, source_lang, target_lang, context, depth=0
+        return self._translate_batch(
+            original_lines, source_lang, target_lang, context, include_pron=include_pron, depth=0
         )
 
-    def _translate_pron_batch(
+    def _translate_batch(
         self,
         lines: list[str],
         source_lang: str,
         target_lang: str,
         context: str | None,
+        *,
+        include_pron: bool,
         depth: int,
+        quality_retries: int = 0,
     ) -> list[TranslationLine]:
-        """한 배치를 요청하고, 응답이 잘렸으면(finish_reason=length 또는 완전 파싱 실패)
-        복구한다: ① 잘린 JSON에서 완전한 객체까지 살려내고 ② 못 살린 나머지 라인만 재요청,
-        진전이 없으면 ③ 라인을 절반으로 나눠 재귀. 깊이 한도를 넘거나 단일 라인도 실패하면
-        ④ 원문만 담고 failed=True로 표시해 부분 성공으로 마감(전체 500 방지)."""
-        text = "\n".join(lines)
-        prompt = self._build_prompt(text, source_lang, target_lang, True, context)
-        content, finish_reason = self._request_completion(prompt, allow_empty=True)
+        """한 배치를 요청하고 응답을 원문 대조로 입력 라인에 맞춘다. 반환 길이 == len(lines).
 
-        parsed = self._salvage_json_lines(content, lines)
-        # finish_reason=length여도 전 라인을 이미 완전 파싱했으면 잘림이 아니다(경계에서 정확히
-        # 멈춘 경우) — 불필요한 빈 재요청을 막는다.
-        truncated = len(parsed) < len(lines)
-        if not truncated:
-            return parsed[: len(lines)]
-
-        logger.warning(
-            "Pronunciation JSON incomplete (finish_reason=%s, content_len=%d, "
-            "parsed %d/%d lines, depth=%d) — recovering",
-            finish_reason,
-            len(content),
-            len(parsed),
-            len(lines),
-            depth,
-        )
-
-        if depth >= _PRON_MAX_SPLIT_DEPTH:
-            # 더 못 쪼갠다 — 살려낸 앞부분은 유지하고 나머지는 원문만 반환
-            return parsed + self._failed_lines(lines[len(parsed) :])
-
-        covered = len(parsed)
-        if covered > 0:
-            # 완전한 앞부분은 확보 — 못 받은 나머지 라인만 다시 요청
-            remainder = self._translate_pron_batch(
-                lines[covered:], source_lang, target_lang, context, depth + 1
-            )
-            return parsed + remainder
-
-        # 한 줄도 못 살렸다(빈/즉시 잘림) — 절반으로 쪼개 재귀, 단일 라인이면 폴백
-        if len(lines) > 1:
-            mid = len(lines) // 2
-            left = self._translate_pron_batch(
-                lines[:mid], source_lang, target_lang, context, depth + 1
-            )
-            right = self._translate_pron_batch(
-                lines[mid:], source_lang, target_lang, context, depth + 1
-            )
-            return left + right
-
-        return self._failed_lines(lines)
-
-    @staticmethod
-    def _failed_lines(lines: list[str]) -> list[TranslationLine]:
-        """복구 불가 라인 — 원문만 담고 translation/pronunciation은 비운 채 failed 표시."""
-        return [
-            TranslationLine(original=o, translation="", pronunciation=None, failed=True)
-            for o in lines
-        ]
-
-    def _salvage_json_lines(
-        self, response: str, original_lines: list[str]
-    ) -> list[TranslationLine]:
-        """(잘렸을 수도 있는) JSON 배열에서 완전한 객체까지만 순서대로 복구한다.
-
-        응답이 배열 중간에서 끊겨도 마지막 완전한 {..}까지 파싱한다. 예외를 던지지 않는다 —
-        살릴 게 없으면 []를 돌려줘 호출자가 재요청/폴백하게 한다. len<=len(original_lines).
+        못 맞춘 라인(잘림·누락·빈 응답)은 ① 그 라인들만 재요청하고, 진전이 전혀 없으면
+        ② 절반으로 나눠 재귀, ③ 깊이 한도를 넘거나 단일 라인도 실패하면 원문만 담고
+        failed=True로 마감(전체 500 방지). 응답이 완전한데도 번역·발음이 빈 라인이 많으면
+        ④ '저품질 배치'로 보고 그 라인들만 한 번 더 요청한다.
         """
-        text = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
-        if text.startswith("```"):
-            match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-            if match:
-                text = match.group(1).strip()
-
-        start = text.find("[")
-        if start == -1:
+        if not lines:
             return []
 
-        results: list[TranslationLine] = []
-        for i, item in enumerate(self._decode_json_objects(text, start + 1)):
-            if not isinstance(item, dict):
-                continue
-            orig = item.get(
-                "original", original_lines[i] if i < len(original_lines) else ""
-            )
-            results.append(
-                TranslationLine(
-                    original=orig,
-                    translation=item.get("translation", ""),
-                    pronunciation=item.get("pronunciation"),
-                )
-            )
-        return results
+        text = "\n".join(lines)
+        prompt = self._build_prompt(text, source_lang, target_lang, include_pron, context)
+        content, finish_reason = self._request_completion(prompt, allow_empty=True)
 
-    @staticmethod
-    def _decode_json_objects(text: str, pos: int) -> list:
-        """text[pos:]의 JSON 배열 원소를 raw_decode로 하나씩 읽어 완전한 값만 모은다.
-        마지막 원소가 잘려 있으면 그 앞까지만 반환(truncation-safe)."""
-        decoder = json.JSONDecoder()
-        objs: list = []
-        n = len(text)
-        while pos < n:
-            while pos < n and text[pos] in " \t\r\n,":
-                pos += 1
-            if pos >= n or text[pos] == "]":
-                break
-            try:
-                obj, end = decoder.raw_decode(text, pos)
-            except json.JSONDecodeError:
-                break  # 마지막 원소가 잘림 — 여기서 중단
-            objs.append(obj)
-            pos = end
-        return objs
+        slots = self._align_items(self._extract_json_items(content), lines)
+        if all(slot is None for slot in slots) and not include_pron:
+            # 모델이 JSON 지시를 무시하고 평문으로 답한 경우 — 줄 수가 맞을 때만 수용
+            slots = self._plain_text_slots(content, lines)
+
+        missing = [i for i, slot in enumerate(slots) if slot is None]
+        if missing:
+            logger.warning(
+                "%sTranslation response incomplete (finish_reason=%s, content_len=%d, "
+                "matched %d/%d lines, depth=%d) — recovering",
+                self._log_prefix(),
+                finish_reason,
+                len(content),
+                len(lines) - len(missing),
+                len(lines),
+                depth,
+            )
+            if depth >= _MAX_SPLIT_DEPTH:
+                for i in missing:
+                    slots[i] = self._failed_line(lines[i])
+            elif len(missing) < len(lines):
+                # 일부는 확보 — 못 맞춘 라인만 다시 요청해 제자리에 채운다
+                retried = self._translate_batch(
+                    [lines[i] for i in missing],
+                    source_lang,
+                    target_lang,
+                    context,
+                    include_pron=include_pron,
+                    depth=depth + 1,
+                )
+                for i, line in zip(missing, retried):
+                    slots[i] = line
+            elif len(lines) > 1:
+                # 한 라인도 못 맞췄다 — 절반으로 쪼개 재귀
+                mid = len(lines) // 2
+                return self._translate_batch(
+                    lines[:mid], source_lang, target_lang, context,
+                    include_pron=include_pron, depth=depth + 1,
+                ) + self._translate_batch(
+                    lines[mid:], source_lang, target_lang, context,
+                    include_pron=include_pron, depth=depth + 1,
+                )
+            else:
+                slots[0] = self._failed_line(lines[0])
+
+        # 복구를 거치면 빈 칸은 없지만, 길이 보장은 호출자 계약이라 방어적으로 채운다
+        resolved = [
+            slot if slot is not None else self._failed_line(lines[i])
+            for i, slot in enumerate(slots)
+        ]
+        return self._retry_low_quality(
+            resolved, lines, source_lang, target_lang, context,
+            include_pron=include_pron, depth=depth, quality_retries=quality_retries,
+        )
+
+    def _retry_low_quality(
+        self,
+        resolved: list[TranslationLine],
+        lines: list[str],
+        source_lang: str,
+        target_lang: str,
+        context: str | None,
+        *,
+        include_pron: bool,
+        depth: int,
+        quality_retries: int,
+    ) -> list[TranslationLine]:
+        """응답이 절단되지 않았는데도 중간 구간의 번역·발음만 비어 온 경우의 재요청.
+
+        실증: 48줄 중 19~34번이 통째로 빈 값이었는데 잘림 로그는 한 건도 없었다 — 모델이
+        문법적으로 완전한 JSON을 주면서 내용만 뭉갠 품질 문제라 잘림 복구가 발동하지 않았다.
+        무한 재시도를 막기 위해 배치당 _LOW_QUALITY_MAX_RETRIES회로 제한한다.
+        """
+        blank = [
+            i
+            for i, line in enumerate(resolved)
+            if self._is_blank_output(line, lines[i], include_pron)
+        ]
+        if (
+            not blank
+            or quality_retries >= _LOW_QUALITY_MAX_RETRIES
+            or len(blank) < _LOW_QUALITY_MIN_LINES
+            or len(blank) / len(lines) < _LOW_QUALITY_RATIO
+        ):
+            return resolved
+
+        logger.warning(
+            "%sLow-quality translation batch: %d/%d lines came back empty (indices %s, "
+            "depth=%d) — re-requesting those lines",
+            self._log_prefix(),
+            len(blank),
+            len(lines),
+            blank,
+            depth,
+        )
+        retried = self._translate_batch(
+            [lines[i] for i in blank],
+            source_lang,
+            target_lang,
+            context,
+            include_pron=include_pron,
+            depth=depth,
+            quality_retries=quality_retries + 1,
+        )
+        for i, line in zip(blank, retried):
+            # 재요청도 비었으면 1차 결과를 유지한다 (failed 표시로 덮어쓰지 않는다)
+            if not self._is_blank_output(line, lines[i], include_pron):
+                resolved[i] = line
+        return resolved
 
     def _payload_extras(self) -> dict:
         """엔진별 추가 페이로드 훅 — 기본은 없음."""
@@ -726,12 +1008,19 @@ class TranslatorFactory:
 
 
 class LyricsTranslator:
-    def __init__(self, api_key: str | None = None, settings: TranslationSettings | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        settings: TranslationSettings | None = None,
+        log_label: str | None = None,
+    ):
         if settings is None:
             settings = get_settings().translation
         if api_key:
             settings.api_key = api_key
         self._translator = TranslatorFactory.get_translator(settings)
+        # 어떤 곡의 번역인지 서버 로그에 남긴다 (보통 video_id) — 없으면 라벨 없이 진행
+        self._translator.log_label = log_label
         self.settings = settings
 
     def translate(

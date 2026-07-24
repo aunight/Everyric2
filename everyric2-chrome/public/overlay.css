@@ -823,6 +823,24 @@ body.ey-pip {
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* 번역(.ey-pip-tr)·발음(.ey-pip-pron)처럼 flex-shrink 대상에서 빼야 한다 — 안 그러면
+     세로 공간이 부족할 때 원문이 축소분을 전부 떠안아, line-clamp가 만든 박스 높이보다
+     실제 렌더 높이가 더 작아지면서 마지막 줄 글자가 중간에서 잘린다. 대신 아래
+     컨테이너 쿼리로 공간이 좁을 때 clamp 값 자체를 줄여 필요한 높이를 미리 낮춘다. */
+  flex-shrink: 0;
+}
+
+/* 세로 공간이 좁아지면(.ey-pip-stage 실제 높이 기준) 원문이 요구하는 줄 수를 미리
+   줄여서, flex-shrink 없이도 스테이지 안에 들어가게 한다 — 중간에서 잘리는 대신
+   처음부터 짧게 보여준다. 번역·발음(flex-shrink:0)은 그대로 보존된다. */
+@container (max-height: 260px) {
+  .ey-pip-line.current { -webkit-line-clamp: 3; }
+}
+@container (max-height: 190px) {
+  .ey-pip-line.current { -webkit-line-clamp: 2; }
+}
+@container (max-height: 130px) {
+  .ey-pip-line.current { -webkit-line-clamp: 1; }
 }
 
 .ey-pip-line.current .ey-word.sung { color: var(--ey-accent); }

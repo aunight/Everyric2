@@ -224,7 +224,13 @@ def test_link_result_match_creates_synclink_with_correct_sign():
             # offset +10 시프트해 빌려온다 → 원곡 start 1.0 → 커버에서 11.0
             got = await get_sync(COVER)
             assert got.found is True
-            assert got.linked == {"source_video_id": SOURCE, "offset_sec": 10.0, "rate": 1.0}
+            # 반주 상관 검증을 통과한 자동 링크 → verified=True
+            assert got.linked == {
+                "source_video_id": SOURCE,
+                "offset_sec": 10.0,
+                "rate": 1.0,
+                "verified": True,
+            }
             assert got.timestamps[0]["start"] == 11.0
             assert got.timestamps[0]["end"] == 12.0
 

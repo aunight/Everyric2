@@ -1,10 +1,24 @@
-import type { CaptionTrack, DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, Settings, SongInfo, SyncListItem } from '../types';
+import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, Settings, SongInfo, SyncListItem } from '../types';
 import { h, icon, ICONS } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
+import {
+  buildEmptyState,
+  buildErrorState,
+  buildGeneratingState,
+  buildLoadingState,
+  buildPlainLines,
+  buildSearchSheet,
+  createGenerateButton,
+  renderCandidateList,
+  setListStatus,
+  SERVER_UNAVAILABLE_TIP,
+  type PanelContext,
+} from './panels';
 
 export interface OverlayCallbacks {
   onSeek: (time: number) => void;
-  onGenerate: (lyrics: string) => void;
+  /** attribution은 붙여넣기 경로에서 사용자가 적어 넣은 출처(선택) */
+  onGenerate: (lyrics: string, attribution?: string) => void;
   onRetrySearch: (query?: { title: string; artist: string }) => void;
   onOffsetChange: (offsetSec: number) => void;
   onSettingsChange: (patch: Partial<Settings>) => void;
@@ -26,10 +40,6 @@ export interface OverlayCallbacks {
   onRequestSyncList: () => void;
   /** 이 영상의 서버 싱크 전부 삭제(초기화) — 잘못 붙여넣은 가사에서 새로 시작 */
   onResetSync: () => void;
-  /** 이 영상의 유튜브 자막 트랙 목록 요청 — 결과는 showCaptionTracks로 되돌아온다 */
-  onCaptionTracks: () => void;
-  /** 자막 트랙 선택 — 텍스트를 받아 setPasteText로 붙여넣기 칸에 채운다 */
-  onCaptionPick: (track: CaptionTrack) => void;
   /** 검색 시트에서 원래 보던 가사 화면으로 복귀 (실수로 검색을 연 경우 탈출구) */
   onCloseSearch: () => void;
 }
@@ -103,7 +113,6 @@ export class LyricsOverlay {
   private attributionName: string | null = null;
   private lastSong: SongInfo | null = null;
   private searchResultsEl: HTMLDivElement | null = null;
-  private captionListEl: HTMLDivElement | null = null;
   private linkListEl: HTMLDivElement | null = null;
   private linkSrcInput: HTMLInputElement | null = null;
   private linkFilterInput: HTMLInputElement | null = null;
@@ -251,23 +260,24 @@ export class LyricsOverlay {
 
   // ── 상태 렌더링 ────────────────────────────────────────────────
 
+  /** 패널 조각(panels.ts)에 넘기는 호스트 컨텍스트 — 콜백 + 서버 상태 연동 생성 버튼 */
+  private panelContext(): PanelContext {
+    return {
+      callbacks: {
+        onGenerate: (lyrics, attribution) => this.callbacks.onGenerate(lyrics, attribution),
+        onRetrySearch: query => this.callbacks.onRetrySearch(query),
+        onCandidateSearch: query => this.callbacks.onCandidateSearch(query),
+        onPickCandidate: candidate => this.callbacks.onPickCandidate(candidate),
+        onOpenSearch: () => this.openSearch(),
+      },
+      makeGenerateButton: (label, onClick) => this.makeGenerateButton(label, onClick),
+    };
+  }
+
   showLoading(message = '가사 검색 중…'): void {
     this.stateKind = 'loading';
     this.resetBody();
-    const skeleton = h('div', { className: 'ey-skeleton' });
-    for (let i = 0; i < 3; i++) skeleton.append(h('div', { className: 'ey-skeleton-bar' }));
-    this.body.append(
-      h('div', { className: 'ey-state' },
-        skeleton,
-        h('div', { className: 'ey-state-text', text: message }),
-        // 자동 검색을 기다릴 필요 없이 바로 수동 검색으로 전환
-        h('button', {
-          className: 'ey-secondary-btn',
-          text: '기다리지 않고 수동 검색',
-          on: { click: () => this.openSearch() },
-        }),
-      ),
-    );
+    this.body.append(buildLoadingState(this.panelContext(), message));
   }
 
   showSyncedLyrics(lines: LyricLine[], source: LyricsSource, plainText?: string): void {
@@ -348,15 +358,9 @@ export class LyricsOverlay {
     this.showBanner('타임싱크가 없는 가사예요', generateBtn);
 
     this.lines = lines;
-    const list = h('div', { className: 'ey-lines ey-lines-plain' });
-    for (const line of lines) {
-      const el = h('div', { className: 'ey-line ey-line-plain', text: line.text, attrs: { dir: 'auto' } });
-      if (line.pronunciation) el.append(h('div', { className: 'ey-line-pron', text: line.pronunciation, attrs: { dir: 'auto' } }));
-      if (line.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
-      this.lineEls.push(el);
-      list.append(el);
-    }
-    this.body.append(list);
+    const plain = buildPlainLines(lines);
+    this.lineEls.push(...plain.lineEls);
+    this.body.append(plain.el);
 
     this.setSourceBadge(source, false);
     this.footer.classList.add('no-offset');
@@ -366,126 +370,7 @@ export class LyricsOverlay {
   showEmpty(song: SongInfo | null): void {
     this.stateKind = 'empty';
     this.resetBody();
-
-    const titleInput = h('input', { className: 'ey-input', attrs: { placeholder: '곡 제목' } });
-    titleInput.value = song?.title ?? '';
-    const artistInput = h('input', { className: 'ey-input', attrs: { placeholder: '아티스트 (선택)' } });
-    artistInput.value = song?.artist ?? '';
-
-    this.body.append(
-      h('div', { className: 'ey-state' },
-        h('div', { className: 'ey-state-emoji', text: '🎵' }),
-        h('div', { className: 'ey-state-text', text: '가사를 찾지 못했어요' }),
-        h('div', { className: 'ey-search-form' },
-          titleInput,
-          artistInput,
-          h('button', {
-            className: 'ey-primary-btn',
-            text: '다시 검색',
-            on: {
-              click: () => {
-                const title = titleInput.value.trim();
-                if (title) this.callbacks.onRetrySearch({ title, artist: artistInput.value.trim() });
-              },
-            },
-          }),
-        ),
-        h('button', {
-          className: 'ey-secondary-btn',
-          text: '상세 검색 (후보 선택·싱크 연결)',
-          on: { click: () => this.openSearch() },
-        }),
-        h('div', { className: 'ey-divider' }),
-        this.buildPasteSection(true),
-      ),
-    );
-  }
-
-  /** 가사 직접 붙여넣기 섹션 (토글 접힘) — 빈 상태·검색 시트 공용 */
-  private buildPasteSection(startOpen = false): HTMLDivElement {
-    const lyricsArea = h('textarea', {
-      className: 'ey-textarea',
-      attrs: {
-        placeholder: '여기에 가사를 붙여넣으면 AI가 타이밍을 맞춰줘요\n'
-          + '유의: 제목·섹션 표기 등 없이 줄바꿈만 있는 원문 언어 가사여야 합니다.',
-        rows: '6',
-      },
-    });
-    this.captionListEl = h('div', { className: 'ey-result-list' });
-    // 영상에 올라간 자막(일본어 가사 자막 등)을 가사로 가져오는 버튼 — 트랙을 고르면
-    // 자막 타이밍 그대로 싱크 가사로 바로 표시된다 (가사가 아니면 눈으로 확인 후 재검색)
-    const captionBtn = h('button', {
-      className: 'ey-secondary-btn',
-      text: '이 영상 자막에서 가사 가져오기',
-      attrs: { title: '영상에 자막(예: 일본어 가사)이 있으면 자막 타이밍 그대로 싱크 가사로 표시해요. 이어서 AI 전사(음정·발음)도 만들 수 있어요.' },
-      on: {
-        click: () => {
-          this.setCaptionStatus('자막 트랙 확인 중… (서버 경유, 몇 초 걸려요)');
-          this.callbacks.onCaptionTracks();
-        },
-      },
-    });
-    const pasteSection = h('div', { className: 'ey-paste-section' },
-      lyricsArea,
-      h('div', {
-        className: 'ey-state-sub',
-        text: '유의: 제목·섹션 표기([Verse] 등)가 섞이면 타이밍이 어긋나요 — 원문 가사 줄만 넣어 주세요',
-      }),
-      captionBtn,
-      this.captionListEl,
-      this.makeGenerateButton('붙여넣은 가사로 싱크 생성', () => {
-        const text = lyricsArea.value.trim();
-        if (!text) {
-          // 빈 채로 눌렀을 때 무반응이면 버튼이 죽은 줄 안다 — 안내 후 입력칸으로 포커스
-          this.setCaptionStatus('가사를 먼저 붙여넣어 주세요');
-          lyricsArea.focus();
-          return;
-        }
-        this.callbacks.onGenerate(text);
-      }),
-    );
-    pasteSection.style.display = startOpen ? '' : 'none';
-
-    const pasteToggle = h('button', {
-      className: 'ey-secondary-btn',
-      text: startOpen ? '붙여넣기 닫기' : '가사 직접 붙여넣기',
-      on: {
-        click: () => {
-          const hidden = pasteSection.style.display === 'none';
-          pasteSection.style.display = hidden ? '' : 'none';
-          pasteToggle.textContent = hidden ? '붙여넣기 닫기' : '가사 직접 붙여넣기';
-        },
-      },
-    });
-    return h('div', { className: 'ey-paste-wrap' }, pasteToggle, pasteSection);
-  }
-
-  /** YT_CAPTION_TRACKS 응답 반영 — 트랙 선택 버튼 목록 */
-  showCaptionTracks(tracks: CaptionTrack[]): void {
-    if (!this.captionListEl) return;
-    if (tracks.length === 0) {
-      this.setCaptionStatus('이 영상에는 가져올 자막이 없어요');
-      return;
-    }
-    this.captionListEl.replaceChildren(...tracks.map(t =>
-      h('button', {
-        className: 'ey-result-item',
-        on: {
-          click: () => {
-            this.setCaptionStatus('자막 불러오는 중… (타이밍 포함, 몇 초 걸려요)');
-            this.callbacks.onCaptionPick(t);
-          },
-        },
-      },
-        h('span', { className: 'ey-result-src', text: t.lang || '자막' }),
-        h('span', { className: 'ey-result-title', text: t.label }),
-        h('span', { className: 'ey-result-meta', text: t.auto ? '자동 생성 — 노래는 부정확할 수 있음' : '업로더 자막' }),
-      )));
-  }
-
-  /** 자막 섹션 상태 메시지 */
-  setCaptionStatus(message: string): void {
-    this.captionListEl?.replaceChildren(h('div', { className: 'ey-state-sub', text: message }));
+    this.body.append(buildEmptyState(this.panelContext(), song));
   }
 
   /** 상시 재검색: 현재 곡 정보를 초기값으로 검색 폼 + 소스별 후보 리스트를 연다 */
@@ -493,61 +378,40 @@ export class LyricsOverlay {
     this.stateKind = 'search';
     this.resetBody();
 
-    const titleInput = h('input', { className: 'ey-input', attrs: { placeholder: '곡 제목' } });
-    titleInput.value = this.lastSong?.title ?? '';
-    const artistInput = h('input', { className: 'ey-input', attrs: { placeholder: '아티스트 (선택)' } });
-    artistInput.value = this.lastSong?.artist ?? '';
-
-    this.searchResultsEl = h('div', { className: 'ey-result-list' });
-    const doSearch = () => {
-      const title = titleInput.value.trim();
-      if (!title) return;
-      this.setSearchStatus('검색 중…');
-      this.callbacks.onCandidateSearch({ title, artist: artistInput.value.trim() });
-    };
-    titleInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
-    artistInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
-
-    this.body.append(
-      h('div', { className: 'ey-state ey-search-state' },
-        h('button', {
-          className: 'ey-secondary-btn ey-search-back',
-          text: '← 보던 가사로 돌아가기',
-          on: { click: () => this.callbacks.onCloseSearch() },
-        }),
-        h('div', { className: 'ey-state-text', text: '가사 검색 — 결과에서 직접 선택할 수 있어요' }),
-        h('div', { className: 'ey-state-sub', text: '보카로 위키(발음·번역 포함) + LRCLIB(싱크 가사)를 함께 검색합니다' }),
-        h('div', { className: 'ey-search-form' },
-          titleInput,
-          artistInput,
-          h('button', { className: 'ey-primary-btn', text: '검색', on: { click: doSearch } }),
-        ),
-        this.searchResultsEl,
-        h('div', { className: 'ey-divider' }),
-        this.buildPasteSection(),
-        h('div', { className: 'ey-divider' }),
-        this.buildLinkSection(),
-        h('div', { className: 'ey-divider' }),
-        h('button', {
-          className: 'ey-secondary-btn',
-          text: '자동 검색으로 되돌리기',
-          on: { click: () => this.callbacks.onRetrySearch() },
-        }),
-        h('button', {
-          className: 'ey-secondary-btn',
-          text: '이 영상 싱크 초기화 (서버 저장 삭제)',
-          attrs: { title: '잘못 붙여넣은 가사로 만든 싱크를 완전히 지우고 처음부터 다시 시작합니다' },
-          on: {
-            click: () => {
-              if (window.confirm('이 영상의 서버 싱크(정렬·발음·번역 저장본)를 모두 삭제할까요?\n삭제 후 자동 검색이 다시 실행되고, 가사를 새로 붙여넣을 수 있어요.')) {
-                this.callbacks.onResetSync();
-              }
+    const sheet = buildSearchSheet(
+      this.panelContext(),
+      { title: this.lastSong?.title ?? '', artist: this.lastSong?.artist ?? '' },
+      {
+        onBack: () => this.callbacks.onCloseSearch(),
+        // 메인 패널에만 있는 고급 섹션 — 다른 영상 싱크 연결과 서버 저장 삭제는
+        // 실수 여파가 커서 PiP의 축약 검색 시트에는 넣지 않는다
+        extras: [
+          h('div', { className: 'ey-divider' }),
+          this.buildLinkSection(),
+          h('div', { className: 'ey-divider' }),
+          h('button', {
+            className: 'ey-secondary-btn',
+            text: '자동 검색으로 되돌리기',
+            on: { click: () => this.callbacks.onRetrySearch() },
+          }),
+          h('button', {
+            className: 'ey-secondary-btn',
+            text: '이 영상 싱크 초기화 (서버 저장 삭제)',
+            attrs: { title: '잘못 붙여넣은 가사로 만든 싱크를 완전히 지우고 처음부터 다시 시작합니다' },
+            on: {
+              click: () => {
+                if (window.confirm('이 영상의 서버 싱크(정렬·발음·번역 저장본)를 모두 삭제할까요?\n삭제 후 자동 검색이 다시 실행되고, 가사를 새로 붙여넣을 수 있어요.')) {
+                  this.callbacks.onResetSync();
+                }
+              },
             },
-          },
-        }),
-      ),
+          }),
+        ],
+      },
     );
-    if (titleInput.value) doSearch();
+    this.searchResultsEl = sheet.results;
+    this.body.append(sheet.el);
+    sheet.runSearch();
   }
 
   /** 다른 영상 싱크 연결 섹션 (inst·커버 영상용) — 검색 시트 하단 */
@@ -685,7 +549,7 @@ export class LyricsOverlay {
 
   /** 링크 섹션 상태 메시지 (검색 상태가 아니면 무시) */
   setLinkStatus(message: string): void {
-    this.linkListEl?.replaceChildren(h('div', { className: 'ey-state-sub', text: message }));
+    setListStatus(this.linkListEl, message);
   }
 
   /** 현재 싱크의 링크 상태 — 검색 시트의 해제 UI와 출처 배지에 반영 */
@@ -696,32 +560,7 @@ export class LyricsOverlay {
   /** SEARCH_CANDIDATES 응답 반영 — 검색 상태가 아니면 무시 (stale 응답 방지) */
   showSearchResults(candidates: SearchCandidate[]): void {
     if (this.stateKind !== 'search' || !this.searchResultsEl) return;
-    if (candidates.length === 0) {
-      this.setSearchStatus('결과가 없어요 — 제목을 줄이거나 원제(일본어)로 시도해 보세요');
-      return;
-    }
-    const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
-    this.searchResultsEl.replaceChildren(...candidates.map(c => {
-      const isWiki = c.source === 'vocaro';
-      const label = isWiki ? c.title : `${c.title}${c.artist ? ' — ' + c.artist : ''}`;
-      const meta = isWiki
-        ? '발음·번역'
-        : `${c.synced ? '싱크' : '일반'}${c.duration > 0 ? ` · ${fmt(c.duration)}` : ''}`;
-      const btn = h('button', {
-        className: 'ey-result-item',
-        on: { click: () => this.callbacks.onPickCandidate(c) },
-      },
-        h('span', { className: `ey-result-src${isWiki ? ' vocaro' : ''}`, text: isWiki ? '보카로 위키' : 'LRCLIB' }),
-        h('span', { className: 'ey-result-title', text: label }),
-        h('span', { className: 'ey-result-meta', text: meta }),
-      );
-      btn.title = isWiki ? c.url : label;
-      return btn;
-    }));
-  }
-
-  private setSearchStatus(message: string): void {
-    this.searchResultsEl?.replaceChildren(h('div', { className: 'ey-state-sub', text: message }));
+    renderCandidateList(this.searchResultsEl, candidates, c => this.callbacks.onPickCandidate(c));
   }
 
   showGenerating(progress: number, label?: string): void {
@@ -734,29 +573,16 @@ export class LyricsOverlay {
     }
     this.stateKind = 'generating';
     this.resetBody();
-    this.progressBar = h('div', { className: 'ey-progress-bar' });
-    this.progressBar.style.width = `${pct}%`;
-    this.progressText = h('div', { className: 'ey-state-text', text });
-    this.body.append(
-      h('div', { className: 'ey-state' },
-        h('div', { className: 'ey-state-emoji', text: '✨' }),
-        this.progressText,
-        h('div', { className: 'ey-progress' }, this.progressBar),
-        h('div', { className: 'ey-state-sub', text: '계속 시청하셔도 돼요. 완료되면 자동으로 표시됩니다.' }),
-      ),
-    );
+    const refs = buildGeneratingState(pct, text);
+    this.progressBar = refs.bar;
+    this.progressText = refs.text;
+    this.body.append(refs.el);
   }
 
   showError(message: string): void {
     this.stateKind = 'error';
     this.resetBody();
-    this.body.append(
-      h('div', { className: 'ey-state' },
-        h('div', { className: 'ey-state-emoji', text: '⚠️' }),
-        h('div', { className: 'ey-state-text', text: message }),
-        h('button', { className: 'ey-primary-btn', text: '다시 시도', on: { click: () => this.callbacks.onRetrySearch() } }),
-      ),
-    );
+    this.body.append(buildErrorState(this.panelContext(), message));
   }
 
   showPipPlaceholder(): void {
@@ -775,12 +601,23 @@ export class LyricsOverlay {
 
   highlightLine(index: number): void {
     if (this.stateKind !== 'synced') return;
+    const prevIndex = this.currentIndex;
     this.currentIndex = index;
     this.activeWordEls = [];
     this.lineEls.forEach((el, i) => {
       el.classList.toggle('active', i === index);
       el.classList.toggle('past', index >= 0 && i < index);
     });
+    // 되감기: sung은 활성 라인에만 토글되므로 앞으로 되돌아가면 미래가 된 줄들에
+    // 이미 부른 표시가 남는다. 활성 라인보다 뒤쪽 줄의 sung을 걷어낸다
+    // (활성 라인 자신은 곧 updateTime이 재계산한다).
+    if (index < prevIndex) {
+      for (let i = Math.max(index, -1) + 1; i < this.lineEls.length; i++) {
+        for (const el of this.lineEls[i].querySelectorAll('.ey-word.sung, .ey-pron-syl.sung')) {
+          el.classList.remove('sung');
+        }
+      }
+    }
     const active = index >= 0 ? this.lineEls[index] : undefined;
     if (active) {
       // 발음 음절(.ey-pron-syl)도 단어와 같은 sung 토글 메커니즘에 합류
@@ -830,7 +667,7 @@ export class LyricsOverlay {
     this.generateButtons = this.generateButtons.filter(btn => btn.isConnected);
     for (const btn of this.generateButtons) {
       btn.disabled = !available;
-      btn.title = available ? '' : 'Everyric 서버에 연결할 수 없어요 (설정에서 서버 URL 확인)';
+      btn.title = available ? '' : SERVER_UNAVAILABLE_TIP;
     }
     this.settingsDot?.classList.toggle('ok', available);
   }
@@ -996,10 +833,7 @@ export class LyricsOverlay {
   }
 
   private makeGenerateButton(label: string, onClick: () => void): HTMLButtonElement {
-    const btn = h('button', { className: 'ey-primary-btn ey-generate-btn', on: { click: onClick } },
-      icon(ICONS.sparkle), label);
-    btn.disabled = !this.serverAvailable;
-    if (!this.serverAvailable) btn.title = 'Everyric 서버에 연결할 수 없어요 (설정에서 서버 URL 확인)';
+    const btn = createGenerateButton(label, this.serverAvailable, onClick);
     this.generateButtons.push(btn);
     return btn;
   }
@@ -1019,7 +853,6 @@ export class LyricsOverlay {
     this.progressBar = null;
     this.progressText = null;
     this.searchResultsEl = null;
-    this.captionListEl = null;
     this.closeSettings();
   }
 
@@ -1197,6 +1030,12 @@ export class LyricsOverlay {
     pitchF0Curve.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ pitchF0Curve: pitchF0Curve.checked }));
 
+    const pitchPronPosition = this.buildSelect(
+      [['note', '노트 위'], ['bottom', '화면 하단']],
+      this.settings.pitchPronPosition,
+      v => this.callbacks.onSettingsChange({ pitchPronPosition: v as Settings['pitchPronPosition'] }),
+    );
+
     const melodyPlayback = h('input', { attrs: { type: 'checkbox' } });
     melodyPlayback.checked = this.settings.melodyPlayback;
     melodyPlayback.addEventListener('change', () =>
@@ -1286,6 +1125,7 @@ export class LyricsOverlay {
       h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 바 글자 크기' }), pitchFont),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 시작 카운트다운' }), pitchCountdown),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 원본 곡선(f0) 표시', attrs: { title: '음정 모델이 추출한 원본 멜로디 곡선을 레인에 파란 선으로 표시합니다. 디버그 모드와 무관하게 켜고 끌 수 있어요.' } }), pitchF0Curve),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: '발음 표기 위치', attrs: { title: '음절 타이밍이 있는 곡에서 발음 표기를 어디에 표시할지 고릅니다. 노트 위 = 각 노트 바로 아래 부착, 화면 하단 = 진행률 그라데이션으로 하단 중앙 표시.' } }), pitchPronPosition),
       h('div', { className: 'ey-settings-row' },
         h('label', { text: '멜로디 재생 (가라오케 창)', attrs: { title: '전사된 노트를 신디사이즈로 재생합니다. 가라오케 창이 열려 있을 때만 소리가 나요.' } }),
         h('span', { className: 'ey-settings-inline' }, melodyVolume, melodyPlayback)),

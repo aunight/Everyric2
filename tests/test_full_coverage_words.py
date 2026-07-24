@@ -87,6 +87,83 @@ def test_leading_and_trailing_gap_chars():
     out = _full_coverage_words(text, toks)
     assert _join(out) == text
     assert _monotonic(out)
-    # 앞 공백은 첫 토큰 시각(next_start)으로, 뒤 공백은 마지막 토큰 end로 앵커
+    # 라인 경계를 안 주면 예전대로 안쪽 앵커에 붙은 길이 0
     assert out[0]["word"] == " " and out[0]["confidence"] is None
     assert out[-1]["word"] == " " and out[-1]["confidence"] is None
+    assert out[0]["start"] == out[0]["end"] == 2.0
+    assert out[-1]["start"] == out[-1]["end"] == 2.2
+
+
+# --- 길이 0 blip 제거: 미커버 구간을 앞뒤 앵커 사이에 글자 수 비례 분배 -----------
+
+
+def test_uncovered_run_is_spread_proportionally_not_zero_length():
+    # 독음 역매핑 실패 재현: 가운데 3글자가 타이밍을 못 받는다. 예전에는 셋 다 prev_end에
+    # 길이 0으로 찍혀 화면에서 한꺼번에 점등했다 (실측: 원문 글자 55~69%가 길이 0,
+    # 3글자 이상 동시 시작 38~59%). 이제 앞뒤 앵커 사이에 균등 분배된다.
+    text = "あいうえお"
+    toks = [_seg("あ", 0.0, 1.0), _seg("お", 4.0, 5.0)]
+    out = _full_coverage_words(text, toks)
+
+    assert _join(out) == text  # 계약 유지
+    assert _monotonic(out)
+    mid = out[1:4]
+    assert [o["start"] for o in mid] == [1.0, 2.0, 3.0]
+    assert [o["end"] for o in mid] == [2.0, 3.0, 4.0]
+    assert len({o["start"] for o in mid}) == 3  # 동시 시작 0건
+    assert all(o["confidence"] is None for o in mid)  # 보간 글자는 conf 없음
+
+
+def test_no_zero_length_blip_in_sparsely_mapped_line():
+    # 실사용 형태: 토큰이 드문드문만 붙은 라인 — 길이 0 글자와 3글자 동시 시작이 사라진다
+    text = "誰も知らない世界の果てまで"
+    toks = [_seg("誰", 10.0, 10.3), _seg("世", 12.4, 12.7), _seg("で", 14.0, 14.3)]
+    out = _full_coverage_words(text, toks, 9.8, 14.5)
+
+    assert _join(out) == text
+    assert _monotonic(out)
+    assert all(o["end"] > o["start"] for o in out)  # 길이 0 글자 없음
+    starts = [o["start"] for o in out]
+    assert len(set(starts)) == len(starts)  # 동시 시작 없음
+
+
+def test_outer_runs_borrow_from_line_bounds_within_per_char_cap():
+    text = "ABCD"
+    toks = [_seg("B", 2.0, 2.5), _seg("C", 2.5, 3.0)]
+    out = _full_coverage_words(text, toks, 1.0, 5.0)
+
+    assert _join(out) == text
+    assert _monotonic(out)
+    # 선두 A: 라인 시작(1.0)까지 빌리되 글자당 0.3s 상한 → 1.7~2.0
+    assert out[0]["start"] == 1.7 and out[0]["end"] == 2.0
+    # 말미 D: 라인 끝(5.0)까지 빌리되 상한 → 3.0~3.3 (라인 끝 5.0을 통째로 점등하지 않는다)
+    assert out[3]["start"] == 3.0 and out[3]["end"] == 3.3
+
+
+def test_outer_run_clipped_by_nearby_line_bound():
+    # 라인 경계가 글자당 상한보다 가까우면 경계가 이긴다 (라인 밖으로 안 나간다)
+    text = "AB"
+    toks = [_seg("A", 2.0, 2.2)]
+    out = _full_coverage_words(text, toks, 1.95, 2.3)
+    assert _join(out) == text
+    assert out[1]["start"] == 2.2 and out[1]["end"] == 2.3
+
+
+def test_backward_tokens_collapse_gap_to_zero_length():
+    # 원 토큰이 비단조면(뒤 앵커가 앞 앵커보다 이름) 구간을 앞 앵커에 붙인 길이 0으로 접는다
+    # — 예전 동작과 동일. 없던 역행을 새로 만들지 않는다.
+    text = "ABC"
+    toks = [_seg("A", 5.0, 6.0), _seg("C", 1.0, 2.0)]
+    out = _full_coverage_words(text, toks)
+    assert _join(out) == text
+    assert out[1]["start"] == 6.0 and out[1]["end"] == 6.0
+
+
+def test_all_tokens_spurious_still_covers_body():
+    # 토큰이 전부 본문에 없는 표기(전부 스퓨리어스) → 라인 경계에 균등 분배, join 계약 유지
+    text = "あいう"
+    toks = [_seg("x", 1.0, 1.2), _seg("y", 1.2, 1.4)]
+    out = _full_coverage_words(text, toks, 0.0, 3.0)
+    assert _join(out) == text
+    assert _monotonic(out)
+    assert out[0]["start"] == 0.0 and out[-1]["end"] == 3.0

@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import statistics
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -31,6 +32,21 @@ def stash_attribution(job_id: str, attribution: dict[str, Any]) -> None:
 
 def stash_force(job_id: str) -> None:
     _PENDING_FORCE.add(job_id)
+
+
+# 잡별 영상 제목/아티스트 — 완성된 싱크에 함께 저장돼 커버 링크 후보 탐색의 단서가 된다.
+# Job 테이블에 컬럼을 더하지 않고 라인 메타·출처와 같은 인메모리 스태시 관례를 따른다
+# (인프로세스·원격 워커 두 경로 모두 저장은 서버 프로세스에서 일어난다).
+_PENDING_TITLE: dict[str, tuple[str | None, str | None]] = {}
+
+
+def stash_title(job_id: str, title: str | None, artist: str | None = None) -> None:
+    if title or artist:
+        _PENDING_TITLE[job_id] = (title, artist)
+
+
+def peek_title(job_id: str) -> tuple[str | None, str | None]:
+    return _PENDING_TITLE.get(job_id, (None, None))
 
 
 # 사용자 취소 요청 잡 — 취소 API가 넣고, 워커가 단계 경계에서 확인해 중단한다.
@@ -84,16 +100,48 @@ def _job_slot() -> asyncio.Semaphore:
 
 
 def _normalize_line(s: str) -> str:
-    return " ".join(s.split())
+    """라인 매칭용 정규화 키 — 유니코드 호환 정규화(NFKC) + 서식문자 제거 + 공백 전면 제거.
+
+    라인 메타(발음/번역)는 가사 원문과 별도 경로로 들어와 표기가 미세하게 어긋난다.
+    공백만 접던 예전 규칙은 구두점 앞뒤 띄어쓰기 차이(``Are you ready ?`` vs
+    ``Are you ready?``)나 전각/반각 차이(``！`` vs ``!``)를 다른 라인으로 취급해
+    실측 6줄이 메타를 못 받았다. NFKC가 전각/반각·호환 문자를 접고, 공백을 전부
+    지워 띄어쓰기 위치 차이를 흡수한다.
+    **구두점 자체는 지우지 않는다** — 지우면 ``行く。``와 ``行く？``처럼 부호만 다른
+    별개 라인이 같은 키로 뭉쳐 엉뚱한 메타가 붙는다(과잉 정규화 위험).
+    """
+    t = unicodedata.normalize("NFKC", s)
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")  # ZWSP·BOM 등 서식문자
+    return re.sub(r"\s+", "", t)
+
+
+def _meta_has_value(m: dict[str, Any]) -> bool:
+    """라인 메타가 실제로 쓸 값(발음 또는 번역)을 담고 있는지."""
+    return bool((m.get("pronunciation") or "").strip() or (m.get("translation") or "").strip())
+
+
+def _index_line_meta(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    """line_meta를 정규화 텍스트 → 메타로 색인 — **값이 있는 첫 항목**을 채택한다.
+
+    예전 규칙(첫 등장 무조건 채택)은 반복 후렴에 치명적이었다: 후렴 첫 등장의 발음/번역이
+    비어 있으면 그 빈 항목이 키를 선점해, 값이 채워진 나머지 반복분까지 영구히 비었다
+    (실측: 후렴 5회 반복 곡에서 5회 전부 누락). 값이 있는 항목이 나오면 빈 항목을 대체한다.
+    값 있는 항목끼리는 여전히 첫 등장이 이긴다(안정적 선택).
+    """
+    by_text: dict[str, dict[str, Any]] = {}
+    for m in line_meta or []:
+        t = _normalize_line(m.get("text", "") or "")
+        if not t:
+            continue
+        cur = by_text.get(t)
+        if cur is None or (not _meta_has_value(cur) and _meta_has_value(m)):
+            by_text[t] = m
+    return by_text
 
 
 def merge_line_meta(timestamps: list[dict[str, Any]], line_meta: list[dict[str, Any]]) -> int:
     """세그먼트에 발음/번역을 라인 텍스트 매칭으로 병합. 병합된 세그먼트 수를 반환."""
-    by_text: dict[str, dict[str, Any]] = {}
-    for m in line_meta:
-        t = _normalize_line(m.get("text", "") or "")
-        if t and t not in by_text:
-            by_text[t] = m
+    by_text = _index_line_meta(line_meta)
 
     merged = 0
     for seg in timestamps:
@@ -206,6 +254,7 @@ async def _complete_from_cache_db(
             return False
         meta = _PENDING_LINE_META.pop(job_id, None)
         attr = _PENDING_ATTRIBUTION.pop(job_id, None)
+        title, artist = _PENDING_TITLE.pop(job_id, (None, None))
         target = existing
         if existing.video_id != job.video_id:
             src = dict(existing.timestamps)
@@ -219,7 +268,11 @@ async def _complete_from_cache_db(
                 quality_score=existing.quality_score,
                 audio_hash=audio_hash,
                 extra=src,
+                title=title,
+                artist=artist,
             )
+        else:
+            await sync_repo.set_title_if_missing(target, title, artist)
             logger.info(
                 f"Job {job_id}: copied sync from video {existing.video_id} "
                 f"(same audio+lyrics) into {job.video_id}"
@@ -445,6 +498,7 @@ async def _process_job_inner(job_id: str, job) -> None:
     if fail_reason:
         _PENDING_LINE_META.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
+        _PENDING_TITLE.pop(job_id, None)
         async with get_session() as session:
             await JobRepository(session).update_status(job_id, "failed", error=fail_reason)
         logger.info(f"Job {job_id} rejected (media cache preflight): {fail_reason}")
@@ -467,12 +521,14 @@ async def _process_job_inner(job_id: str, job) -> None:
             # 취소 또는 캐시 완결 — 잡 상태·오디오 정리는 각 경로가 이미 끝냈다
             _PENDING_LINE_META.pop(job_id, None)
             _PENDING_ATTRIBUTION.pop(job_id, None)
+            _PENDING_TITLE.pop(job_id, None)
             return
 
         async with get_session() as session:
             job_repo = JobRepository(session)
             sync_repo = SyncRepository(session)
 
+            title, artist = peek_title(job_id)
             sync_result = await sync_repo.create(
                 video_id=job.video_id,
                 lyrics_hash=hash_lyrics(job.lyrics),
@@ -482,6 +538,8 @@ async def _process_job_inner(job_id: str, job) -> None:
                 quality_score=result.quality_score,
                 audio_hash=result.audio_hash,
                 extra=result.extra,
+                title=title,
+                artist=artist,
             )
 
             await job_repo.update_status(
@@ -490,11 +548,13 @@ async def _process_job_inner(job_id: str, job) -> None:
             logger.info(f"Job completed: {job_id}")
         _PENDING_LINE_META.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
+        _PENDING_TITLE.pop(job_id, None)
 
     except PipelineError as e:
         # 사용자 노출 실패 (과길이 등) — 친절한 한국어 문구를 그대로 보존
         _PENDING_LINE_META.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
+        _PENDING_TITLE.pop(job_id, None)
         async with get_session() as session:
             await JobRepository(session).update_status(job_id, "failed", error=str(e))
         logger.info(f"Job {job_id} rejected: {e}")
@@ -503,6 +563,7 @@ async def _process_job_inner(job_id: str, job) -> None:
         logger.exception(f"Job failed: {job_id}")
         _PENDING_LINE_META.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
+        _PENDING_TITLE.pop(job_id, None)
         _PENDING_FORCE.discard(job_id)
         async with get_session() as session:
             job_repo = JobRepository(session)
@@ -729,6 +790,22 @@ def _clamp_repeated_outliers(results, clamped: set[int]) -> None:
                 clamped.add(i)
 
 
+def _starts_on_vocal_onset(line, regions, tol: float = 0.5) -> bool:
+    """라인의 첫 글자가 실제 발성 리전의 온셋 위(±tol)에 얹혀 있는지.
+
+    "발성 위에 있는가"(리전 안 어디든)가 아니라 "**온셋과 맞는가**"를 본다 — 늦게 잡힌
+    라인도 그 시점엔 노래가 이어지고 있어 리전 '안'에는 들어가므로, 단순 겹침으로는
+    정확한 시작과 늦은 시작을 못 가른다. 온셋 일치는 CTC가 실제 발성 시작을 물었다는 뜻이다.
+    글자 타이밍이 없으면(word_segments 없음) 판정하지 않는다 — 라인 start는 이미
+    보정 대상 값이라 근거가 될 수 없다.
+    """
+    toks = [w for w in (getattr(line, "word_segments", None) or []) if w.word]
+    if not toks:
+        return False
+    first = toks[0].start
+    return any(abs(first - reg.start) <= tol for reg in regions)
+
+
 def _pull_post_interlude_starts(results, vad_result, clamped: set[int]) -> None:
     """긴 간주(직전 라인 end와 8초 이상 벌어짐) 뒤 첫 라인의 시작이 실제 보컬 시작보다
     늦게 잡히면, 라인이 속한 가창 블록의 시작으로 라인 start를 당긴다.
@@ -737,12 +814,23 @@ def _pull_post_interlude_starts(results, vad_result, clamped: set[int]) -> None:
     이어지는 리전 체인의 시작**이다 — 간주 초입의 고립된 잔향/애드립 리전(체인 밖)에
     끌려가 3배 가드에 걸리는 오탐을 막는다 (熱異常 실측: 40초 간주 초입 0.6초 잔향).
     end는 유지하고, 당긴 결과 duration이 원래의 3배를 넘으면 오탐으로 보고 건너뛴다.
+
+    **첫 글자가 실제 발성 온셋 위에 얹혀 있으면(±0.5s) 당기지 않는다** — CTC가 잡은
+    시작이 VAD 온셋과 맞아떨어졌다는 것은 그 시작이 이미 옳다는 음향 증거다. 이 가드가
+    없어 정확한 raw를 뒤로 끌어당긴 실측 사고가 있었다 (G5hScSFkib4 idx6 +0.37→−3.30s,
+    idx27 +0.27→−6.91s). 반대로 진짜 늦게 잡힌 라인(熱異常)은 첫 글자가 리전 온셋이 아니라
+    이미 진행 중인 발성 한복판에 떨어져 이 가드에 안 걸린다.
+    당길 때는 라인 start만이 아니라 **글자 스팬도 함께 옮긴다** — start만 바꾸면 라인 시작과
+    글자 위치가 어긋난 채 남아 이후 단계가 '글자가 라인 밖'으로 오판한다.
     """
+    all_regions = sorted(vad_result.regions, key=lambda reg: reg.start)
     for i in range(1, len(results)):
         r = results[i]
         prev_end = results[i - 1].end_time
         if r.start_time - prev_end < 8.0:
             continue
+        if _starts_on_vocal_onset(r, all_regions):
+            continue  # 첫 글자가 실제 발성 온셋 위 — raw 시작이 이미 옳다
         # 간주~라인 구간의 발성 리전 (시간순)
         regions = sorted(
             (reg for reg in vad_result.regions if reg.end > prev_end and reg.start < r.end_time),
@@ -762,6 +850,8 @@ def _pull_post_interlude_starts(results, vad_result, clamped: set[int]) -> None:
         if r.end_time - new_start > 3.0 * orig_dur:
             continue  # 3배 초과로 늘어나면 오탐 — 적용하지 않는다
         r.start_time = new_start
+        if r.word_segments:
+            _shift_word_segments(r.word_segments, r.start_time, r.end_time)
         clamped.add(i)
 
 
@@ -802,6 +892,36 @@ def _extend_phrase_final_tails(results, vad_result, clamped: set[int]) -> None:
             r.word_segments[-1].end = new_end
 
 
+def _line_body_region(line, regions):
+    """라인의 '정체'를 담은 발성 리전 — word_segments 질량이 가장 큰 리전.
+
+    글자(word_segments)의 중점이 어느 리전 위에 떨어지는지로 질량을 세고(글자 수 가중),
+    최대 질량 리전을 돌려준다. 중점을 쓰는 이유: CTC 잔해는 글자 스팬이 길이 0으로
+    무너지는 일이 잦아 '겹침 길이'로는 질량이 전부 0이 된다 — 중점은 스팬이 무너져도
+    위치를 보존한다. 어느 리전에도 안 떨어지는 글자(무음 위)는 세지 않는다.
+    질량을 못 재면(word_segments 없음/전부 무음 위) 첫 리전으로 폴백한다.
+
+    라인이 여러 리전에 걸칠 때 **첫 리전을 무조건 정체로 가정하면** 실제 내용이 뒤쪽
+    리전에 있는 라인의 맞는 끝을 버리게 된다 (실측: OHcNQHbWrFY idx21 −35.69s,
+    G5hScSFkib4 idx26 −13.57s — 둘 다 raw 끝이 정답에 근접했는데 클램프가 파괴).
+    """
+    if not regions:
+        return None
+    toks = [w for w in (getattr(line, "word_segments", None) or []) if w.word]
+    if toks:
+        mass = [0.0] * len(regions)
+        for w in toks:
+            mid = (w.start + w.end) / 2.0
+            for k, reg in enumerate(regions):
+                if reg.start <= mid <= reg.end:
+                    mass[k] += len(w.word)
+                    break
+        best = max(range(len(regions)), key=lambda k: mass[k])  # 동률은 가장 이른 리전
+        if mass[best] > 0:
+            return regions[best]
+    return regions[0]
+
+
 def _diff_fixes(
     fixes: dict[int, list[str]],
     label: str,
@@ -822,7 +942,8 @@ def _clamp_stretched_lines(results, vad_result, fixes: dict[int, list[str]] | No
 
     CTC는 같은 가사가 여러 번 불리면 글자들을 여러 렌디션에 걸쳐 흩뿌릴 수 있다
     (라인 사이 star로는 못 잡는 케이스). 지속 8초 초과 + 발성 커버리지 50% 미만인
-    라인만 첫 발성 구간 끝으로 클램프한다 — 정상 라인은 건드리지 않는다.
+    라인만 **글자 질량이 실린 발성 구간**(_line_body_region) 끝으로 클램프한다 —
+    정상 라인은 건드리지 않는다.
     여기에 더해 반복행 outlier 클램프·간주 후 시작 앵커 당기기·소절 끝 늘임음
     연장을 함께 적용한다. fixes를 넘기면 규칙별 적용 라인을 라벨링한다(디버그).
     반환: (results, 클램프된 라인 인덱스 집합)
@@ -841,7 +962,8 @@ def _clamp_stretched_lines(results, vad_result, fixes: dict[int, list[str]] | No
         vocal = sum(min(reg.end, r.end_time) - max(reg.start, r.start_time) for reg in regions)
         if vocal / dur >= 0.5:
             continue
-        new_end = min(r.end_time, max(regions[0].end + 0.3, r.start_time + 1.5))
+        body = _line_body_region(r, regions)
+        new_end = min(r.end_time, max(body.end + 0.3, r.start_time + 1.5))
         if new_end < r.end_time:
             r.end_time = new_end
             clamped.add(i)
@@ -1101,7 +1223,67 @@ def _dual_align_prefers_original(ko_conf: float, ja_conf: float | None, min_rati
     return ja_conf is not None and ja_conf >= ko_conf * min_ratio
 
 
-def _full_coverage_words(text: str, word_segments) -> list[dict[str, Any]]:
+def _spread_uncovered_words(
+    out: list[dict[str, Any]],
+    covered: list[bool],
+    line_start: float | None,
+    line_end: float | None,
+    outer_per_char: float = 0.3,
+) -> None:
+    """타이밍이 없는 글자(covered=False) 구간을 앞뒤 앵커 사이에 글자 수 비례로 분배(제자리).
+
+    예전에는 이런 글자를 전부 ``start = end = prev_end``인 **길이 0 점**으로 채웠다. 독음
+    정렬 곡은 역매핑 실패로 원문 글자의 55~69%가 이 상태였고, 3글자 이상이 같은 시각에
+    시작하는 비율이 38~59%에 달해 화면에서 원문이 뭉텅이로 한꺼번에 점등했다
+    (대조군인 원문 정렬 곡은 11% / 2%).
+
+    앞 앵커는 직전 글자의 end, 뒤 앵커는 다음 글자의 start다. 라인 선두/말미 구간은 안쪽
+    앵커가 한쪽뿐이라 라인 경계(line_start/line_end)를 바깥 앵커로 쓰되, 라인 경계는
+    클램프·스냅이 잡은 값이라 토큰 스팬과 크게 어긋날 수 있어 **글자당 outer_per_char초**
+    까지만 빌린다(라인 끝이 30초 뒤인 클램프 라인에서 말미 부호 하나가 30초 점등하는 것을
+    막는다). 바깥 앵커가 없으면 예전대로 길이 0으로 둔다.
+    타이밍 단조성은 유지된다 — 뒤 앵커가 앞 앵커보다 이르면(원 토큰이 비단조) 구간을
+    앞 앵커에 붙인 길이 0으로 접어 예전 동작과 같아진다.
+    """
+    n = len(out)
+    i = 0
+    while i < n:
+        if covered[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and not covered[j]:
+            j += 1
+        length = j - i
+        lo = out[i - 1]["end"] if i > 0 else None
+        hi = out[j]["start"] if j < n else None
+        if lo is None and hi is None:
+            # 라인 전체가 미커버(토큰이 전부 스퓨리어스) — 안쪽 앵커가 아예 없으니 라인 스팬
+            # 전체에 균등 분배한다(_resynth_word_segments와 같은 폴백). 상한을 두면 라인
+            # 앞머리에 전부 몰려 blip이 그대로 남는다.
+            lo = line_start if line_start is not None else 0.0
+            hi = max(line_end, lo) if line_end is not None else lo
+        elif lo is None:  # 라인 선두 구간 — 라인 시작에서 뒤로 빌린다
+            lo = hi if line_start is None else max(line_start, hi - outer_per_char * length)
+            lo = min(lo, hi)
+        elif hi is None:  # 라인 말미 구간 — 라인 끝까지 앞으로 빌린다
+            hi = lo if line_end is None else min(line_end, lo + outer_per_char * length)
+            hi = max(hi, lo)
+        else:
+            hi = max(hi, lo)  # 원 토큰이 비단조면 길이 0으로 접는다(예전 동작)
+        span = hi - lo
+        for k in range(length):
+            out[i + k]["start"] = lo + span * k / length
+            out[i + k]["end"] = lo + span * (k + 1) / length
+        i = j
+
+
+def _full_coverage_words(
+    text: str,
+    word_segments,
+    line_start: float | None = None,
+    line_end: float | None = None,
+) -> list[dict[str, Any]]:
     """라인 본문 글자를 1:1 완전히 덮는 words 목록 (직렬화용).
 
     정렬 word_segments는 정규화 텍스트 기준이라 본문의 공백·문장부호·표기 차이 글자를
@@ -1109,17 +1291,19 @@ def _full_coverage_words(text: str, word_segments) -> list[dict[str, Any]]:
     점등된다. 여기서 words[].word를 순서대로 이으면 **정확히 본문**이 되도록 재구성한다:
       - 방출하는 word는 항상 본문 부분문자열이라 join(words)==text가 구조적으로 보장된다.
       - 정렬 토큰이 덮는 글자는 그 토큰의 타이밍/신뢰도를 상속,
-      - 토큰이 못 덮는 글자(공백·부호·표기 차이·괄호 독음 등)는 인접 토큰 시각으로 보간
-        (confidence=None). 토큰이 본문에 안 나타나면(표기 차이) 스퓨리어스로 버려 그 글자를
-        다음 토큰 시각으로 보간한다. 타이밍은 단조 비감소.
+      - 토큰이 못 덮는 글자(공백·부호·표기 차이·괄호 독음 등)는 앞뒤 앵커 사이에 글자 수
+        비례로 분배(confidence=None, _spread_uncovered_words). 토큰이 본문에 안 나타나면
+        (표기 차이) 스퓨리어스로 버려 그 글자를 다음 토큰과 재평가한다. 타이밍은 단조 비감소.
+    line_start/line_end를 주면 라인 선두·말미의 미커버 구간이 그 경계까지(글자당 상한 이내)
+    퍼진다. 안 주면 예전처럼 안쪽 앵커에 붙은 길이 0이 된다.
     pron_segments는 건드리지 않는다(별도 부착).
     """
     tokens = [w for w in (word_segments or []) if w.word]
     if not tokens:
         return []
     out: list[dict[str, Any]] = []
+    covered: list[bool] = []  # out[k]가 정렬 토큰에서 타이밍을 상속했는지
     ti, wi, n, m = 0, 0, len(text), len(tokens)
-    prev_end: float | None = None
     while ti < n:
         tk = tokens[wi] if wi < m else None
         if tk is not None and text.startswith(tk.word, ti):
@@ -1131,17 +1315,17 @@ def _full_coverage_words(text: str, word_segments) -> list[dict[str, Any]]:
                     "confidence": tk.confidence,
                 }
             )
-            prev_end = tk.end
+            covered.append(True)
             ti += len(tk.word)
             wi += 1
         elif tk is not None and text.find(tk.word, ti, ti + len(tk.word) + 4) < 0:
             wi += 1  # 표기 차이 스퓨리어스 토큰 — 버리고 같은 글자를 다음 토큰과 재평가
         else:
-            # 토큰이 못 덮는 글자 → 인접 토큰 시각으로 보간(단조 유지 위해 prev_end에 앵커)
-            next_start = tokens[wi].start if wi < m else None
-            anchor = prev_end if prev_end is not None else (next_start or 0.0)
-            out.append({"word": text[ti], "start": anchor, "end": anchor, "confidence": None})
+            # 토큰이 못 덮는 글자 → 아래에서 앞뒤 앵커 사이에 비례 분배
+            out.append({"word": text[ti], "start": None, "end": None, "confidence": None})
+            covered.append(False)
             ti += 1
+    _spread_uncovered_words(out, covered, line_start, line_end)
     return out
 
 
@@ -1186,6 +1370,12 @@ def _impossible_word_distribution(word_segments, start: float, end: float, max_c
          라인 자체가 짧은 초고속 랩은 글자가 라인 폭을 다 덮으므로 걸리지 않는다.
       ② 경계 이탈 — word가 라인 [start,end] 밖을 1초 넘게 가리킨다
          (경계는 스냅/가드가 잡은 값이라 내부가 밖을 가리키면 잔해).
+      ③ 선두 글자 고립 — 첫 글자와 둘째 글자 사이가 라인 폭의 40%를 넘는다.
+         동일 음절이 연속되면(실측 XKZIQlqVjjk 코러스: ``Approved``×4 → 독음
+         ``어프루브드``×4) posterior가 평평해져 **선두 1글자만 일찍 걸리고 나머지 34자가
+         뒤에 몰린다**. 이때 글자 폭은 라인 폭을 다 덮으므로 ①의 뭉침 검사가 통과해버린다.
+         라인 conf(2.4e−05)는 곡 평균 임계(0.002)에 걸리지 않아 어디에서도 안 잡혔다.
+         정상 라인은 글자가 고르게 퍼져(4글자 이상이면 균등 간격 ≤25%) 이 지표에 안 걸린다.
     """
     if max_char_rate <= 0:
         return False
@@ -1199,6 +1389,8 @@ def _impossible_word_distribution(word_segments, start: float, end: float, max_c
     span = end - start
     if span <= 0:
         return False
+    if toks[1].start - toks[0].start > span * 0.4:
+        return True  # ③ 선두 글자만 앞에 고립 — 나머지가 뒤로 몰린 잔해
     width = last - first
     if width >= span * 0.5:
         return False
@@ -1345,8 +1537,23 @@ def _post_interlude_windows(vad_regions, min_gap_sec: float) -> list[tuple[float
     return windows
 
 
-def _straddles_interlude(results, min_gap_sec: float) -> bool:
-    """연속 라인 사이에 min_gap_sec 이상 벌어진 곳이 있으면 True (라인이 간주를 가로지름).
+def _interlude_gaps(vad_regions, min_gap_sec: float) -> list[tuple[float, float]]:
+    """VAD 리전 사이의 긴 무음 구간 [gap_start, gap_end] 목록 (시간순)."""
+    regions = sorted((reg.start, reg.end) for reg in vad_regions or [])
+    return [
+        (e0, s1) for (_, e0), (s1, _) in zip(regions, regions[1:]) if s1 - e0 >= min_gap_sec
+    ]
+
+
+def _straddles_interlude(results, min_gap_sec: float, vad_regions=None) -> bool:
+    """라인이 간주를 가로지르는 정황이 있으면 True — ja 교차검증 트리거용 값싼 신호.
+
+    두 가지 형태를 모두 본다:
+      ① **라인 사이 간극**이 min_gap_sec 이상 (간주를 사이에 두고 블록이 나뉜 경우),
+      ② **한 라인의 스팬이 간주(무음) 구간을 min_gap_sec 이상 덮는 경우** (vad_regions 필요).
+    ②가 없으면 역설이 생긴다: 문제 라인이 간주를 통째로 덮으면(실측 81.34→119.21)
+    라인 사이 간극이 하나도 남지 않아 ①이 0개가 되고, **가장 의심스러운 곡에서 교차검증이
+    아예 안 돌았다**. 덮는 라인 자체가 "정렬이 간주를 못 넘었다"는 직접 증거다.
 
     독음(ko) 정렬은 간주를 사이에 두고 라인 블록을 배치하므로, 이 간극은 대사/간주
     전이가 있다는 값싼 ko 전용 신호다. star 삼킴이 작아(무음 위 star) 삼킴 게이트를
@@ -1354,9 +1561,16 @@ def _straddles_interlude(results, min_gap_sec: float) -> bool:
     실제 라인 이동은 아래 ja 대조(_leaked_runs)만이 결정하므로 이 게이트가 넓어도
     무해 케이스를 흔들지 않는다 — 두 번째 정렬을 도는 비용만 늘 뿐이다.
     """
-    return any(
+    if any(
         results[i + 1].start_time - results[i].end_time >= min_gap_sec
         for i in range(len(results) - 1)
+    ):
+        return True
+    gaps = _interlude_gaps(vad_regions, min_gap_sec) if vad_regions is not None else []
+    return any(
+        min(r.end_time, ge) - max(r.start_time, gs) >= min_gap_sec
+        for gs, ge in gaps
+        for r in results
     )
 
 
@@ -1447,13 +1661,12 @@ def _mark_leak_ghosts(
 
 
 def _pron_by_text(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
-    """line_meta를 정규화 텍스트 → 메타 dict로 색인 (merge_line_meta와 동일 규칙)."""
-    by_text: dict[str, dict[str, Any]] = {}
-    for m in line_meta or []:
-        t = _normalize_line(m.get("text", "") or "")
-        if t and t not in by_text:
-            by_text[t] = m
-    return by_text
+    """line_meta를 정규화 텍스트 → 메타 dict로 색인 (merge_line_meta와 동일 규칙).
+
+    색인 규칙은 ``_index_line_meta`` 하나로 공유한다 — 규칙이 갈라지면 같은 곡이
+    정렬 경로(여기)와 직렬화 병합 경로(merge_line_meta)에서 다른 메타를 보게 된다.
+    """
+    return _index_line_meta(line_meta)
 
 
 def _pron_coverage(lyric_lines, by_text: dict[str, dict[str, Any]]) -> float:
@@ -1699,12 +1912,17 @@ def _run_alignment(
                         vad_result.regions, settings.alignment.interlude_min_gap_sec
                     )
                     # star가 실보컬을 크게 삼켰거나(전체 압축) 라인이 간주를 가로지르면
+                    # (라인 사이 간극 또는 간주를 통째로 덮는 라인 — vad_regions로 판정)
                     # (선두 라인만 뒤로 새는 약한 누출도 가능) ja 정렬을 한 번 돌려 대조한다.
                     # 삼킴이 작아도(무음 위 star: 初音ミクの消失 1.02s) straddle이면 검사 —
                     # 실제 라인 이동은 아래 ja 대조만 결정하므로 게이트가 넓어도 안전하다.
                     run_cross_check = bool(windows) and (
                         swallowed >= settings.alignment.star_vocal_fallback_sec
-                        or _straddles_interlude(results, settings.alignment.interlude_min_gap_sec)
+                        or _straddles_interlude(
+                            results,
+                            settings.alignment.interlude_min_gap_sec,
+                            vad_result.regions,
+                        )
                     )
                     if run_cross_check:
                         # 이중정렬 안전망이 이미 돌린 ja가 있으면 재사용 (같은 audio/lyrics)
@@ -1891,7 +2109,9 @@ def _run_alignment(
             if r.word_segments:
                 # 본문 글자를 1:1 완전히 덮도록 재구성 — join(words)==r.text 보장(공백·표기
                 # 차이로 확장 글자 매핑이 죽어 통짜 점등되던 문제 해소). pron_segments는 불변.
-                seg["words"] = _full_coverage_words(r.text, r.word_segments)
+                seg["words"] = _full_coverage_words(
+                    r.text, r.word_segments, r.start_time, r.end_time
+                )
             # 독음 정렬 경로: 발음 음절 스팬을 멜로디 앵커·발음 표시용으로 직접 부착한다
             # (기존 DP 근사 pron_segments 대신 — 실제 정렬 타이밍이라 더 정확).
             if pron_data is not None:

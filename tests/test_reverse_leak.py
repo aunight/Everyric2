@@ -59,6 +59,22 @@ def test_straddles_interlude_flags_big_interline_gap():
     assert _straddles_interlude([_line(0.0, 2.0), _line(2.1, 4.0)], min_gap_sec=5.0) is False
 
 
+def test_straddles_interlude_flags_line_covering_the_whole_gap():
+    # 실측 역설: 문제 라인(81.34→119.21)이 간주(83.2~114.5)를 통째로 덮으면 라인 사이
+    # 간극이 하나도 안 남아 교차검증이 아예 안 돌았다 — 가장 의심스러운 곡에서 무력화.
+    lines = [_line(70.0, 80.0), _line(81.34, 119.21), _line(119.5, 125.0)]
+    regions = _regions((70.0, 83.2), (114.5, 125.0))
+    assert _straddles_interlude(lines, min_gap_sec=5.0) is False  # 라인 간극 신호 0개
+    assert _straddles_interlude(lines, min_gap_sec=5.0, vad_regions=regions) is True
+
+
+def test_straddles_interlude_ignores_line_poking_slightly_into_gap():
+    # 간주에 살짝(2s) 걸친 늘임음 꼬리는 간주를 '덮은' 게 아니다 — min_gap_sec 이상 덮어야 한다
+    lines = [_line(0.0, 19.0), _line(19.5, 22.0), _line(26.0, 40.0)]
+    regions = _regions((0.0, 20.0), (26.0, 45.0))  # 간주 20.0~26.0 (6s)
+    assert _straddles_interlude(lines, min_gap_sec=5.0, vad_regions=regions) is False
+
+
 # ---- _leaked_runs: 선두 누출 + 전체 압축 모두 포착, 흔들림은 배제 -----------------
 
 

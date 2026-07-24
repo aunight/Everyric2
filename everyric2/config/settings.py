@@ -539,6 +539,42 @@ class ServerSettings(BaseSettings):
         "이차 피크가 최고 피크에 근접하는데, 그 간극이 너무 작으면 이웃 박자 오프셋을 "
         "잘못 고를 위험이 있다 (틀린 오프셋 링크는 no-link보다 해롭다).",
     )
+    # ── 커버 온디맨드 자동 연결 (제목으로 후보만 찾고, 판정은 반주 상관이 한다) ────
+    auto_link_candidates: bool = Field(
+        default=True,
+        description="사용자가 처음 보는 영상에서 코퍼스의 같은 곡 후보를 제목으로 찾아 링크 "
+        "검증 잡을 자동 제출할지. False면 후보 목록만 돌려주고 잡은 만들지 않는다(킬 스위치). "
+        "제목 매칭은 '후보 발견'에만 쓰이고 같은 곡인지의 최종 판정은 반주 상관 게이트"
+        "(link_match_threshold·link_min_offset_margin)가 그대로 담당한다 — 제목이 맞았다는 "
+        "이유만으로 링크가 만들어지는 경로는 없다.",
+    )
+    link_candidate_min_title_score: float = Field(
+        default=0.6,
+        description="링크 후보로 인정하는 제목 유사도 하한 (1.0=정규화 정확 일치, 그 미만은 "
+        "상호 포함 시 길이비). 오탐의 대가는 검증 잡 한 번(GPU 수십 초)이고 틀린 링크는 "
+        "만들어지지 않으므로 헐거워도 안전하다. 0.6은 «【初音ミク】…» 류에서 가수명 조각이 "
+        "다른 곡 제목에 우연히 포함되며 나오는 0.5~0.57대 오탐을 걸러내는 선이다.",
+    )
+    link_candidate_scan_limit: int = Field(
+        default=500,
+        description="후보 탐색이 훑는 코퍼스 최대 곡 수(영상별 최신 싱크 1건 기준). 코퍼스가 "
+        "작아 전수 스캔으로 충분하다 — 이 값은 코퍼스가 커졌을 때의 안전 상한일 뿐이다.",
+    )
+    link_retry_cooldown_days: int = Field(
+        default=14,
+        description="같은 (영상, 후보) 쌍의 검증 잡을 다시 제출하기까지의 쿨다운(일). "
+        "get_active_pair는 진행 중(queued/processing) 중복만 막아서, 완료·실패한 쌍은 "
+        "사용자가 그 영상을 열 때마다 GPU를 다시 태울 수 있다. 최근 이 기간 안에 끝난 "
+        "(done/failed) 이력이 있으면 자동 제출을 건너뛴다. 0이면 쿨다운 비활성.",
+    )
+    manual_link_requires_admin: bool = Field(
+        default=False,
+        description="수동 링크 생성(POST /api/sync/link)에 어드민 키를 요구할지. 이 API는 "
+        "반주 검증 없이 임의 오프셋(0 포함)으로 SyncLink를 박을 수 있어 코퍼스에 틀린 링크가 "
+        "남은 전례가 있다. True + admin_api_key 설정 시 X-API-Key가 어드민 키인 요청만 허용한다. "
+        "기본 False는 기존 동작 유지(로컬 단일 사용자) — 켜지 않아도 수동 링크는 항상 "
+        "verified=false로 기록돼 조회 응답에서 자동 검증 링크와 구분된다.",
+    )
     warm_models: bool = Field(
         default=True,
         description="생성 파이프라인의 무거운 모델(demucs 분리기·CTC 정렬 엔진·멜로디 f0 "

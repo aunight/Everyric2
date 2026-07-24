@@ -1,7 +1,20 @@
-import type { LyricLine, SongKey, SongTempo, SyncDebugMeta } from '../types';
+import type { LyricLine, SearchCandidate, SongInfo, SongKey, SongTempo, SyncDebugMeta } from '../types';
 import type { MicSample } from '../lib/mic-pitch';
 import { h, icon } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
+import {
+  buildEmptyState,
+  buildErrorState,
+  buildLoadingState,
+  buildPlainLines,
+  buildSearchSheet,
+  createGenerateButton,
+  renderCandidateList,
+  SERVER_UNAVAILABLE_TIP,
+  type PanelCallbacks,
+  type PanelContext,
+} from './panels';
+import { getPlaylist, hasNext, hasPrevious, playNext, playPlaylistItem, playPrevious } from '../lib/yt-player';
 
 interface DocumentPictureInPictureApi {
   requestWindow(options?: { width?: number; height?: number }): Promise<Window>;
@@ -10,6 +23,12 @@ interface DocumentPictureInPictureApi {
 export interface PipOptions {
   /** 열 때 영상 미러 영역을 포함한 크기로 열지 여부 */
   showVideo: boolean;
+  /** 창 너비(px) — 호출부가 저장값/기존 기본값을 미리 계산해서 넘긴다 */
+  width: number;
+  /** 창 높이(px) — 호출부가 저장값/기존 기본값을 미리 계산해서 넘긴다 */
+  height: number;
+  /** 창 크기가 바뀐 채로 닫힐 때(pagehide) 마지막 크기를 알려준다 — 설정에 저장용 */
+  onSizeChange: (width: number, height: number) => void;
   /** 영상 영역 세로 비율 (0 = 자동 16:9) */
   initialVideoRatio: number;
   /** 현재 라인 밑에 한국어 발음 표기 표시 여부 */
@@ -28,6 +47,8 @@ export interface PipOptions {
   pitchCountdown: boolean;
   /** 디버그: 글자별 CTC 신뢰도를 색으로 표시 */
   showConfidence: boolean;
+  /** 발음 표기 위치: note = 노트마다 위에 부착, bottom = 화면 하단 중앙(진행률 그라데이션) */
+  pitchPronPosition: 'note' | 'bottom';
   /** 레인 높이 드래그 조절 완료 시 */
   onPitchHeightChange: (px: number) => void;
   /** 가사 라인 클릭 — 가사 타임라인(초) 기준 */
@@ -64,6 +85,10 @@ export interface PipOptions {
   onKaraokeToggle: (on: boolean) => void;
   /** 좌상단 미니 버튼 — PiP 영상 표시 토글 (설정 pipShowVideo) */
   onVideoToggle: (on: boolean) => void;
+  /** 가사 패널(가사 없음·검색·붙여넣기·싱크 생성) 콜백 — 메인 창과 같은 핸들러로 배선한다 */
+  panel: PanelCallbacks;
+  /** 열 때의 서버 가용 상태 — 이후 갱신은 setServerAvailable */
+  serverAvailable: boolean;
   onClosed: () => void;
 }
 
@@ -75,9 +100,32 @@ const NOTE_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentC
 const LANE_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 5h18v2H3zm0 4h12v2H3zm0 4h18v2H3zm0 4h9v2H3z"/></svg>';
 const SCREEN_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M3 4h18v13H3V4zm2 2v9h14V6H5zm3 13h8v2H8v-2z"/></svg>';
 const METRO_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M9 2h6l4 19H5L9 2zm1.6 2L7.4 19h9.2l-1.2-6.1-2.7 2.7-1.4-1.4L15 10.4 13.9 4h-3.3z"/></svg>';
+const PREV_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 6h2.5v12H6zm12 12-9-6 9-6z"/></svg>';
+const NEXT_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M15.5 6H18v12h-2.5zM6 18l9-6-9-6z"/></svg>';
+const LIST_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M3 6h11v2H3zm0 5h11v2H3zm0 5h8v2H3zm16-11v8.1a2.8 2.8 0 1 0 2 2.7V7h2V5h-4z"/></svg>';
+const FIND_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.2" y2="16.2"/></svg>';
 
 const MIN_VIDEO_RATIO = 0.15;
 const MAX_VIDEO_RATIO = 0.75;
+
+// PiP 창 크기 기억 — 비정상적으로 작거나 큰 값이 저장/전달돼 창이 못 쓰게 되지 않도록 클램프
+const MIN_PIP_WIDTH = 280;
+const MAX_PIP_WIDTH = 960;
+const MIN_PIP_HEIGHT = 200;
+const MAX_PIP_HEIGHT = 1000;
+function clampPipSize(width: number, height: number): { width: number; height: number } {
+  return {
+    width: Math.round(Math.min(MAX_PIP_WIDTH, Math.max(MIN_PIP_WIDTH, width))),
+    height: Math.round(Math.min(MAX_PIP_HEIGHT, Math.max(MIN_PIP_HEIGHT, height))),
+  };
+}
+
+/** 스페이스바/화살표 단축키를 가로챌지 판단 — 입력 요소에 포커스가 있으면 무시 */
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
 
 // 계이름 (pitch class 0 = 도)
 const PITCH_NAMES_KO = ['도', '도#', '레', '레#', '미', '파', '파#', '솔', '솔#', '라', '라#', '시'];
@@ -199,6 +247,7 @@ export class PipController {
   private pitchScrollMode: 'page' | 'scroll' = 'page';
   private pitchFontScale = 1.2;
   private pitchCountdown = true;
+  private pitchPronPosition: 'note' | 'bottom' = 'note';
   private tempo: SongTempo | null = null;
   private songKey: SongKey | null = null;
   private metronomeRate = 1;
@@ -224,8 +273,32 @@ export class PipController {
   /** 좌상단 미니 버튼 — 가라오케 기능·PiP 영상 표시 토글 */
   private cornerKaraokeBtn: HTMLButtonElement | null = null;
   private cornerVideoBtn: HTMLButtonElement | null = null;
+  private cornerPanelBtn: HTMLButtonElement | null = null;
   /** PiP 영상 표시 '설정' 상태 — 미러 성공 여부(DRM 실패 등)와 무관한 사용자 의도 */
   private videoOn = false;
+
+  // ── 가사 패널 모드 (가사가 없어도 창이 살아남게) ─────────────────
+  /** 패널 조각(panels.ts)이 그려지는 컨테이너 */
+  private panelEl: HTMLDivElement | null = null;
+  /** 패널이 지금 화면을 점유 중인가 (가사뷰/피치뷰와 배타) */
+  private panelActive = false;
+  /** 보여줄 패널 내용이 있는가 — 없으면 토글 버튼을 숨긴다 */
+  private panelAvailable = false;
+  private panelCallbacks: PanelCallbacks | null = null;
+  private panelResultsEl: HTMLDivElement | null = null;
+  /** 검색 시트를 열기 전 곡 정보 프리필용 */
+  private lastSong: { title: string; artist: string } | null = null;
+  private serverAvailable = false;
+  private generateButtons: HTMLButtonElement[] = [];
+  /** 전사 진행 칩 — 메인 패널의 .ey-gen-chip과 같은 정보를 창 안에 작게 */
+  private chipEl: HTMLDivElement | null = null;
+
+  // ── 재생 컨트롤 (유튜브 DOM 조작 — lib/yt-player.ts) ─────────────
+  private prevBtn: HTMLButtonElement | null = null;
+  private nextBtn: HTMLButtonElement | null = null;
+  private playlistBtn: HTMLButtonElement | null = null;
+  private playlistEl: HTMLDivElement | null = null;
+  private playlistOpen = false;
 
   static isSupported(): boolean {
     return 'documentPictureInPicture' in window;
@@ -241,14 +314,18 @@ export class PipController {
       .documentPictureInPicture;
     if (!api) return false;
 
+    const { width, height } = clampPipSize(opts.width, opts.height);
     let win: Window;
     try {
-      win = await api.requestWindow({ width: 440, height: opts.showVideo ? 500 : 260 });
+      win = await api.requestWindow({ width, height });
     } catch {
       return false;
     }
     this.win = win;
     this.onSeek = opts.onSeek;
+    this.panelCallbacks = opts.panel;
+    this.serverAvailable = opts.serverAvailable;
+    this.generateButtons = [];
     this.videoRatio = opts.initialVideoRatio;
     this.pitchEnabled = opts.pitchEnabled;
     this.pitchLaneHeight = opts.pitchLaneHeight;
@@ -256,6 +333,7 @@ export class PipController {
     this.pitchScrollMode = opts.pitchScrollMode;
     this.pitchFontScale = opts.pitchFontScale;
     this.pitchCountdown = opts.pitchCountdown;
+    this.pitchPronPosition = opts.pitchPronPosition;
     this.showConfidence = opts.showConfidence;
     this.metronomeRate = opts.metronomeRate;
     this.metronomeBeat = opts.metronomeBeat;
@@ -290,6 +368,31 @@ export class PipController {
       title: '재생/일시정지',
       on: { click: () => opts.onPlayPause() },
     }, icon(PLAY_SVG));
+
+    // 이전/다음 곡 + 재생목록 — 유튜브 비공식 마크업 의존(lib/yt-player.ts).
+    // 셀렉터가 안 맞으면 클릭이 false를 돌려주므로 그 자리에서 비활성으로 내린다.
+    this.prevBtn = h('button', {
+      className: 'ey-pip-play ey-pip-mute',
+      title: '이전 곡',
+      on: { click: () => { if (!playPrevious()) this.refreshPlayerControls(); } },
+    }, icon(PREV_SVG));
+    this.nextBtn = h('button', {
+      className: 'ey-pip-play ey-pip-mute',
+      title: '다음 곡',
+      on: { click: () => { if (!playNext()) this.refreshPlayerControls(); } },
+    }, icon(NEXT_SVG));
+    this.playlistBtn = h('button', {
+      className: 'ey-pip-play ey-pip-mute',
+      title: '재생목록',
+      on: {
+        click: () => {
+          this.playlistOpen = !this.playlistOpen;
+          this.renderPlaylist();
+        },
+      },
+    }, icon(LIST_SVG));
+    this.playlistEl = h('div', { className: 'ey-pip-playlist' });
+    this.playlistEl.style.display = 'none';
 
     this.muteBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
@@ -423,12 +526,27 @@ export class PipController {
       title: '영상 함께 표시 켜기/끄기',
       on: { click: () => opts.onVideoToggle(!this.videoOn) },
     }, icon(SCREEN_SVG));
+    // 가사뷰/피치뷰 ↔ 가사 패널(검색·붙여넣기) 전환 — 패널에 보여줄 내용이 있고
+    // 되돌아갈 가사도 있을 때만 노출된다 (syncCornerButtons)
+    this.cornerPanelBtn = h('button', {
+      className: 'ey-pip-mini',
+      title: '가사 찾기 패널 열기/닫기',
+      on: { click: () => this.togglePanel() },
+    }, icon(FIND_SVG));
     this.syncCornerButtons();
+
+    // 가사 패널 컨테이너 — 내용이 채워지기 전까지 숨김
+    this.panelEl = h('div', { className: 'ey-pip-panel' });
+    this.panelEl.style.display = 'none';
+    // 전사 진행 칩 — 창을 점유하지 않고 진행률만
+    this.chipEl = h('div', { className: 'ey-pip-chip' });
+    this.chipEl.style.display = 'none';
 
     this.footerEl = h('div', { className: 'ey-pip-footer' },
       this.titleEl,
       h('div', { className: 'ey-pip-controls' },
-        this.playBtn, this.muteBtn, this.melodyBtn, this.metroBtn,
+        this.prevBtn, this.playBtn, this.nextBtn, this.playlistBtn,
+        this.muteBtn, this.melodyBtn, this.metroBtn,
         this.metroRateBtn, this.metroBeatBtn,
         this.windowMinusBtn, this.windowLabelBtn, this.windowPlusBtn, this.modeBtn,
         this.volumeSlider, progressWrap, this.timeEl),
@@ -437,11 +555,15 @@ export class PipController {
       this.videoWrapEl,
       this.dividerEl,
       h('div', { className: 'ey-pip-stage' }, this.prevEl, this.currentEl, this.pronEl, this.trEl, this.nextEl),
+      this.panelEl,
       this.pitchDividerEl,
       this.pitchCanvas,
+      this.chipEl,
+      this.playlistEl,
       this.footerEl,
-      h('div', { className: 'ey-pip-corner' }, this.cornerKaraokeBtn, this.cornerVideoBtn),
+      h('div', { className: 'ey-pip-corner' }, this.cornerKaraokeBtn, this.cornerVideoBtn, this.cornerPanelBtn),
     );
+    this.refreshPlayerControls();
 
     // 창 크기가 줄면 레인이 푸터를 밀어내지 않도록 즉시 재클램프
     win.addEventListener('resize', () => this.clampLaneHeight());
@@ -452,7 +574,29 @@ export class PipController {
         .addEventListener('change', () => this.refreshColors());
     } catch { /* matchMedia 미지원 환경은 무시 */ }
 
+    // Document PiP는 별도 최상위 창이라, 포커스가 PiP에 있으면 키 이벤트가
+    // 원본 탭이 아니라 이 document에서 발생한다 — 스페이스바 재생/일시정지,
+    // 좌우 화살표로 5초 시크. 입력 요소에 포커스가 있으면 가로채지 않는다.
+    win.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        opts.onPlayPause();
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        opts.onSeek(this.lastTime + 5);
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        opts.onSeek(Math.max(0, this.lastTime - 5));
+      }
+    });
+
     win.addEventListener('pagehide', () => {
+      // 닫히기 직전 창 크기를 기억해 두었다가 다음에 열 때 복원 (위치는 브라우저가 자체 재사용)
+      if (win.innerWidth > 0 && win.innerHeight > 0) {
+        const size = clampPipSize(win.innerWidth, win.innerHeight);
+        opts.onSizeChange(size.width, size.height);
+      }
       this.stopMirror();
       this.win = null;
       this.index = -1;
@@ -476,8 +620,21 @@ export class PipController {
       this.modeBtn = null;
       this.cornerKaraokeBtn = null;
       this.cornerVideoBtn = null;
+      this.cornerPanelBtn = null;
       this.videoOn = false;
       this.laneShown = false;
+      this.panelEl = null;
+      this.panelActive = false;
+      this.panelAvailable = false;
+      this.panelCallbacks = null;
+      this.panelResultsEl = null;
+      this.generateButtons = [];
+      this.chipEl = null;
+      this.prevBtn = null;
+      this.nextBtn = null;
+      this.playlistBtn = null;
+      this.playlistEl = null;
+      this.playlistOpen = false;
       this.getMicSamples = null;
       this.playbackRate = 1;
       opts.onClosed();
@@ -532,6 +689,8 @@ export class PipController {
   }
 
   setSong(title: string, artist: string): void {
+    // 패널 검색 폼 프리필용으로도 보관 — 창이 열린 채 곡이 바뀌어도 따라간다
+    this.lastSong = title || artist ? { title, artist } : null;
     if (this.titleEl) {
       this.titleEl.textContent = artist ? `${title} — ${artist}` : title;
     }
@@ -551,6 +710,7 @@ export class PipController {
       low,
     };
     this.applyPitchVisibility();
+    this.syncCornerButtons(); // 가사 유무가 바뀌면 패널 토글 버튼 노출 조건도 바뀐다
     this.renderLines();
   }
 
@@ -620,6 +780,11 @@ export class PipController {
     this.pitchCountdown = enabled;
   }
 
+  /** 발음 표기 위치(노트 위/화면 하단) 즉시 반영 — 다음 tick의 renderPitch에서 바로 적용됨 */
+  setPitchPronPosition(position: 'note' | 'bottom'): void {
+    this.pitchPronPosition = position;
+  }
+
   /** 현재 라인 인덱스 변경 시 호출 */
   update(index: number): void {
     if (!this.win || index === this.index) return;
@@ -658,11 +823,165 @@ export class PipController {
   private syncCornerButtons(): void {
     this.cornerKaraokeBtn?.classList.toggle('on', this.pitchEnabled);
     this.cornerVideoBtn?.classList.toggle('on', this.videoOn);
+    if (this.cornerPanelBtn) {
+      // 되돌아갈 가사가 있을 때만 토글 의미가 있다 — 가사가 없으면 패널이 유일한 화면
+      const toggleable = this.panelAvailable && this.lines.length > 0;
+      this.cornerPanelBtn.style.display = toggleable ? '' : 'none';
+      this.cornerPanelBtn.classList.toggle('on', this.panelActive);
+    }
   }
 
-  /** 레인 표시 조건 = 설정 on + 노트 데이터 있음. 레인이 켜지면 스테이지는 숨긴다(중복 표시). */
+  // ── 가사 패널 모드 ──────────────────────────────────────────────
+  //
+  // 예전에는 가사를 못 찾거나(=applyLyricsData(null)) 싱크가 없으면 content.ts가
+  // pip.close()를 불러 창이 통째로 사라졌다. 재생목록을 돌리다 싱크 없는 곡 하나만
+  // 만나도 PiP가 증발하는 원인이 정확히 그것이었다. 이제는 닫는 대신 이 패널을 띄운다 —
+  // 창은 사용자가 직접 닫기 전까지 살아 있다.
+
+  /** 패널 조각(panels.ts)에 넘길 호스트 컨텍스트 */
+  private panelContext(): PanelContext {
+    const cb = this.panelCallbacks;
+    return {
+      callbacks: {
+        onGenerate: (lyrics, attribution) => cb?.onGenerate(lyrics, attribution),
+        onRetrySearch: query => cb?.onRetrySearch(query),
+        onCandidateSearch: query => cb?.onCandidateSearch(query),
+        onPickCandidate: candidate => cb?.onPickCandidate(candidate),
+        onOpenSearch: () => this.openPanelSearch(),
+      },
+      makeGenerateButton: (label, onClick) => {
+        const btn = createGenerateButton(label, this.serverAvailable, onClick);
+        this.generateButtons.push(btn);
+        return btn;
+      },
+    };
+  }
+
+  /** 서버 가용 상태 — 창 안 생성 버튼들을 일괄 갱신 (메인 패널과 동일 규칙) */
+  setServerAvailable(available: boolean): void {
+    this.serverAvailable = available;
+    this.generateButtons = this.generateButtons.filter(btn => btn.isConnected);
+    for (const btn of this.generateButtons) {
+      btn.disabled = !available;
+      btn.title = available ? '' : SERVER_UNAVAILABLE_TIP;
+    }
+  }
+
+  /** 패널 내용 교체 공통 경로 — 이전 조각의 참조를 확실히 끊고 새로 그린다 */
+  private setPanelContent(node: Node): void {
+    if (!this.panelEl) return;
+    this.panelResultsEl = null;
+    this.generateButtons = [];
+    this.panelEl.replaceChildren(node);
+    this.panelAvailable = true;
+    this.panelActive = true;
+    this.applyPanelVisibility();
+  }
+
+  /** 가사를 못 찾았을 때 — 재검색 폼 + 외부 검색 링크 + 붙여넣기 */
+  showPanelEmpty(song: SongInfo | null): void {
+    if (!this.win) return;
+    if (song) this.setSong(song.title, song.artist ?? '');
+    this.setPanelContent(buildEmptyState(this.panelContext(), song));
+  }
+
+  /** 가사 검색 중 */
+  showPanelLoading(message = '가사 검색 중…'): void {
+    if (!this.win) return;
+    this.setPanelContent(buildLoadingState(this.panelContext(), message));
+  }
+
+  /** 오류 */
+  showPanelError(message: string): void {
+    if (!this.win) return;
+    this.setPanelContent(buildErrorState(this.panelContext(), message));
+  }
+
+  /** 타임싱크가 없는 가사 — 목록을 보여주면서 싱크 생성 버튼을 함께 준다 */
+  showPanelPlain(lines: LyricLine[], plainText: string): void {
+    if (!this.win) return;
+    const ctx = this.panelContext();
+    const plain = buildPlainLines(lines);
+    this.setPanelContent(h('div', { className: 'ey-pip-panel-plain' },
+      h('div', { className: 'ey-banner' },
+        h('span', { className: 'ey-banner-text', text: '타임싱크가 없는 가사예요' }),
+        ctx.makeGenerateButton('싱크 생성', () => ctx.callbacks.onGenerate(plainText)),
+      ),
+      plain.el,
+    ));
+  }
+
+  /** 상세 검색 시트 — 메인 패널의 '다른 영상 싱크 연결'·'싱크 초기화'는 제외한 축약판 */
+  openPanelSearch(): void {
+    if (!this.win) return;
+    const ctx = this.panelContext();
+    const sheet = buildSearchSheet(
+      ctx,
+      { title: this.lastSong?.title ?? '', artist: this.lastSong?.artist ?? '' },
+      {
+        onBack: () => {
+          // 되돌아갈 가사가 있으면 가사뷰로, 없으면 빈 상태로
+          if (this.lines.length > 0) this.clearPanel();
+          else this.showPanelEmpty(this.lastSong ? { title: this.lastSong.title, artist: this.lastSong.artist || null, videoId: '', duration: 0 } : null);
+        },
+        extras: [
+          h('div', { className: 'ey-divider' }),
+          h('button', {
+            className: 'ey-secondary-btn',
+            text: '자동 검색으로 되돌리기',
+            on: { click: () => ctx.callbacks.onRetrySearch() },
+          }),
+        ],
+      },
+    );
+    this.setPanelContent(sheet.el);
+    this.panelResultsEl = sheet.results;
+    sheet.runSearch();
+  }
+
+  /** 패널을 접고 가사뷰(스테이지/레인)로 복귀 — 싱크 가사가 도착했을 때 */
+  clearPanel(): void {
+    if (!this.win) return;
+    this.panelAvailable = false;
+    this.panelActive = false;
+    this.panelResultsEl = null;
+    this.generateButtons = [];
+    this.panelEl?.replaceChildren();
+    this.applyPanelVisibility();
+  }
+
+  /** 전사 진행 칩 — null이면 숨김 */
+  setGenerationChip(text: string | null): void {
+    if (!this.chipEl) return;
+    this.chipEl.textContent = text ?? '';
+    this.chipEl.style.display = text ? '' : 'none';
+  }
+
+  /** SEARCH_CANDIDATES 응답 — 패널의 검색 시트가 살아 있을 때만 반영 (stale 방지) */
+  showSearchResults(candidates: SearchCandidate[]): void {
+    if (!this.panelResultsEl) return;
+    renderCandidateList(this.panelResultsEl, candidates, c => this.panelCallbacks?.onPickCandidate(c));
+  }
+
+  /** 가사뷰 ↔ 패널 전환 (좌상단 미니 버튼) */
+  private togglePanel(): void {
+    if (!this.panelAvailable) return;
+    this.panelActive = !this.panelActive;
+    this.applyPanelVisibility();
+  }
+
+  /** 패널/가사뷰 배타 표시 — 레인·스테이지는 패널이 떠 있는 동안 숨는다 */
+  private applyPanelVisibility(): void {
+    if (this.panelEl) this.panelEl.style.display = this.panelActive ? '' : 'none';
+    this.win?.document.body.classList.toggle('ey-panel-mode', this.panelActive);
+    this.applyPitchVisibility(); // 레인 게이트가 panelActive를 함께 본다
+    this.syncCornerButtons();
+  }
+
+  /** 레인 표시 조건 = 설정 on + 노트 데이터 있음 + 패널이 화면을 점유하지 않음.
+   *  레인이 켜지면 스테이지는 숨긴다(중복 표시). */
   private applyPitchVisibility(): void {
-    const show = this.pitchEnabled && this.pitch.notes.length > 0;
+    const show = this.pitchEnabled && this.pitch.notes.length > 0 && !this.panelActive;
     this.laneShown = show;
     if (this.pitchCanvas) this.pitchCanvas.style.display = show ? '' : 'none';
     if (this.pitchDividerEl) this.pitchDividerEl.style.display = show ? '' : 'none';
@@ -762,6 +1081,55 @@ export class PipController {
   /** RAW f0 곡선 상시 표시 토글 (설정 pitchF0Curve) */
   setShowF0(enabled: boolean): void {
     this.showF0 = enabled;
+  }
+
+  // ── 재생 컨트롤 (유튜브 DOM 조작) ───────────────────────────────
+  //
+  // 유튜브 공식 페이지 API가 없어 lib/yt-player.ts가 플레이어 버튼·재생목록 DOM을
+  // 직접 만진다. 유튜브가 마크업을 개편하면 그쪽 셀렉터가 전부 빗나가는데, 그때는
+  // hasNext/hasPrevious가 false, getPlaylist()가 빈 배열을 돌려주므로 여기서
+  // **버튼이 조용히 비활성/숨김이 될 뿐** 창은 그대로 동작한다.
+
+  /**
+   * 이전/다음·재생목록 버튼의 사용 가능 여부를 다시 판정한다.
+   * 내비게이션으로 재생목록이 생기거나 사라질 수 있어 주기적으로도 호출된다.
+   */
+  refreshPlayerControls(): void {
+    if (!this.win) return;
+    if (this.prevBtn) this.prevBtn.disabled = !hasPrevious();
+    if (this.nextBtn) this.nextBtn.disabled = !hasNext();
+    const entries = getPlaylist();
+    if (this.playlistBtn) this.playlistBtn.style.display = entries.length > 0 ? '' : 'none';
+    if (entries.length === 0 && this.playlistOpen) this.playlistOpen = false;
+    if (this.playlistOpen) this.renderPlaylist(entries);
+    else if (this.playlistEl) this.playlistEl.style.display = 'none';
+  }
+
+  /** 재생목록 목록 렌더 — 항목 클릭 시 그 곡으로 이동 */
+  private renderPlaylist(entries = getPlaylist()): void {
+    const listEl = this.playlistEl;
+    if (!listEl) return;
+    if (!this.playlistOpen || entries.length === 0) {
+      listEl.style.display = 'none';
+      return;
+    }
+    listEl.replaceChildren(...entries.map(entry => {
+      const btn = h('button', {
+        className: `ey-pip-playlist-item${entry.selected ? ' current' : ''}`,
+        title: entry.byline ? `${entry.title} — ${entry.byline}` : entry.title,
+        on: {
+          click: () => {
+            // 이동에 실패하면(셀렉터 불일치) 목록을 다시 판정해 사라지게 둔다
+            if (!playPlaylistItem(entry.index)) this.refreshPlayerControls();
+          },
+        },
+      },
+        h('span', { className: 'ey-pip-playlist-title', text: entry.title }),
+        h('span', { className: 'ey-pip-playlist-by', text: entry.byline }),
+      );
+      return btn;
+    }));
+    listEl.style.display = '';
   }
 
   /** 멜로디/메트로놈 토글 버튼 활성 상태 반영 — 세부 버튼은 메트로놈+레인이 켜졌을 때만 */
@@ -920,7 +1288,10 @@ export class PipController {
     const { pages, notes, words, lo, hi } = this.pitch;
 
     // ── 세로 레이아웃: 오선 영역 + 가사 줄 + (발음 폴백 줄) + 번역 줄
-    const hasSegs = pages.some(p => p.line.pronSegments && p.line.pronSegments.length > 0);
+    // pitchPronPosition === 'bottom'이면 음절 타이밍이 있어도 노트 부착을 쓰지 않고
+    // 항상 하단 폴백 줄(진행률 그라데이션)로 표시한다 — 줄 높이 확보 판정도 이를 따른다
+    const noteAttach = this.pitchPronPosition === 'note';
+    const hasSegs = noteAttach && pages.some(p => p.line.pronSegments && p.line.pronSegments.length > 0);
     const hasPronRow = !hasSegs && pages.some(p => p.line.pronunciation);
     const hasTr = pages.some(p => p.line.translation);
     const fs = this.pitchFontScale;
@@ -1083,8 +1454,9 @@ export class PipController {
         ctx.fillStyle = isCurrent ? colors.text : colors.dim;
         ctx.fillText(PITCH_NAMES_KO[((n.midi % 12) + 12) % 12], lx, Math.max(namePx * 0.7, top - namePx * 0.7));
       }
-      // 발음 — 계이름처럼 노트 바로 아래에 부착 (사용자 요구: 노트마다 붙일 것)
-      if (n.pron) {
+      // 발음 — 계이름처럼 노트 바로 아래에 부착 (설정 pitchPronPosition === 'note'일 때만;
+      // 'bottom'이면 collectPitchData가 채워둔 n.pron은 무시하고 하단 폴백 줄만 사용)
+      if (n.pron && noteAttach) {
         ctx.font = `${pronPx}px system-ui, sans-serif`;
         ctx.fillStyle = n.start <= now ? colors.accent : colors.dim;
         ctx.fillText(n.pron, lx, Math.min(padTop + staffH - pronPx / 2, top + noteH + 2 + pronPx / 2));

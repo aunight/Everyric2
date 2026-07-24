@@ -6,10 +6,16 @@ import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
 import { LyricsOverlay } from './ui/overlay';
 import { PipController } from './ui/pip';
+import {
+  captionSourceLabel,
+  getCaptionTracks,
+  mergeCaptionTranslation,
+  selectKoreanTrack,
+  selectLyricTrack,
+} from './lib/yt-captions';
 import type {
   BgRequest,
   CaptionLine,
-  CaptionTrack,
   ContentMessage,
   GenerateResponse,
   JobStatusResponse,
@@ -285,8 +291,6 @@ function ensureOverlay(): LyricsOverlay {
     onUnlinkSync: () => void handleUnlinkSync(),
     onRequestSyncList: () => void handleRequestSyncList(),
     onResetSync: () => void handleResetSync(),
-    onCaptionTracks: () => void handleCaptionTracks(),
-    onCaptionPick: track => void handleCaptionPick(track),
   }, initialGeometry);
   return overlay;
 }
@@ -301,43 +305,63 @@ function scheduleOffsetSave(): void {
   }, 800);
 }
 
-// ── 유튜브 자막 → 가사 붙여넣기 칸 ─────────────────────────────
+// ── 유튜브 자막 자동 폴백 ───────────────────────────────────────
 
-async function handleCaptionTracks(): Promise<void> {
-  const videoId = currentVideoId;
-  if (!videoId) return;
-  const res = await sendToBackground<CaptionTrack[]>({
-    type: 'YT_CAPTION_TRACKS', payload: { videoId },
+/** 서버에서 자막 본문 받기 — timedtext는 브라우저에서 부르면 빈 본문이라(POT 강제, 실측) 서버 경유 */
+async function fetchCaptionLines(
+  videoId: string, lang: string, auto: boolean,
+): Promise<CaptionLine[]> {
+  const res = await sendToBackground<CaptionLine[]>({
+    type: 'YT_CAPTION_TEXT', payload: { videoId, lang, auto },
   });
-  if (videoId !== currentVideoId) return;
-  overlay?.showCaptionTracks(res.data ?? []);
+  return res.data ?? [];
 }
 
-async function handleCaptionPick(track: CaptionTrack): Promise<void> {
-  const videoId = currentVideoId;
-  if (!videoId) return;
-  const res = await sendToBackground<CaptionLine[]>({
-    type: 'YT_CAPTION_TEXT', payload: { videoId, lang: track.lang, auto: track.auto },
-  });
-  if (videoId !== currentVideoId) return;
-  if (!res.data || res.data.length === 0) {
-    overlay?.setCaptionStatus('자막을 불러오지 못했어요 — 서버 상태를 확인하거나 다른 트랙을 시도해 보세요');
-    return;
+/**
+ * 서버 싱크·위키·LRCLIB이 전부 미스일 때 영상 자체 자막을 가사로 띄운다.
+ *
+ * 트랙 목록은 페이지에서 직접 읽어(서버 왕복 0) 자막 유무와 곡 언어를 즉시 판정하고,
+ * 본문만 서버에서 받는다. 사용자가 트랙을 고르는 단계는 없다 — 못 고르겠으면 폴백을
+ * 포기한다(번역 자막을 원문 가사인 양 띄우는 것보다 안 띄우는 편이 낫다).
+ * 실패는 전부 null이라 호출부는 기존 "가사 없음" 화면으로 조용히 되돌아간다.
+ */
+async function tryCaptionFallback(
+  videoId: string, song: SongInfo | null,
+): Promise<LyricsData | null> {
+  // 대사 위주 영상에서 자막이 가사인 양 뜨는 걸 막는다
+  if (!isLikelyMusicVideo()) return null;
+
+  const tracks = await getCaptionTracks(videoId);
+  if (videoId !== currentVideoId) return null;
+  const track = selectLyricTrack(tracks, song?.title ?? '');
+  if (!track) return null;
+
+  const base = await fetchCaptionLines(videoId, track.lang, track.auto);
+  if (videoId !== currentVideoId || base.length === 0) return null;
+
+  // 한국어 자막이 따로 있으면 시간 겹침으로 붙여 2단 표시 (수동작성만 — 자동생성은
+  // ASR 오차가 그대로 남아 가사 번역으로 쓰기엔 품질이 떨어진다)
+  let translations: (string | undefined)[] = [];
+  const ko = selectKoreanTrack(tracks, track);
+  if (ko) {
+    const krLines = await fetchCaptionLines(videoId, ko.lang, ko.auto);
+    if (videoId !== currentVideoId) return null;
+    if (krLines.length > 0) translations = mergeCaptionTranslation(base, krLines);
   }
-  // 자막 타이밍을 그대로 싱크 가사로 표시한다 — 자막이 가사가 아닌 영상이면 눈으로
-  // 바로 확인되고, 그때는 재검색으로 되돌리면 된다. AI 전사(음정·발음)는 배너로 이어진다.
-  const lines: LyricLine[] = res.data.map(l => ({
+
+  const lines: LyricLine[] = base.map((l, i) => ({
     time: l.start,
     endTime: l.end,
     text: l.text,
+    translation: translations[i],
   }));
-  applyLyricsData({
+  return {
     source: 'caption',
     synced: true,
     lines,
     plainText: lines.map(l => l.text).join('\n'),
-    attribution: { name: track.label },
-  });
+    attribution: { name: `유튜브 자막 · ${captionSourceLabel(track)}` },
+  };
 }
 
 // ── 싱크 링크 (inst·커버 영상이 다른 영상의 전사를 재사용) ──────────
@@ -447,6 +471,9 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   }
   if (patch.pitchCountdown !== undefined) {
     pip.setPitchCountdown(patch.pitchCountdown);
+  }
+  if (patch.pitchPronPosition !== undefined) {
+    pip.setPitchPronPosition(patch.pitchPronPosition);
   }
 
   // 가라오케 음정 바 토글 즉시 반영
@@ -762,6 +789,7 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   const panel = ensureOverlay();
   panel.setVisible(true);
   panel.showLoading();
+  if (pip.isOpen()) pip.showPanelLoading(); // PiP도 같은 검색 상태를 따라간다
   updateGenChip(); // 이 영상(또는 다른 영상)의 전사 진행 칩은 검색과 무관하게 유지
   engine.stop();
 
@@ -788,8 +816,11 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   }
 
   if (!song) {
+    // 곡 인식 실패도 "이 영상엔 가사가 없다"와 같은 상태 — 이전 곡의 가사/노트/오프셋/PiP가
+    // 남지 않도록 성공 경로와 같은 리셋(applyLyricsData(null))을 태운다
+    currentSong = null;
     panel.setSong(null);
-    panel.showEmpty(null);
+    applyLyricsData(null);
     return;
   }
   currentSong = song;
@@ -804,7 +835,11 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   });
   if (seq !== searchSeq || videoId !== currentVideoId) return;
   if (res.error) {
+    // 서버가 흔들려도 이전 곡 상태가 남으면 안 된다 — 먼저 리셋하고 오류 문구로 덮어쓴다
+    // (currentSong은 인식에 성공한 새 곡이므로 유지)
+    applyLyricsData(null);
     panel.showError('가사를 불러오지 못했어요');
+    if (pip.isOpen()) pip.showPanelError('가사를 불러오지 못했어요');
     return;
   }
 
@@ -829,6 +864,11 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   // 서버 싱크(위키 가사로 생성된 것)에 위키의 발음/사람 번역을 텍스트 매칭으로 병합
   if (data && data.source === 'everyric' && data.synced) {
     await enrichFromVocaro(videoId, data);
+    if (seq !== searchSeq || videoId !== currentVideoId) return;
+  }
+  // 어디에도 가사가 없으면 마지막으로 영상 자체 자막을 띄워 본다
+  if (!data) {
+    data = await tryCaptionFallback(videoId, song);
     if (seq !== searchSeq || videoId !== currentVideoId) return;
   }
   applyLyricsData(data);
@@ -944,7 +984,10 @@ function applyLyricsData(data: LyricsData | null): void {
   panel.setLinked(data?.source === 'everyric' ? data.linked ?? null : null);
 
   if (!data) {
-    if (pip.isOpen()) pip.close();
+    // 싱크가 없다고 PiP를 닫지 않는다 — 재생목록을 돌리다 가사 없는 곡이 나오면
+    // 창이 증발해 매번 브라우저 창으로 돌아가야 했다. 같은 패널 조각을 PiP 안에
+    // 띄워 거기서 바로 검색·붙여넣기·생성 요청을 할 수 있게 한다.
+    if (pip.isOpen()) pip.showPanelEmpty(currentSong);
     panel.showEmpty(currentSong);
     return;
   }
@@ -970,7 +1013,8 @@ function applyLyricsData(data: LyricsData | null): void {
     }
     void startEngine(data.lines);
   } else {
-    if (pip.isOpen()) pip.close();
+    // 싱크 없는 플레인 가사도 PiP를 유지한 채 창 안에 보여준다
+    if (pip.isOpen()) pip.showPanelPlain(data.lines, data.plainText);
     panel.showPlainLyrics(data.lines, data.source, data.plainText);
   }
   if (settings.showTranslation) void loadTranslations();
@@ -1006,6 +1050,10 @@ async function startEngine(lines: LyricLine[]): Promise<void> {
   if (!video || !currentData?.synced) return;
   engine.start(video, lines, makeEngineHandlers());
   engine.setOffset(videoOffset);
+  // PiP 영상은 captureStream() 미러라 곡이 바뀌면 재부착해야 새 프레임이 흐른다.
+  // engine이 바인딩하는 video가 바뀔 때마다 PiP도 따라간다는 불변식을 여기서 보장한다
+  // (watchVideoBinding은 engine.start가 이미 갱신해버려 이 전환을 못 잡는다).
+  if (pip.isOpen() && settings.pipShowVideo) pip.attachVideo(video);
 }
 
 async function waitForVideo(maxRetries = 10, delayMs = 500): Promise<HTMLVideoElement | null> {
@@ -1029,7 +1077,7 @@ async function waitForSongInfo(seq: number, maxRetries = 6, delayMs = 700): Prom
 
 // ── 싱크 생성 ───────────────────────────────────────────────────
 
-async function handleGenerate(lyricsText: string): Promise<void> {
+async function handleGenerate(lyricsText: string, attributionName?: string): Promise<void> {
   const videoId = currentVideoId;
   const seq = searchSeq;
   // 검색 복사 가사(원문/독음/번역 3줄 반복) 감지 — 원문만 정렬에 쓰고
@@ -1054,37 +1102,50 @@ async function handleGenerate(lyricsText: string): Promise<void> {
   updateGenChip(); // 버튼을 누르자마자 "준비 중" 칩으로 즉시 반응을 보여준다
 
   try {
+    // 유튜브 자막을 보다가 생성을 누른 경우엔 가사 텍스트를 보내지 않는다 — video_id만
+    // 넘기면 서버가 원어 트랙을 스스로 골라 조달한다(자막 본문은 어차피 서버 yt-dlp로만
+    // 받을 수 있다). 번역·독음도 서버가 만들므로 여기서 LLM을 부를 필요가 없다.
+    const fromCaption = currentData?.source === 'caption';
+
     // 보카로 위키 가사로 생성할 때는 발음/사람 번역도 서버에 함께 저장한다
     // (서버 싱크에 병합돼 다른 프로필·사용자에게도 그대로 표시됨)
     let lineMeta: { text: string; pronunciation?: string; translation?: string }[] | undefined =
-      currentData?.source === 'vocaro'
+      !fromCaption && currentData?.source === 'vocaro'
         ? currentData.lines
           .filter(l => l.pronunciation || l.translation)
           .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }))
         : undefined;
 
-    // 위키 출처는 싱크에 영구 저장돼 조회 시 푸터에 병기된다 (CC BY 표기)
+    // 위키 출처는 싱크에 영구 저장돼 조회 시 푸터에 병기된다 (CC BY 표기).
+    // 붙여넣기 경로는 사용자가 적어 넣은 출처를 그대로 싣는다 (선택 입력 — 나중에
+    // 어디서 온 가사인지 추적할 수 있어 삭제 요청 대응이 쉬워진다)
     const attribution = currentData?.source === 'vocaro'
       ? { name: '보카로 가사 위키', url: currentSourceUrl }
-      : undefined;
+      : attributionName?.trim()
+        ? { name: attributionName.trim(), url: null }
+        : undefined;
 
     // 위키 발음이 없으면(수동 붙여넣기·LRCLIB 등) LLM 번역·한글 독음을 먼저 받아
     // line_meta로 넘긴다 — 서버가 독음(ko) 정렬 경로를 타고 발음/번역도 싱크에 저장된다.
     // 실패해도 싱크 생성 자체는 계속한다 (원문 정렬 폴백).
-    if (!lineMeta || lineMeta.length === 0) {
+    if (!fromCaption && (!lineMeta || lineMeta.length === 0)) {
       lineMeta = tri ?? await fetchLlmLineMeta(videoId, srcLines);
     }
 
     const panel = ensureOverlay();
-    const res = await sendToBackground<GenerateResponse>({
-      type: 'GENERATE_SYNC',
-      payload: {
-        videoId,
-        lyrics: text,
-        lineMeta: lineMeta && lineMeta.length > 0 ? lineMeta : undefined,
-        attribution,
-      },
-    });
+    const res = fromCaption
+      ? await sendToBackground<GenerateResponse>({
+        type: 'GENERATE_FROM_CAPTION', payload: { videoId },
+      })
+      : await sendToBackground<GenerateResponse>({
+        type: 'GENERATE_SYNC',
+        payload: {
+          videoId,
+          lyrics: text,
+          lineMeta: lineMeta && lineMeta.length > 0 ? lineMeta : undefined,
+          attribution,
+        },
+      });
     if (res.error || !res.data) {
       if (videoId === currentVideoId && seq === searchSeq) {
         panel.showError('싱크 생성 요청에 실패했어요. 서버 상태를 확인해 주세요.');
@@ -1323,7 +1384,24 @@ async function handlePipToggle(): Promise<void> {
   const videoId = currentVideoId;
   const panel = ensureOverlay();
   const opened = await pip.open(cssText, {
+    // 메인 가사창과 같은 패널 조각(panels.ts)을 PiP 안에서도 쓴다 — 싱크가 없는 곡에서
+    // 창이 닫히는 대신 검색·붙여넣기·생성 UI를 그대로 띄우기 위한 배선
+    panel: {
+      onGenerate: (lyrics, attribution) => void handleGenerate(lyrics, attribution),
+      onRetrySearch: query => void searchLyrics(query),
+      onCandidateSearch: query => void handleCandidateSearch(query),
+      onPickCandidate: candidate => void handlePickCandidate(candidate),
+      onOpenSearch: () => { /* PiP는 자기 창 안에서 연다 (pip.openPanelSearch) */ },
+    },
+    serverAvailable: serverOnline,
     showVideo: settings.pipShowVideo,
+    // 저장된 창 크기가 있으면 그대로, 없으면(0) 기존 기본값(440 / 영상 유무에 따라 500·260)
+    width: settings.pipWidth > 0 ? settings.pipWidth : 440,
+    height: settings.pipHeight > 0 ? settings.pipHeight : (settings.pipShowVideo ? 500 : 260),
+    onSizeChange: (w, h) => {
+      settings = { ...settings, pipWidth: w, pipHeight: h };
+      void saveSettings({ pipWidth: w, pipHeight: h });
+    },
     initialVideoRatio: settings.pipVideoRatio,
     showPronunciation: settings.showPronunciation,
     pitchEnabled: settings.pitchGuide,
@@ -1332,6 +1410,7 @@ async function handlePipToggle(): Promise<void> {
     pitchScrollMode: settings.pitchScrollMode,
     pitchFontScale: settings.pitchFontScale,
     pitchCountdown: settings.pitchCountdown,
+    pitchPronPosition: settings.pitchPronPosition,
     showConfidence: settings.debugInfo,
     onPitchHeightChange: px => {
       settings = { ...settings, pitchLaneHeight: px };
@@ -1420,9 +1499,14 @@ function restoreOverlayState(): void {
 
 // ── 서버 상태/유틸 ─────────────────────────────────────────────
 
+/** 마지막으로 확인된 서버 가용 상태 — PiP를 새로 열 때 초기값으로 넘긴다 */
+let serverOnline = false;
+
 async function refreshServerStatus(): Promise<void> {
   const res = await sendToBackground<{ ok: boolean }>({ type: 'SERVER_HEALTH' });
-  overlay?.setServerAvailable(res.data?.ok ?? false);
+  serverOnline = res.data?.ok ?? false;
+  overlay?.setServerAvailable(serverOnline);
+  pip.setServerAvailable(serverOnline); // PiP 패널의 생성 버튼도 같은 규칙으로 잠근다
 }
 
 async function sendToBackground<T>(message: BgRequest): Promise<MessageResponse<T>> {

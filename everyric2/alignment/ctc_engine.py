@@ -28,12 +28,17 @@ from everyric2.inference.prompt import LyricLine, SyncResult
 
 logger = logging.getLogger(__name__)
 
+MMS_BASE_MODEL = "facebook/mms-1b-all"
+
 LANG_MODEL_MAP = {
-    "ja": "facebook/mms-1b-all",
-    "ko": "facebook/mms-1b-all",
+    "ja": MMS_BASE_MODEL,
+    "ko": MMS_BASE_MODEL,
     "zh": "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn",
-    "en": "facebook/mms-1b-all",
+    "en": MMS_BASE_MODEL,
 }
+
+# torchaudio MMS_FA 폴백 경로의 베이스 식별자 (HF 모델 id와 겹치지 않는 이름)
+_TORCHAUDIO_MMS_FA = "torchaudio:MMS_FA"
 
 MMS_LANG_CODES = {
     "ko": "kor",
@@ -129,12 +134,42 @@ def _oov_substitute(char: str, vocab) -> str | None:
     return None
 
 
+def _resolve_token_char(char: str, vocab) -> str | None:
+    """정렬 토큰으로 조회할 글자를 고른다. 원문 글자는 호출부가 따로 보존한다.
+
+    1) vocab에 그대로 있으면 그것 — 대문자가 vocab에 있는 모델이면 원형이 우선한다.
+    2) 없으면 소문자로 한 번 더 조회. MMS 어댑터 vocab은 라틴 문자가 전부 소문자라
+       (eng/kor/jpn 실측: ASCII 대문자 0개, 소문자 26개) 대문자를 그대로 조회하면 미스가
+       나 그 글자가 정렬에서 통째로 빠졌다 — "DA DA RA DA DA" 같은 줄은 word_segments가
+       0개였고 한영 혼용 줄은 전 글자가 0.00초에 박혔다.
+    3) 그래도 없으면 한글 OOV 음절 치환(_oov_substitute).
+    한글은 lower()가 항등이라 2)를 그냥 통과하므로 기존 한글 동작은 바뀌지 않는다.
+    """
+    if char in vocab:
+        return char
+    lowered = char.lower()
+    if lowered != char and lowered in vocab:
+        return lowered
+    return _oov_substitute(char, vocab)
+
+
 class CTCEngine(BaseAlignmentEngine):
     def __init__(self, config: AlignmentSettings | None = None):
         super().__init__(config)
         self._model = None
         self._processor = None
         self._current_lang = None
+        # 현재 상주 중인 베이스 모델 식별자와 MMS 어댑터 코드 — 언어 전환 시 전체 재로드가
+        # 필요한지(베이스가 다름) 어댑터 교체로 충분한지(베이스가 같음) 판단하는 근거다.
+        self._current_base: str | None = None
+        self._current_adapter: str | None = None
+        # 상주 MMS 프로세서와 그것이 현재 겨누고 있는 어댑터 코드. 인스턴스 필드라
+        # 엔진을 버리면(clear_shared_ctc_engine) 같이 사라진다.
+        self._mms_processor_obj = None
+        self._mms_processor_lang: str | None = None
+        # 모델 가중치는 인스턴스 하나를 공유하므로, 어댑터 교체가 다른 스레드의 forward
+        # 중간에 끼어들면 lm_head/어댑터가 뒤바뀐 채 정렬된다. align 전체를 이 락으로 감싼다.
+        self._model_lock = threading.RLock()
         self._device = None
         self._last_word_timestamps: list[WordTimestamp] = []
         self._last_match_stats = None
@@ -155,6 +190,29 @@ class CTCEngine(BaseAlignmentEngine):
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return self._device
 
+    def _mms_processor(self, adapter_code: str):
+        """상주 MMS 프로세서를 요청한 어댑터 코드로 겨눠서 돌려준다.
+
+        언어마다 프로세서를 새로 만들면 최적화가 첫 전환에서 통째로 날아간다 — 3090 실측:
+        AutoProcessor.from_pretrained 3.65초 vs load_adapter 0.23초 vs set_target_lang
+        0.000초. 그래서 인스턴스 하나를 두고 다시 겨누기만 한다.
+
+        set_target_lang 반복이 이전 언어의 토큰을 남기지 않는지는 실측으로 확인했다:
+        eng/kor/jpn/cmn 4개 코드의 24개 전환 순서 전부 + 같은 코드 반복 설정까지 101회를
+        매번 새로 만든 인스턴스와 대조해 vocab 해시·pad_token_id·added_tokens가 전부
+        일치했다(불일치 0회). 정렬 결과 자체의 동등성도 별도로 확인했다 — tests/
+        test_adapter_swap.py 참조.
+        """
+        if self._mms_processor_obj is None:
+            from transformers import AutoProcessor
+
+            self._mms_processor_obj = AutoProcessor.from_pretrained(MMS_BASE_MODEL)
+            self._mms_processor_lang = None
+        if self._mms_processor_lang != adapter_code:
+            self._mms_processor_obj.tokenizer.set_target_lang(adapter_code)
+            self._mms_processor_lang = adapter_code
+        return self._mms_processor_obj
+
     def _ensure_model_loaded(self, language: str, force_mms: bool = False) -> None:
         cache_key = f"{language}_mms" if force_mms else language
         if self._model is not None and self._current_lang == cache_key:
@@ -168,20 +226,39 @@ class CTCEngine(BaseAlignmentEngine):
         device = self._get_device()
 
         use_mms = force_mms or (
-            language in LANG_MODEL_MAP and LANG_MODEL_MAP[language] == "facebook/mms-1b-all"
+            language in LANG_MODEL_MAP and LANG_MODEL_MAP[language] == MMS_BASE_MODEL
         )
 
         if use_mms:
-            from transformers import AutoProcessor, Wav2Vec2ForCTC
+            mms_lang_code = MMS_LANG_CODES.get(language, "eng")
+
+            # 베이스가 이미 MMS면 인코더 가중치는 언어와 무관하게 동일하다 — 언어별로 다른
+            # 것은 어댑터 레이어와 lm_head뿐이고 load_adapter가 그 둘을 통째로 덮어쓴다
+            # (transformers modeling_wav2vec2.py: _get_adapters + missing_keys 검사로
+            # 어댑터 파라미터 전부가 교체됨이 보장된다). 전체 재로드(약 5초) 대신 어댑터만
+            # 교체하면 0.2초대이고 결과 emission은 동일하다.
+            if self._model is not None and self._current_base == MMS_BASE_MODEL:
+                self._processor = self._mms_processor(mms_lang_code)
+                if self._current_adapter != mms_lang_code:
+                    self._model.load_adapter(mms_lang_code)
+                    self._model.eval()
+                    logger.info(
+                        f"MMS adapter swapped: {self._current_adapter} → {mms_lang_code} "
+                        f"(base model kept resident)"
+                    )
+                self._current_adapter = mms_lang_code
+                self._current_lang = cache_key
+                return
+
+            from transformers import Wav2Vec2ForCTC
 
             logger.info(f"Loading MMS 1B-all with {language} adapter (force_mms={force_mms})")
-            self._processor = AutoProcessor.from_pretrained("facebook/mms-1b-all")
-            self._model = Wav2Vec2ForCTC.from_pretrained("facebook/mms-1b-all").to(device)
-            self._model.eval()
-
-            mms_lang_code = MMS_LANG_CODES.get(language, "eng")
-            self._processor.tokenizer.set_target_lang(mms_lang_code)
+            self._processor = self._mms_processor(mms_lang_code)
+            self._model = Wav2Vec2ForCTC.from_pretrained(MMS_BASE_MODEL).to(device)
             self._model.load_adapter(mms_lang_code)
+            self._model.eval()
+            self._current_base = MMS_BASE_MODEL
+            self._current_adapter = mms_lang_code
             logger.info(f"MMS adapter loaded: {mms_lang_code}")
         elif language in LANG_MODEL_MAP:
             from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
@@ -191,11 +268,15 @@ class CTCEngine(BaseAlignmentEngine):
             self._processor = Wav2Vec2Processor.from_pretrained(model_name)
             self._model = Wav2Vec2ForCTC.from_pretrained(model_name).to(device)  # pyright: ignore[reportArgumentType]
             self._model.eval()
+            self._current_base = model_name
+            self._current_adapter = None
         else:
             logger.info("Loading torchaudio MMS_FA model")
             bundle = torchaudio.pipelines.MMS_FA
             self._model = bundle.get_model(with_star=False).to(device)
             self._processor = bundle
+            self._current_base = _TORCHAUDIO_MMS_FA
+            self._current_adapter = None
 
         self._current_lang = cache_key
 
@@ -325,9 +406,10 @@ class CTCEngine(BaseAlignmentEngine):
         for line_idx, line in enumerate(lyrics):
             line_start = current_pos
             for char in line.text:
-                # vocab에 있으면 그대로, 없으면(OOV) 발음이 가까운 음절로 치환해 정렬.
-                # 출력 word는 원본 글자를 유지하고, 타이밍만 치환 음절의 정렬에서 가져온다.
-                tok_char = char if char in vocab else _oov_substitute(char, vocab)
+                # 조회용 글자는 소문자화·OOV 치환을 거칠 수 있지만, char_info의 "char"는
+                # 원본을 그대로 넣는다 — 표시 문자열과 역매핑 인덱스가 원문 기준이어야
+                # 하고, 타이밍만 치환 글자의 정렬에서 빌려 온다.
+                tok_char = _resolve_token_char(char, vocab)
                 if tok_char is not None:
                     char_info.append(
                         {
@@ -615,35 +697,41 @@ class CTCEngine(BaseAlignmentEngine):
             if is_multilingual:
                 force_mms = True
             logger.info(f"Auto-detected language: {resolved_lang}, multilingual: {is_multilingual}")
-        self._ensure_model_loaded(resolved_lang, force_mms=force_mms)
 
-        if progress_callback:
-            progress_callback(1, 5)
+        # 모델 로드부터 추론까지를 한 락으로 묶는다. 어댑터 교체는 상주 모델을 제자리에서
+        # 바꾸므로, 다른 스레드가 forward 중일 때 끼어들면 어댑터와 가사 토큰의 언어가
+        # 어긋난 채 정렬된다(max_concurrent_jobs>1 설정에서 발생 가능). 기본값 1에서는
+        # 경합이 없어 비용 0이고, RLock이라 같은 스레드의 중첩 호출은 그대로 통과한다.
+        with self._model_lock:
+            self._ensure_model_loaded(resolved_lang, force_mms=force_mms)
 
-        from everyric2.audio.loader import AudioLoader
+            if progress_callback:
+                progress_callback(1, 5)
 
-        loader = AudioLoader()
-        prepared = loader.prepare_for_alignment(audio, target_sr=16000, normalize=True)
+            from everyric2.audio.loader import AudioLoader
 
-        waveform = torch.from_numpy(prepared.waveform.astype("float32"))
-        if waveform.dim() == 2:
-            waveform = waveform.mean(dim=0)
+            loader = AudioLoader()
+            prepared = loader.prepare_for_alignment(audio, target_sr=16000, normalize=True)
 
-        if resolved_lang in LANG_MODEL_MAP:
-            results = self._align_cjk(waveform, lyrics, resolved_lang, progress_callback)
-            self._last_match_stats = self._calculate_match_stats(results)
-            return results
-        else:
-            results = self._align_mms(waveform, lyrics, resolved_lang, progress_callback)
-            from everyric2.alignment.matcher import LyricsMatcher
+            waveform = torch.from_numpy(prepared.waveform.astype("float32"))
+            if waveform.dim() == 2:
+                waveform = waveform.mean(dim=0)
 
-            matcher = LyricsMatcher()
-            matched_results = matcher.match_lyrics_to_words(
-                lyrics, self._last_word_timestamps, resolved_lang
-            )
+            if resolved_lang in LANG_MODEL_MAP:
+                results = self._align_cjk(waveform, lyrics, resolved_lang, progress_callback)
+                self._last_match_stats = self._calculate_match_stats(results)
+                return results
+            else:
+                results = self._align_mms(waveform, lyrics, resolved_lang, progress_callback)
+                from everyric2.alignment.matcher import LyricsMatcher
 
-            self._last_match_stats = self._calculate_match_stats(matched_results)
-            return matched_results
+                matcher = LyricsMatcher()
+                matched_results = matcher.match_lyrics_to_words(
+                    lyrics, self._last_word_timestamps, resolved_lang
+                )
+
+                self._last_match_stats = self._calculate_match_stats(matched_results)
+                return matched_results
 
     def _calculate_match_stats(self, results: list) -> "MatchStats":
         """Calculate match stats consistently for both CJK and MMS paths.

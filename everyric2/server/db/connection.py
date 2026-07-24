@@ -38,6 +38,29 @@ async def init_db():
                 await conn.execute(
                     text("ALTER TABLE sync_links ADD COLUMN rate FLOAT DEFAULT 1.0")
                 )
+            if link_cols and "verified" not in link_cols:
+                await conn.execute(
+                    text("ALTER TABLE sync_links ADD COLUMN verified BOOLEAN DEFAULT 0")
+                )
+                # 일회성 백필: 같은 쌍으로 match=true 검증 잡이 끝난 링크는 자동 생성분이다.
+                # 나머지(수동 링크 API로 박힌 것)는 0으로 남겨 미검증으로 표시한다.
+                await conn.execute(
+                    text(
+                        "UPDATE sync_links SET verified=1 WHERE EXISTS ("
+                        "  SELECT 1 FROM link_jobs lj"
+                        "  WHERE lj.video_id = sync_links.video_id"
+                        "    AND lj.source_video_id = sync_links.source_video_id"
+                        "    AND lj.status = 'done' AND lj.match = 1)"
+                    )
+                )
+            sync_cols = {
+                row[1] for row in await conn.execute(text("PRAGMA table_info(sync_results)"))
+            }
+            # 제목/아티스트: 커버 링크 후보 탐색용. 기존 행은 NULL로 남고 조회 시 백필된다
+            if sync_cols and "title" not in sync_cols:
+                await conn.execute(text("ALTER TABLE sync_results ADD COLUMN title VARCHAR(256)"))
+            if sync_cols and "artist" not in sync_cols:
+                await conn.execute(text("ALTER TABLE sync_results ADD COLUMN artist VARCHAR(128)"))
         # 서버가 죽으며 남긴 좀비 잡(pending/processing) 정리 — 방치하면 같은 영상의
         # 생성 요청이 죽은 잡에 합류해 영구 "전사 중"에 갇힌다
         from sqlalchemy import text as _text

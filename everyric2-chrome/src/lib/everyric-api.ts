@@ -164,14 +164,9 @@ export async function checkHealth(server: ServerConfig): Promise<boolean> {
   return retry !== null;
 }
 
-/** 유튜브 자막 트랙 목록 — 서버(yt-dlp) 경유. 원격 추출이라 타임아웃을 넉넉히 잡는다. */
-export function listCaptionTracks(
-  server: ServerConfig, videoId: string,
-): Promise<{ tracks: { lang: string; label: string; auto: boolean }[] } | null> {
-  return request(server, `/api/captions/${encodeURIComponent(videoId)}`, undefined, 25000);
-}
-
-/** 선택한 자막 트랙의 라인(타이밍 포함) — 서버가 yt-dlp json3를 파싱해 준다 */
+/** 자막 트랙의 라인(타이밍 포함) — 서버가 yt-dlp json3를 파싱해 준다.
+ *  트랙 **목록**은 서버를 부르지 않는다 — 클라이언트가 워치 페이지에서 직접 읽는다
+ *  (lib/yt-captions.ts). 본문만 POT 강제로 서버 경유가 유일 경로. */
 export function fetchCaptionLines(
   server: ServerConfig, videoId: string, lang: string, auto: boolean,
 ): Promise<{ lines: { start: number; end: number; text: string }[] } | null> {
@@ -181,6 +176,23 @@ export function fetchCaptionLines(
     undefined,
     35000,
   );
+}
+
+/**
+ * 자막으로 보고 있던 곡의 싱크 생성 — 서버가 자막을 직접 읽어 가사로 쓰는 전용 경로.
+ *
+ * **이 엔드포인트는 아직 없을 수 있다.** 없으면(404·미배포 서버) request()가 null을
+ * 돌려주므로 호출부는 기존 /api/sync/generate 경로로 폴백한다 — 그래서 여기서 404와
+ * 네트워크 실패를 구분하지 않는다(둘 다 "이 경로는 못 쓴다"로 같게 취급하면 충분).
+ */
+export function generateSyncFromCaption(
+  server: ServerConfig, videoId: string,
+): Promise<GenerateResponse | null> {
+  return request<GenerateResponse>(server, '/api/sync/generate-from-caption', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ video_id: videoId }),
+  }, 15000);
 }
 
 export interface VocaroMatchResponse {

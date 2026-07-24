@@ -18,7 +18,6 @@ import logging
 import re
 import threading
 import time
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -26,6 +25,8 @@ from pathlib import Path
 from tempfile import mkstemp
 
 import requests
+
+from everyric2.server import title_match
 
 logger = logging.getLogger(__name__)
 
@@ -66,41 +67,9 @@ _SESSION.headers.update({"User-Agent": "everyric2-vocaro-index/1.0 (lyrics sync 
 
 # ── 공개 API ──────────────────────────────────────────────────────
 
-# 유튜브 곡 제목 관례("곡명 / 아티스트", "곡명 - 아티스트 feat.가수", "【가수】곡명" 등)의
-# 구분자 — 하이픈은 양옆 공백이 있을 때만 분리해 합성어를 보존한다
-_TITLE_SPLIT_RE = re.compile(r"\s*[/／|｜–—―~〜]\s*|\s+-\s+|\s*[「」『』【】\[\]]\s*")
-_FEAT_RE = re.compile(r"(?:^|\s)(?:feat|ft)\.?\s*\S.*$", re.IGNORECASE)
-
-
-# 괄호로 묶인 가수/독음 병기 («【初音ミク】곡명», «곡명 (아쿠노)») — 통째로 걷어낸 변형도 후보에 넣는다
-_BRACKETED_RE = re.compile(r"【[^】]*】|「[^」]*」|『[^』]*』|\[[^\]]*\]|\([^)]*\)|（[^）]*）")
-
-
-def _candidate_queries(title: str) -> list[str]:
-    """풀 제목에서 곡명 후보를 정규화 형태로 생성.
-
-    순서: 원문 → feat 제거 → 괄호 세그먼트 제거 → 각 변형의 구분자 조각(왼쪽 우선).
-    괄호 제거 변형을 조각보다 먼저 두어 «【가수】곡명» 류에서 가수명이 곡명보다
-    먼저 매칭되는 오탐을 막는다.
-    """
-    seen: set[str] = set()
-    out: list[str] = []
-
-    def add(raw: str) -> None:
-        q = _normalize_title(raw)
-        if len(q) >= 2 and q not in seen:
-            seen.add(q)
-            out.append(q)
-
-    stripped = _BRACKETED_RE.sub(" ", title)
-    variants = [title, _FEAT_RE.sub("", title), stripped, _FEAT_RE.sub("", stripped)]
-    for v in variants:
-        add(v)
-    for v in variants:
-        for part in _TITLE_SPLIT_RE.split(v):
-            add(part)
-            add(_FEAT_RE.sub("", part))
-    return out
+# 제목 정규화·후보 생성 규칙은 링크 후보 탐색(api/sync)과 공유한다 — title_match 단일 출처.
+_candidate_queries = title_match.candidate_queries
+_normalize_title = title_match.normalize_title
 
 
 def match(title: str) -> SongEntry | None:
@@ -340,8 +309,3 @@ def _cell_text(cell_html: str) -> str:
     text = _TAG_RE.sub("", text)
     text = html.unescape(text)
     return _WS_RE.sub(" ", text).strip()
-
-
-def _normalize_title(title: str) -> str:
-    t = unicodedata.normalize("NFKC", title.lower())
-    return "".join(ch for ch in t if ch.isalnum())

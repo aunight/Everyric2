@@ -77,10 +77,12 @@ def _pop_stashes(job_id: str) -> None:
         _PENDING_ATTRIBUTION,
         _PENDING_FORCE,
         _PENDING_LINE_META,
+        _PENDING_TITLE,
     )
 
     _PENDING_LINE_META.pop(job_id, None)
     _PENDING_ATTRIBUTION.pop(job_id, None)
+    _PENDING_TITLE.pop(job_id, None)
     _PENDING_FORCE.discard(job_id)
 
 
@@ -404,6 +406,9 @@ async def submit_result(
         if job.status != "processing":
             _LEASES.pop(job_id, None)
             raise HTTPException(status_code=409, detail=f"잡이 이미 {job.status} 상태예요")
+        from everyric2.server.worker import peek_title
+
+        title, artist = peek_title(job_id)
         sync_result = await SyncRepository(session).create(
             video_id=job.video_id,
             lyrics_hash=hash_lyrics(job.lyrics),
@@ -413,6 +418,8 @@ async def submit_result(
             quality_score=request.quality_score,
             audio_hash=request.audio_hash,
             extra=request.extra,
+            title=title,
+            artist=artist,
         )
         await job_repo.update_status(
             job_id, "completed", progress=100, result_id=sync_result.id
@@ -482,8 +489,13 @@ async def submit_link_result(
             link_job_id, request.match, request.offset_sec, request.confidence
         )
         if request.match:
+            # 반주 상관 게이트를 통과한 자동 링크만 verified=True — 수동 링크와 구분된다
             await SyncLinkRepository(session).upsert(
-                link_job.video_id, link_job.source_video_id, request.offset_sec, rate=1.0
+                link_job.video_id,
+                link_job.source_video_id,
+                request.offset_sec,
+                rate=1.0,
+                verified=True,
             )
     _LEASES.pop(lease_key, None)
     return AcceptResponse(accepted=True)

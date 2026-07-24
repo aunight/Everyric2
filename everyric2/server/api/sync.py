@@ -1,16 +1,18 @@
 import asyncio
 import copy
 import re
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from everyric2.config.settings import get_settings
+from everyric2.server import title_match
 from everyric2.server.db.connection import get_session
 from everyric2.server.db.repository import (
     ActionLogRepository,
     JobRepository,
+    LinkJobRepository,
     SyncLinkRepository,
     SyncRepository,
     VideoOffsetRepository,
@@ -116,6 +118,10 @@ class GenerateRequest(BaseModel):
     language: str | None = None
     line_meta: list[LineMeta] | None = None
     attribution: Attribution | None = None
+    # 영상 제목/아티스트 — 완성된 싱크에 함께 저장돼 커버 링크 후보 탐색의 단서가 된다.
+    # 선택 필드라 예전 클라이언트 요청도 그대로 동작한다(제목 없이 저장).
+    title: str | None = Field(default=None, max_length=256)
+    artist: str | None = Field(default=None, max_length=128)
 
 
 class GenerateResponse(BaseModel):
@@ -141,6 +147,8 @@ class RegenerateRequest(BaseModel):
     force: bool = False
     line_meta: list[LineMeta] | None = None
     attribution: Attribution | None = None
+    title: str | None = Field(default=None, max_length=256)
+    artist: str | None = Field(default=None, max_length=128)
 
 
 def _merge_meta_into_sync(
@@ -181,6 +189,8 @@ class SyncLinkResponse(BaseModel):
     source_video_id: str
     offset_sec: float
     rate: float = 1.0
+    # 반주 상관 검증(link-jobs)을 통과한 링크인지 — 이 수동 API로 만든 링크는 항상 False
+    verified: bool = False
     created_at: str | None = None
 
 
@@ -281,13 +291,28 @@ def _build_sync_response(
 
 
 @router.post("/link", response_model=SyncLinkResponse)
-async def create_sync_link(request: SyncLinkRequest):
+async def create_sync_link(request: SyncLinkRequest, x_api_key: str | None = Header(default=None)):
     """영상 video_id가 source_video_id의 싱크를 offset과 함께 빌려 쓰도록 링크(upsert).
 
     자기 자신 링크는 거부. source에 실제 싱크가 있어야 한다 — source가 그 자체로 링크만
-    있고 자기 싱크가 없으면(링크의 링크) 거부한다(단순화: 1단계 링크만 허용)."""
+    있고 자기 싱크가 없으면(링크의 링크) 거부한다(단순화: 1단계 링크만 허용).
+
+    **이 경로는 검증이 없다** — 호출자가 준 오프셋(0 포함)을 그대로 박으므로 틀린 링크가
+    코퍼스에 남을 수 있다(실제 사례 있음). 두 겹으로 완화한다: ① 만들어진 링크는 항상
+    verified=False로 기록돼 자동 검증 링크(link-jobs 통과)와 조회 응답에서 구분되고,
+    ② manual_link_requires_admin을 켠 배포에서는 어드민 키를 요구한다. 검증된 링크를
+    원하면 POST /api/link-jobs(반주 상관 판정)를 쓴다."""
     if request.video_id == request.source_video_id:
         raise HTTPException(status_code=400, detail="Cannot link a video to itself")
+
+    server = get_settings().server
+    if server.manual_link_requires_admin:
+        if not server.admin_api_key or x_api_key != server.admin_api_key:
+            raise HTTPException(
+                status_code=403,
+                detail="검증 없는 수동 링크는 어드민 키가 필요해요. "
+                "자동 검증 링크는 /api/link-jobs로 요청해 주세요.",
+            )
 
     async with get_session() as session:
         sync_repo = SyncRepository(session)
@@ -299,13 +324,18 @@ async def create_sync_link(request: SyncLinkRequest):
             )
         link_repo = SyncLinkRepository(session)
         link = await link_repo.upsert(
-            request.video_id, request.source_video_id, request.offset_sec, request.rate
+            request.video_id,
+            request.source_video_id,
+            request.offset_sec,
+            request.rate,
+            verified=False,
         )
         return SyncLinkResponse(
             video_id=link.video_id,
             source_video_id=link.source_video_id,
             offset_sec=link.offset_sec,
             rate=link.rate,
+            verified=link.verified,
             created_at=link.created_at.isoformat() if link.created_at else None,
         )
 
@@ -357,8 +387,149 @@ async def save_user_offset(video_id: str, request: UserOffsetRequest):
     return {"video_id": video_id, "offset_sec": offset}
 
 
+class LinkCandidate(BaseModel):
+    video_id: str
+    title: str | None = None
+    artist: str | None = None
+    # 제목 유사도 (1.0 = 정규화 정확 일치). 같은 곡인지의 판정값이 아니라 후보 순위일 뿐이다
+    score: float
+
+
+class LinkCandidatesResponse(BaseModel):
+    video_id: str
+    # has_sync | linked | disabled | none | submitted | pending | cooldown
+    status: str
+    candidates: list[LinkCandidate] = []
+    # 낸 후속 작업의 종류 — 클라이언트가 진행 상태를 어느 API로 폴링할지 가른다.
+    # 오늘은 "link_validate"(반주 상관 검증) 하나뿐이다. _dispatch_candidate_followup 참고.
+    followup: str | None = None
+    # submitted/pending/cooldown일 때 해당 후속 작업의 id
+    job_id: str | None = None
+
+
+# ── 후보 확정 이후: 후속 작업 디스패치 (교체 지점) ────────────────
+
+# 반주 상관 검증 잡 — 커버가 원곡과 같은 반주를 쓰는지 판정해 SyncLink를 만든다
+FOLLOWUP_LINK_VALIDATE = "link_validate"
+
+
+async def _dispatch_candidate_followup(
+    session, video_id: str, candidate_video_id: str
+) -> tuple[str, str, str | None]:
+    """후보를 확정한 뒤 **무엇을 제출할지** 결정하는 단일 교체 지점. (kind, status, job_id) 반환.
+
+    status는 submitted | pending | cooldown.
+
+    오늘의 구현은 반주 상관 검증 잡 하나다. 앞으로 "원곡의 가사·번역·독음을 재사용해
+    이 영상 자체를 새로 정렬"처럼 다른 후속 작업으로 갈아끼울 수 있도록 제출 로직을 여기
+    한 곳에 가둬 두었다 — 후보 탐색·제목 정규화·재제출 억제 정책은 이 함수를 바꿔도
+    재작성할 필요가 없다. 두 경로를 조건부로 함께 쓰거나(예: 커버 음질이 나쁘면 링크,
+    아니면 재정렬) 순차 폴백으로 확장하는 것도 이 함수 안에서 끝난다.
+
+    교체 구현이 지켜야 할 계약:
+      - 같은 (영상, 후보) 쌍의 재제출 억제를 반드시 자체적으로 유지할 것 — 진행 중이면
+        pending, 최근에 끝난 이력이 있으면 cooldown. 이게 없으면 사용자가 같은 영상을
+        열 때마다 GPU가 다시 돈다(현재 쿨다운 기준: link_retry_cooldown_days).
+      - kind는 클라이언트가 진행 상태를 어느 API로 폴링할지 가르는 값이므로, 새 종류를
+        도입하면 그 종류의 조회 경로도 함께 알려야 한다.
+    """
+    server = get_settings().server
+    repo = LinkJobRepository(session)
+
+    active = await repo.get_active_pair(video_id, candidate_video_id)
+    if active:
+        return FOLLOWUP_LINK_VALIDATE, "pending", active.id
+    recent = await repo.get_recent_attempt(
+        video_id, candidate_video_id, server.link_retry_cooldown_days
+    )
+    if recent:
+        return FOLLOWUP_LINK_VALIDATE, "cooldown", recent.id
+    link_job = await repo.create(video_id, candidate_video_id)
+    return FOLLOWUP_LINK_VALIDATE, "submitted", link_job.id
+
+
+@router.get("/{video_id}/link-candidates", response_model=LinkCandidatesResponse)
+async def find_link_candidates(
+    video_id: str,
+    title: Annotated[str, Query(min_length=1, max_length=256)],
+    artist: Annotated[str | None, Query(max_length=128)] = None,
+):
+    """이 영상과 같은 곡일 만한 코퍼스 영상을 제목으로 찾고, 최상위 후보 1건에 대해
+    후속 작업을 자동 제출한다 (무엇을 제출할지는 _dispatch_candidate_followup이 정한다 —
+    오늘은 반주 상관 검증 잡). 응답의 followup이 그 종류를 알려준다.
+
+    **제목 매칭은 후보 발견에만 쓴다.** 같은 곡인지의 최종 판정은 기존 반주 상관 게이트
+    (link_match_threshold·link_min_offset_margin)가 그대로 담당하며, 이 엔드포인트가
+    SyncLink를 직접 만드는 경로는 없다 — 제목이 맞았다는 이유만으로 링크가 생기지 않는다.
+    그래서 매칭이 헐거워도 안전하다(오탐의 대가는 후속 작업 한 번).
+
+    자기 싱크가 있거나 이미 링크가 있으면 후보 없이 즉시 반환한다. 같은 쌍을 최근
+    link_retry_cooldown_days 안에 이미 시도했으면 재제출하지 않는다 — 사용자가 같은 영상을
+    반복해 열 때마다 GPU를 다시 태우는 남용 경로를 막는다."""
+    _validate_video_id(video_id)
+    server = get_settings().server
+
+    async with get_session() as session:
+        sync_repo = SyncRepository(session)
+
+        # (a) 자기 싱크가 있으면 링크가 필요 없다 — 대신 비어 있던 제목을 이 기회에 채운다
+        own = await sync_repo.get_by_video(video_id)
+        if own:
+            await sync_repo.set_title_if_missing(own[0], title, artist)
+            return LinkCandidatesResponse(video_id=video_id, status="has_sync")
+        if await SyncLinkRepository(session).get(video_id):
+            return LinkCandidatesResponse(video_id=video_id, status="linked")
+
+        # (b) 제목이 채워진 코퍼스를 전수 스캔해 상위 후보를 뽑는다 (자기 자신 제외)
+        rows = await sync_repo.list_titled(limit=server.link_candidate_scan_limit)
+        entries = [(r.video_id, r.title or "") for r in rows if r.video_id != video_id]
+        ranked = title_match.rank_matches(
+            title, entries, min_score=server.link_candidate_min_title_score, limit=5
+        )
+        by_video = {r.video_id: r for r in rows}
+        candidates = [
+            LinkCandidate(
+                video_id=vid,
+                title=by_video[vid].title,
+                artist=by_video[vid].artist,
+                score=score,
+            )
+            for vid, score in ranked
+        ]
+        if not candidates:
+            return LinkCandidatesResponse(video_id=video_id, status="none")
+        if not server.auto_link_candidates:
+            return LinkCandidatesResponse(
+                video_id=video_id, status="disabled", candidates=candidates
+            )
+
+        # (c) 최상위 후보 1건만 인프로세스로 제출한다 (여러 후보 순차 재시도는 넣지 않는다).
+        # 무엇을 제출할지는 _dispatch_candidate_followup 한 곳에서만 정해진다
+        kind, status, job_id = await _dispatch_candidate_followup(
+            session, video_id, candidates[0].video_id
+        )
+        return LinkCandidatesResponse(
+            video_id=video_id,
+            status=status,
+            candidates=candidates,
+            followup=kind,
+            job_id=job_id,
+        )
+
+
 @router.get("/{video_id}", response_model=SyncLookupResponse)
-async def get_sync(video_id: str, lyrics_hash: str | None = None):
+async def get_sync(
+    video_id: str,
+    lyrics_hash: str | None = None,
+    title: Annotated[str | None, Query(max_length=256)] = None,
+    artist: Annotated[str | None, Query(max_length=128)] = None,
+):
+    """이 영상의 싱크를 조회한다. 자기 싱크 > 링크로 빌려온 싱크 순.
+
+    title/artist는 선택적 기회적 백필용이다 — 이 영상 '자기' 싱크의 title이 비어 있을 때만
+    조용히 채운다(기존 값은 절대 덮어쓰지 않는다). 재생성 없이 기존 코퍼스에 제목이 쌓여
+    커버 링크 후보 탐색이 동작하게 만드는 경로다. 링크로 빌려온 싱크는 소유자가 다른 영상
+    (원곡)이라 커버의 제목이 원곡 행에 새겨지지 않도록 백필하지 않는다."""
     _validate_video_id(video_id)
     async with get_session() as session:
         repo = SyncRepository(session)
@@ -368,12 +539,14 @@ async def get_sync(video_id: str, lyrics_hash: str | None = None):
         if lyrics_hash:
             result = await repo.get_by_video_and_hash(video_id, lyrics_hash)
             if result:
+                await repo.set_title_if_missing(result, title, artist)
                 resp = _build_sync_response(result, result.timestamps)
                 resp.user_offset = user_offset
                 return resp
         else:
             results = await repo.get_by_video(video_id)
             if results:
+                await repo.set_title_if_missing(results[0], title, artist)
                 resp = _build_sync_response(results[0], results[0].timestamps)
                 resp.user_offset = user_offset
                 return resp
@@ -393,6 +566,9 @@ async def get_sync(video_id: str, lyrics_hash: str | None = None):
                         "source_video_id": link.source_video_id,
                         "offset_sec": link.offset_sec,
                         "rate": link_rate,
+                        # 반주 상관 검증을 통과한 링크인지 — 수동 링크(검증 없이 오프셋 지정)와
+                        # 구분해 클라이언트가 신뢰도를 표시할 수 있게 한다
+                        "verified": bool(getattr(link, "verified", False)),
                     },
                 )
                 resp.user_offset = user_offset
@@ -431,6 +607,8 @@ async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTa
             # 정렬은 재사용하되 새로 들어온 발음/번역 메타·출처는 반영한다
             if request.line_meta or request.attribution:
                 _merge_meta_into_sync(existing, request.line_meta, request.attribution)
+            # 제목이 비어 있던 기존 싱크는 이 기회에 채운다 (기존 값은 덮어쓰지 않는다)
+            await sync_repo.set_title_if_missing(existing, request.title, request.artist)
             return GenerateResponse(
                 job_id=existing.id,
                 status="completed",
@@ -443,13 +621,17 @@ async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTa
         # Windows에서 WinError 32(파일 사용 중)로 다운로드가 깨진다
         active = await job_repo.get_active_by_video(request.video_id, lyrics_hash_value)
         if active:
-            if request.line_meta or request.attribution:
-                from everyric2.server.worker import stash_attribution, stash_line_meta
+            from everyric2.server.worker import (
+                stash_attribution,
+                stash_line_meta,
+                stash_title,
+            )
 
-                if request.line_meta:
-                    stash_line_meta(active.id, [m.model_dump() for m in request.line_meta])
-                if request.attribution:
-                    stash_attribution(active.id, request.attribution.model_dump())
+            if request.line_meta:
+                stash_line_meta(active.id, [m.model_dump() for m in request.line_meta])
+            if request.attribution:
+                stash_attribution(active.id, request.attribution.model_dump())
+            stash_title(active.id, request.title, request.artist)
             return GenerateResponse(job_id=active.id, status="processing", estimated_time=15)
         job = await job_repo.create(
             video_id=request.video_id,
@@ -458,18 +640,106 @@ async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTa
         )
         job_id = job.id
 
-    from everyric2.server.worker import stash_attribution, stash_line_meta
+    from everyric2.server.worker import stash_attribution, stash_line_meta, stash_title
 
     if request.line_meta:
         stash_line_meta(job_id, [m.model_dump() for m in request.line_meta])
     if request.attribution:
         stash_attribution(job_id, request.attribution.model_dump())
+    stash_title(job_id, request.title, request.artist)
     await _dispatch_job(job_id, background_tasks)
 
     return GenerateResponse(
         job_id=job_id,
         status="processing",
         estimated_time=15,
+    )
+
+
+class GenerateFromCaptionRequest(BaseModel):
+    """video_id만으로 싱크를 만든다 — 가사는 서버가 유튜브 자막에서 조달한다.
+
+    title/artist는 선택이다(커버 링크 후보 탐색의 단서로 함께 저장될 뿐, 자막 판정에는
+    쓰이지 않는다). **자막 트랙을 고르는 필드는 일부러 두지 않았다** — 원어 판정은
+    전적으로 서버 몫이고, 사용자가 고르는 단계를 없애는 것이 이 엔드포인트의 목적이다.
+    """
+
+    video_id: str = Field(pattern=_VIDEO_ID_PATTERN)
+    title: str | None = Field(default=None, max_length=256)
+    artist: str | None = Field(default=None, max_length=128)
+
+
+class CaptionGenerateResponse(GenerateResponse):
+    """생성 응답 + 실제로 어떤 자막을 왜 썼는지 — 클라이언트 표시·로그 확인용."""
+
+    lang: str
+    auto: bool
+    track_label: str
+    # 원어 판정 근거 (asr_orig | asr_only | video_language | sole_manual)
+    reason: str
+    line_count: int
+
+
+@router.post("/generate-from-caption", response_model=CaptionGenerateResponse)
+async def generate_sync_from_caption(
+    request: GenerateFromCaptionRequest, background_tasks: BackgroundTasks
+):
+    """video_id만으로 유튜브 자막을 조달해 싱크 생성 잡을 만든다.
+
+    자막 사용 가능 여부 판정 → 원어 트랙 자동 선택 → 본문 취득 → 가사 텍스트 구성까지
+    서버가 하고, 그 뒤는 **/generate와 완전히 같은 경로**로 넘긴다(중복 싱크 재사용,
+    활성 잡 합류, 큐 적재가 그대로 적용된다 — 여기서 복제하지 않는다).
+
+    자막 타임스탬프는 버린다. 자막 타이밍은 가사 표시용이라 발성 시점과 어긋나고,
+    정렬은 어차피 CTC가 오디오에서 새로 잡는다.
+
+    실패는 detail={code, message}로 나간다. 4xx는 이 영상이 자막으로는 불가능하다는
+    확정 판정이므로 클라이언트는 가사 직접 붙여넣기로 안내하면 된다. 5xx는 조달 실패라
+    재시도 가치가 있다.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from everyric2.server.services.youtube_captions import (
+        CaptionUnavailable,
+        fetch_lyrics_from_captions,
+    )
+
+    try:
+        # yt-dlp는 블로킹 IO라 이벤트 루프 밖으로 내보낸다 (extract + 트랙 다운로드 2회)
+        found = await run_in_threadpool(fetch_lyrics_from_captions, request.video_id)
+    except CaptionUnavailable as e:
+        message = e.message
+        if e.terminal:
+            message = f"{message} — 가사를 직접 붙여넣어 주세요"
+        raise HTTPException(
+            status_code=e.http_status, detail={"code": e.code, "message": message}
+        ) from e
+
+    track = found.track
+    base = await generate_sync(
+        GenerateRequest(
+            video_id=request.video_id,
+            lyrics=found.text,
+            lyrics_source="youtube_caption",
+            # CTC가 다루는 언어일 때만 지정한다 — 그 밖(gl/fil 등)은 엔진의 텍스트
+            # 기반 자동 판정이 더 낫다 (services.youtube_captions.ALIGNABLE_LANGS)
+            language=found.align_language,
+            attribution=Attribution(
+                name=f"유튜브 자막 · {track.label}",
+                url=f"https://www.youtube.com/watch?v={request.video_id}",
+            ),
+            title=request.title,
+            artist=request.artist,
+        ),
+        background_tasks,
+    )
+    return CaptionGenerateResponse(
+        **base.model_dump(),
+        lang=track.lang,
+        auto=track.auto,
+        track_label=track.label,
+        reason=track.reason,
+        line_count=len(found.lines),
     )
 
 
@@ -566,6 +836,7 @@ async def regenerate_sync(
             if existing:
                 if request.line_meta or request.attribution:
                     _merge_meta_into_sync(existing, request.line_meta, request.attribution)
+                await sync_repo.set_title_if_missing(existing, request.title, request.artist)
                 return GenerateResponse(
                     job_id=existing.id,
                     status="completed",
@@ -584,7 +855,12 @@ async def regenerate_sync(
         )
         job_id = job.id
 
-    from everyric2.server.worker import stash_attribution, stash_force, stash_line_meta
+    from everyric2.server.worker import (
+        stash_attribution,
+        stash_force,
+        stash_line_meta,
+        stash_title,
+    )
 
     if request.force:
         # 워커의 (audio_hash, lyrics_hash) 재사용 검사까지 건너뛰어야 진짜 재생성이 된다
@@ -593,6 +869,7 @@ async def regenerate_sync(
         stash_line_meta(job_id, [m.model_dump() for m in request.line_meta])
     if request.attribution:
         stash_attribution(job_id, request.attribution.model_dump())
+    stash_title(job_id, request.title, request.artist)
     await _dispatch_job(job_id, background_tasks)
 
     return GenerateResponse(
