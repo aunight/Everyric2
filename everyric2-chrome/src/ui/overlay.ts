@@ -1,17 +1,20 @@
-import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, Settings, SongInfo, SyncListItem } from '../types';
+import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncListItem } from '../types';
+import { serverUsable, statusLine, unknownStatus } from '../lib/server-status';
+import { resolveTheme } from '../lib/theme';
 import { h, icon, ICONS } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
 import {
+  applyServerGate,
   buildEmptyState,
   buildErrorState,
   buildGeneratingState,
   buildLoadingState,
   buildPlainLines,
   buildSearchSheet,
+  buildServerStatusSlot,
   createGenerateButton,
   renderCandidateList,
   setListStatus,
-  SERVER_UNAVAILABLE_TIP,
   type PanelContext,
 } from './panels';
 
@@ -42,6 +45,10 @@ export interface OverlayCallbacks {
   onResetSync: () => void;
   /** 검색 시트에서 원래 보던 가사 화면으로 복귀 (실수로 검색을 연 경우 탈출구) */
   onCloseSearch: () => void;
+  /** 서버 상태 다시 확인 (서버 오류 배너의 '다시 확인') */
+  onRecheckServer: () => void;
+  /** 최근 서버 요청 로그 — 접이식 섹션을 펼칠 때만 호출된다 */
+  loadServerLog: () => Promise<ServerLogEntry[]>;
 }
 
 type StateKind = 'loading' | 'synced' | 'plain' | 'empty' | 'generating' | 'error' | 'pip' | 'search';
@@ -82,6 +89,9 @@ export class LyricsOverlay {
   private genListOpen = false;
   private genListItems: { title: string; state: string; isCurrent: boolean }[] = [];
   private warnBar: HTMLDivElement;
+  /** 서버 오류 배너 — body 밖에 있어 resetBody()로 지워지지 않는다.
+   *  덕분에 어떤 화면(가사·검색·생성 중·오류)에서도 사유 한 줄이 반드시 보인다. */
+  private serverBar: HTMLDivElement;
   private pipBtn: HTMLButtonElement;
   private regenBtn: HTMLButtonElement;
   private collapseBtn: HTMLButtonElement;
@@ -105,7 +115,7 @@ export class LyricsOverlay {
   private offsetSec: number;
   private visible = true;
   private fullscreenHidden = false;
-  private serverAvailable = false;
+  private serverStatus: ServerStatus = unknownStatus();
   private generateButtons: HTMLButtonElement[] = [];
   private plainTextForGenerate = '';
   private pipEnabled = false;
@@ -184,6 +194,10 @@ export class LyricsOverlay {
     this.warnBar = h('div', { className: 'ey-warn-bar' });
     this.warnBar.style.display = 'none';
 
+    // 서버 오류 배너 — 상태가 정상/미확인이면 비어 있고, 아니면 사유+복구 동작이 들어간다
+    this.serverBar = h('div', { className: 'ey-server-bar-slot' });
+    this.serverBar.style.display = 'none';
+
     this.body = h('div', {
       className: 'ey-body',
       on: {
@@ -226,7 +240,8 @@ export class LyricsOverlay {
     this.debugEl.style.display = 'none';
 
     this.panel = h('div', { className: 'ey-panel' },
-      this.header, this.banner, this.genChip, this.genList, this.warnBar, this.body, this.resumeChip, this.footer, this.debugEl,
+      this.header, this.serverBar, this.banner, this.genChip, this.genList, this.warnBar,
+      this.body, this.resumeChip, this.footer, this.debugEl,
     );
     // 패널 안 타이핑(검색창·가사 붙여넣기)이 유튜브 전역 단축키(스페이스=재생/정지,
     // 방향키=시킹 등)로 새지 않도록 키 이벤트를 패널에서 끊는다
@@ -269,8 +284,13 @@ export class LyricsOverlay {
         onCandidateSearch: query => this.callbacks.onCandidateSearch(query),
         onPickCandidate: candidate => this.callbacks.onPickCandidate(candidate),
         onOpenSearch: () => this.openSearch(),
+        onOpenSettings: () => this.openSettings(),
+        onRecheckServer: () => this.callbacks.onRecheckServer(),
       },
       makeGenerateButton: (label, onClick) => this.makeGenerateButton(label, onClick),
+      server: this.serverStatus,
+      debug: this.settings.debugInfo,
+      loadServerLog: () => this.callbacks.loadServerLog(),
     };
   }
 
@@ -579,10 +599,11 @@ export class LyricsOverlay {
     this.body.append(refs.el);
   }
 
-  showError(message: string): void {
+  /** detail은 서버가 준 힌트 등 추가 사유 — 있으면 문구 아래 한 줄로 함께 보여 준다 */
+  showError(message: string, detail?: string): void {
     this.stateKind = 'error';
     this.resetBody();
-    this.body.append(buildErrorState(this.panelContext(), message));
+    this.body.append(buildErrorState(this.panelContext(), message, detail));
   }
 
   showPipPlaceholder(): void {
@@ -662,14 +683,49 @@ export class LyricsOverlay {
     return this.visible;
   }
 
-  setServerAvailable(available: boolean): void {
-    this.serverAvailable = available;
+  /**
+   * 서버 상태 주입 — 사유까지 함께 받는다.
+   *
+   * 서버가 필요한 컨트롤(생성·재생성)을 잠그고 사유를 툴팁으로 붙이며, 배너를 갱신한다.
+   * 지금 화면이 "가사를 찾지 못했어요"라면 그것도 서버 문제 화면으로 바꿔 준다 —
+   * 상태 확인이 검색보다 늦게 끝나 잘못된 문구가 먼저 떠 있을 수 있기 때문이다.
+   */
+  setServerStatus(status: ServerStatus): void {
+    const prevKind = this.serverStatus.kind;
+    this.serverStatus = status;
     this.generateButtons = this.generateButtons.filter(btn => btn.isConnected);
-    for (const btn of this.generateButtons) {
-      btn.disabled = !available;
-      btn.title = available ? '' : SERVER_UNAVAILABLE_TIP;
+    for (const btn of this.generateButtons) applyServerGate(btn, status);
+    this.applyRegenGate();
+    this.renderServerBar();
+
+    if (this.settingsDot) {
+      this.settingsDot.classList.toggle('ok', status.kind === 'ok');
+      this.settingsDot.classList.toggle('auth', status.kind === 'auth');
+      this.settingsDot.title = `서버 연결 상태 — ${statusLine(status)}`;
     }
-    this.settingsDot?.classList.toggle('ok', available);
+    if (prevKind !== status.kind && this.stateKind === 'empty') {
+      // 설정 시트에서 키를 고치던 중일 수 있다 — 화면은 다시 그리되 시트는 되살린다
+      // (resetBody가 시트를 닫는다). 시트는 저장된 설정으로 새로 만들어진다.
+      const settingsWasOpen = this.settingsSheet !== null;
+      this.showEmpty(this.lastSong);
+      if (settingsWasOpen) this.openSettings();
+    }
+  }
+
+  /** 서버가 필요한 헤더 버튼(재생성) 잠금 — 표시 여부는 기존 로직 그대로 */
+  private applyRegenGate(): void {
+    applyServerGate(this.regenBtn, this.serverStatus, '싱크 다시 생성 (서버 캐시 무시)');
+  }
+
+  private renderServerBar(): void {
+    const bar = buildServerStatusSlot(this.panelContext());
+    if (!bar) {
+      this.serverBar.replaceChildren();
+      this.serverBar.style.display = 'none';
+      return;
+    }
+    this.serverBar.replaceChildren(bar);
+    this.serverBar.style.display = '';
   }
 
   setPipEnabled(enabled: boolean): void {
@@ -807,22 +863,18 @@ export class LyricsOverlay {
     this.settings = settings;
     this.panel.classList.remove('ey-fs-small', 'ey-fs-medium', 'ey-fs-large');
     this.panel.classList.add(`ey-fs-${settings.fontSize}`);
-    const light = this.resolveTheme(settings) === 'light';
-    this.panel.classList.toggle('ey-light', light);
+    // 테마 판정은 lib/theme.ts 한 곳에서만 — PiP도 content가 같은 값을 받아 칠한다
+    this.panel.classList.toggle('ey-light', resolveTheme(settings) === 'light');
     // 오프셋은 영상별 상태(setOffsetValue로 주입) — 전역 설정으로 되돌리지 않는다
     this.debugEl.style.display = settings.debugInfo ? '' : 'none';
     this.panel.classList.toggle('ey-hide-pron', !settings.showPronunciation);
     // 디버그 모드에서 글자별 CTC 신뢰도를 색으로 표시
     this.panel.classList.toggle('ey-show-conf', settings.debugInfo);
+    // 디버그 토글은 서버 요청 로그의 노출 조건이기도 하다 — 배너를 다시 그려 반영
+    this.renderServerBar();
   }
 
   // ── 내부 헬퍼 ─────────────────────────────────────────────────
-
-  private resolveTheme(settings: Settings): 'dark' | 'light' {
-    if (settings.theme !== 'auto') return settings.theme;
-    if (location.host === 'music.youtube.com') return 'dark';
-    return document.documentElement.hasAttribute('dark') ? 'dark' : 'light';
-  }
 
   private headerButton(svg: string, title: string, onClick: () => void): HTMLButtonElement {
     return h('button', { className: 'ey-btn', title, on: { click: onClick } }, icon(svg));
@@ -833,7 +885,7 @@ export class LyricsOverlay {
   }
 
   private makeGenerateButton(label: string, onClick: () => void): HTMLButtonElement {
-    const btn = createGenerateButton(label, this.serverAvailable, onClick);
+    const btn = createGenerateButton(label, this.serverStatus, onClick);
     this.generateButtons.push(btn);
     return btn;
   }
@@ -933,6 +985,14 @@ export class LyricsOverlay {
       this.closeSettings();
       return;
     }
+    this.openSettings();
+  }
+
+  /** 설정 시트 열기 — 서버 오류 배너의 '설정 열기'가 여기로 온다 (패널이 숨어 있으면 함께 띄운다) */
+  openSettings(): void {
+    if (!this.visible) this.setVisible(true);
+    if (this.geometry.collapsed) this.setCollapsed(false);
+    if (this.settingsSheet) return;
     const sheet = this.buildSettingsSheet();
     this.settingsSheet = sheet;
     this.panel.append(sheet);
@@ -1099,9 +1159,20 @@ export class LyricsOverlay {
       const url = serverInput.value.trim().replace(/\/+$/, '');
       if (url) this.callbacks.onSettingsChange({ serverUrl: url });
     });
-    const dot = h('span', { className: 'ey-dot', title: '서버 연결 상태' });
-    dot.classList.toggle('ok', this.serverAvailable);
+    // 점 색만으론 "왜 빨간지"를 알 수 없다 — 사유를 툴팁으로 붙이고, 인증 실패는 따로 표시
+    const dot = h('span', { className: 'ey-dot', title: `서버 연결 상태 — ${statusLine(this.serverStatus)}` });
+    dot.classList.toggle('ok', this.serverStatus.kind === 'ok');
+    dot.classList.toggle('auth', this.serverStatus.kind === 'auth');
     this.settingsDot = dot;
+    // 서버가 정상이 아니면 설정 안에서도 사유를 글자로 남긴다 (색맹·툴팁 미표시 환경 대비)
+    const serverNote = h('div', { className: 'ey-settings-note ey-settings-server-note' });
+    if (!serverUsable(this.serverStatus)) {
+      serverNote.textContent = statusLine(this.serverStatus)
+        + (this.serverStatus.detail ? ` — ${this.serverStatus.detail}` : '');
+      serverNote.classList.add('bad');
+    } else {
+      serverNote.style.display = 'none';
+    }
 
     const apiKeyInput = h('input', { className: 'ey-input', attrs: { type: 'password', placeholder: '(선택) 서버 API 키' } });
     apiKeyInput.value = this.settings.apiKey;
@@ -1152,6 +1223,7 @@ export class LyricsOverlay {
         h('label', { text: 'API 키' }),
         apiKeyInput,
       ),
+      serverNote,
       h('div', { className: 'ey-settings-row' },
         h('label', { text: '낮은 정렬 신뢰도 경고', attrs: { title: '전사 신뢰도가 매우 낮은 곡에서 가사창 상단에 경고 바를 띄웁니다.' } }), lowConfWarning),
       h('div', { className: 'ey-settings-row' },

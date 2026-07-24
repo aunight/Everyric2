@@ -213,6 +213,61 @@ export interface JobStatusResponse {
   gone?: boolean;
 }
 
+// ── 서버 오류 표면 ──────────────────────────────────────────────
+// 예전에는 서버 요청 실패가 전부 `null` 하나로 뭉개져서, 화면이 "이 곡엔 가사가 없다"와
+// "서버가 인증을 거부했다"와 "서버가 꺼져 있다"를 구분할 수 없었다. 아래 타입들은 그
+// 구분을 백그라운드 → 콘텐츠 스크립트 → 화면까지 잃지 않고 나르기 위한 것이다.
+
+/** 서버 요청이 실패한 이유의 종류 */
+export type ApiFailureKind =
+  | 'offline' // 서버에 닿지 못함 (연결 거부·DNS·CORS 등 fetch 자체가 실패)
+  | 'timeout' // 제한 시간 안에 응답이 오지 않음
+  | 'auth' // 401/403 — API 키가 없거나 틀림
+  | 'notfound' // 404 — 엔드포인트나 리소스 없음 (구버전 서버일 수도)
+  | 'client' // 그 밖의 4xx
+  | 'server' // 5xx
+  | 'malformed'; // 2xx인데 본문이 JSON이 아님
+
+export interface ApiFailure {
+  kind: ApiFailureKind;
+  /** HTTP 상태 코드 — 응답을 받은 경우에만 있다 */
+  status?: number;
+  /** 서버가 준 error·hint·detail·message를 합친 문구 (API 키는 마스킹된 상태) */
+  detail?: string;
+  /** 요청 경로 — 쿼리의 키·토큰류 값은 마스킹된 상태 */
+  path: string;
+  elapsedMs: number;
+}
+
+/** 최근 서버 요청 한 건 — 패널의 접이식 로그에 그대로 표시된다 */
+export interface ServerLogEntry {
+  /** 요청을 보낸 시각 (epoch ms) */
+  at: number;
+  method: string;
+  /** 마스킹된 경로 */
+  path: string;
+  ok: boolean;
+  status?: number;
+  kind?: ApiFailureKind;
+  detail?: string;
+  elapsedMs: number;
+}
+
+/** 서버를 쓸 수 있는가 — 못 쓴다면 왜인지까지 */
+export type ServerStatusKind = 'unknown' | 'ok' | 'offline' | 'auth' | 'error';
+
+export interface ServerStatus {
+  kind: ServerStatusKind;
+  /** 사용자에게 보여줄 한 줄 사유 ('ok'·'unknown'이면 빈 문자열) */
+  reason: string;
+  /** 원인 코드 한 조각 — 'HTTP 401', '연결 실패', '응답 없음(타임아웃)' */
+  code?: string;
+  /** 서버가 준 원문 힌트 (있을 때만) */
+  detail?: string;
+  /** 이 판정을 만든 시각 (epoch ms) */
+  at: number;
+}
+
 export interface Settings {
   autoSearch: boolean;
   /** 쇼츠(/shorts/)에서도 가사창 자동 열기 허용 — 기본 꺼짐 */
@@ -365,6 +420,7 @@ export type BgRequest =
   | { type: 'NOTIFY'; payload: { id?: string; title: string; message: string } }
   | { type: 'TRANSLATE'; payload: { text: string; targetLang: string; title?: string; artist?: string } }
   | { type: 'SERVER_HEALTH' }
+  | { type: 'SERVER_LOG' }
   | { type: 'VOCARO_LOOKUP'; payload: { title: string } }
   | { type: 'VOCARO_PAGE'; payload: { slug: string } }
   | { type: 'YT_CAPTION_TEXT'; payload: { videoId: string; lang: string; auto: boolean } }
@@ -377,4 +433,7 @@ export type ContentMessage =
 export interface MessageResponse<T = unknown> {
   data?: T;
   error?: string;
+  /** 이 요청이 Everyric 서버 호출에서 실패했다면 그 구조화된 사유.
+   *  data가 null이어도 이게 있으면 "결과가 없다"가 아니라 "서버가 못 줬다"는 뜻이다. */
+  failure?: ApiFailure;
 }

@@ -18,6 +18,8 @@
   --ey-primary: #3ea6ff;
   --ey-primary-press: #2f8fe0;
   --ey-ok: #34c05f;
+  /* 오류 문구용 붉은 글자 (다크 기본) — 라이트에서는 .ey-light가 진한 빨강으로 덮는다 */
+  --ey-danger-text: #ff9c9c;
   --ey-radius: 14px;
   --ey-font: 'YouTube Sans', Roboto, 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
   --ey-line-size: 15px;
@@ -51,7 +53,12 @@
   box-sizing: border-box;
 }
 
-.ey-panel.ey-light {
+/* 라이트 테마 변수 — 오버레이 패널과 PiP **문서 루트**가 같은 값을 공유한다.
+   PiP는 :root에 걸어야 한다: 레인 캔버스가 getComputedStyle(documentElement)로 색을
+   읽으므로(readPitchColors), body에만 걸면 UI만 밝아지고 캔버스는 다크로 남는다.
+   테마 판정 자체는 src/lib/theme.ts 한 곳에서만 하고 여기선 칠하기만 한다. */
+.ey-panel.ey-light,
+:root.ey-light {
   color-scheme: light;
   --ey-bg: rgba(255, 255, 255, 0.94);
   --ey-bg-solid: #ffffff;
@@ -63,8 +70,17 @@
   --ey-text-faint: rgba(15, 15, 15, 0.36);
   --ey-accent: #e08a00;
   --ey-accent-soft: rgba(224, 138, 0, 0.12);
+  /* 오류 문구용 붉은 글자 — 다크의 연분홍은 흰 배경에서 읽히지 않는다 */
+  --ey-danger-text: #c92a2a;
+}
+
+.ey-panel.ey-light {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
 }
+
+/* body.ey-pip이 color-scheme: dark를 직접 걸어 두어 루트의 light를 덮는다 — 되돌린다
+   (스크롤바·기본 폼 컨트롤이 라이트 테마에서 검게 남는 것을 막는다) */
+:root.ey-light body.ey-pip { color-scheme: light; }
 
 .ey-panel.collapsed {
   min-height: 0;
@@ -73,6 +89,7 @@
 
 .ey-panel.collapsed .ey-body,
 .ey-panel.collapsed .ey-banner,
+.ey-panel.collapsed .ey-server-bar-slot,
 .ey-panel.collapsed .ey-warn-bar,
 .ey-panel.collapsed .ey-footer,
 .ey-panel.collapsed .ey-resume-chip,
@@ -108,6 +125,83 @@
   flex-shrink: 0;
 }
 .ey-warn-close:hover { color: var(--ey-text); }
+
+/* ── 서버 오류 배너 ───────────────────────────────────────────────
+   메인 패널(헤더 아래 고정 슬롯)과 PiP(창 하단 슬롯), 그리고 본문 상태 화면이
+   같은 .ey-server-bar 조각을 쓴다. 붉은 계열은 인증 실패, 주황은 그 밖의 장애. */
+
+.ey-server-bar-slot { flex-shrink: 0; }
+/* 서버가 정상인데 디버그만 켠 경우 — 배너 없이 로그만 슬롯에 들어온다 */
+.ey-server-bar-slot > .ey-log { margin: 0 12px 6px; }
+
+.ey-server-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 10px 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(224, 82, 82, 0.12);
+  border: 1px solid rgba(224, 82, 82, 0.38);
+  font-size: 12px;
+  color: var(--ey-text);
+  text-align: left;
+  /* 상태 화면(.ey-state는 가운데 정렬 컬럼) 안에 들어가도 폭을 다 쓰게 */
+  align-self: stretch;
+}
+
+.ey-server-bar.ey-server-offline,
+.ey-server-bar.ey-server-error {
+  background: rgba(255, 176, 46, 0.12);
+  border-color: rgba(255, 176, 46, 0.38);
+}
+
+.ey-server-bar-head { display: flex; align-items: flex-start; gap: 6px; }
+.ey-server-bar-icon { flex-shrink: 0; }
+.ey-server-bar-text { min-width: 0; font-weight: 500; }
+.ey-server-bar-detail {
+  color: var(--ey-text-dim);
+  font-size: 11px;
+  word-break: break-word;
+}
+.ey-server-bar-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.ey-server-bar-actions .ey-secondary-btn { padding: 4px 10px; font-size: 11px; }
+
+/* 최근 서버 요청 기록 — 기본 접힘, 펼칠 때만 백그라운드에서 가져온다 */
+.ey-log { font-size: 11px; }
+.ey-log-summary {
+  cursor: pointer;
+  color: var(--ey-text-dim);
+  list-style: none;
+  padding: 2px 0;
+}
+.ey-log-summary::-webkit-details-marker { display: none; }
+.ey-log-summary::before { content: '▸ '; }
+.ey-log[open] > .ey-log-summary::before { content: '▾ '; }
+.ey-log-summary:hover { color: var(--ey-text); }
+.ey-log-list {
+  max-height: 140px;
+  overflow: auto;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ey-log-row {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--ey-text-dim);
+  word-break: break-all;
+}
+.ey-log-row.bad { color: var(--ey-danger-text); }
+
+/* 설정 시트의 서버 사유 한 줄 — 점 색만으로는 이유를 알 수 없다 */
+.ey-settings-server-note.bad { color: var(--ey-danger-text); }
+.ey-dot.auth { background: #e0a052; }
+
+/* PiP: 푸터 위 고정 슬롯 — 패널(가사 찾기)이 닫혀 있어도 사유가 보인다 */
+.ey-pip-server-bar { padding-top: 4px; }
 
 /* 검색 시트 복귀 버튼 — 시트 최상단에서 눈에 띄게 */
 .ey-search-back { align-self: center; }

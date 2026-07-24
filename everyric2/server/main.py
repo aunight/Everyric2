@@ -54,19 +54,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 확장의 모든 API 호출은 background service worker(chrome-extension:// 오리진)에서
-# 나간다 — 일반 웹사이트 오리진은 반영하지 않아, 방문한 악성 페이지가 브라우저를
-# 통해 파괴적 엔드포인트(DELETE/PUT)를 호출·응답 열람하는 것을 막는다.
-# (curl·서버 간 호출은 Origin이 없어 CORS와 무관하게 동작)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"chrome-extension://.*",
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 @app.middleware("http")
 async def require_api_key(request, call_next):
     """EVERYRIC_SERVER_API_KEY가 설정된 배포에서만 /api 전체에 키를 요구한다.
@@ -97,6 +84,25 @@ async def require_api_key(request, call_next):
                     content={"detail": "API 키가 필요해요 (확장 설정의 API 키 칸에 입력)"},
                 )
     return await call_next(request)
+
+
+# 확장의 모든 API 호출은 background service worker(chrome-extension:// 오리진)에서
+# 나간다 — 일반 웹사이트 오리진은 반영하지 않아, 방문한 악성 페이지가 브라우저를
+# 통해 파괴적 엔드포인트(DELETE/PUT)를 호출·응답 열람하는 것을 막는다.
+# (curl·서버 간 호출은 Origin이 없어 CORS와 무관하게 동작)
+#
+# **등록 순서 주의**: Starlette은 나중에 등록한 미들웨어가 바깥이다. CORS를 위 인증
+# 미들웨어보다 **뒤에** 등록해야 인증 거절(401)에도 CORS 헤더가 붙는다. 반대로 두면
+# 401이 CORS 미들웨어를 거치지 않아 헤더가 빠지고, 브라우저는 그 응답을 통째로
+# 차단해 확장이 상태 코드조차 못 본다 — 실측으로 키가 틀렸을 때 확장이 401이 아니라
+# "Failed to fetch"를 받아 "서버 연결 실패"로 오표시하던 원인이었다.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"chrome-extension://.*",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(sync_router)
 app.include_router(job_router)

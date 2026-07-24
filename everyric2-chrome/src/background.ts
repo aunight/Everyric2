@@ -1,5 +1,5 @@
 import { fetchFromLrclib, getLrclibById, searchTracksLrclib } from './lib/lrclib';
-import { cancelJob, checkHealth, fetchCaptionLines, generateSync, generateSyncFromCaption, getJobStatus, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type ServerConfig } from './lib/everyric-api';
+import { cancelJob, checkServerStatus, fetchCaptionLines, generateSync, generateSyncFromCaption, getJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
 import { getSettings } from './lib/settings';
@@ -8,6 +8,21 @@ import type { BgRequest, LRCLibTrack, LyricsData, MessageResponse, SearchCandida
 async function getServerConfig(): Promise<ServerConfig> {
   const { serverUrl, apiKey } = await getSettings();
   return { serverUrl, apiKey };
+}
+
+/**
+ * 서버 호출 한 건을 응답으로 감싼다 — 실패하면 코드**와 사유**를 함께 실어 보낸다.
+ *
+ * 예전에는 `res ? { data: res } : { error: '...' }`였다. 그래서 콘텐츠 쪽은 실패한 건
+ * 알아도 "왜"는 영영 알 수 없었다. sink를 여기서 만들어 넘기므로 호출부마다
+ * 보일러플레이트가 늘지 않는다.
+ */
+async function call<T>(
+  errorCode: string, fn: (sink: FailureSink) => Promise<T | null>,
+): Promise<MessageResponse<T>> {
+  const sink: FailureSink = {};
+  const data = await fn(sink);
+  return data === null ? { error: errorCode, failure: sink.failure } : { data };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -42,8 +57,13 @@ chrome.action.onClicked.addListener(tab => {
 
 async function handleMessage(message: BgRequest): Promise<MessageResponse> {
   switch (message.type) {
-    case 'FETCH_LYRICS':
-      return { data: await fetchLyricsChain(message.payload, message.payload.skipLrclib === true) };
+    case 'FETCH_LYRICS': {
+      // 여기서 null은 "가사가 없다"일 수도, "서버가 못 줬다"일 수도 있다 — 그 둘을
+      // 화면이 구분할 수 있도록 서버 조회 실패 사유를 data와 함께 실어 보낸다
+      const sink: FailureSink = {};
+      const data = await fetchLyricsChain(message.payload, message.payload.skipLrclib === true, sink);
+      return { data, failure: sink.failure };
+    }
 
     case 'FETCH_LRCLIB': {
       const track = await fetchFromLrclib(message.payload);
@@ -59,34 +79,34 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     }
 
     case 'GENERATE_SYNC': {
-      const res = await generateSync(await getServerConfig(), {
+      const server = await getServerConfig();
+      return call('generate_request_failed', sink => generateSync(server, {
         video_id: message.payload.videoId,
         lyrics: message.payload.lyrics,
         language: message.payload.language,
         line_meta: message.payload.lineMeta,
         attribution: message.payload.attribution,
-      });
-      return res ? { data: res } : { error: 'generate_request_failed' };
+      }, sink));
     }
 
     case 'REGENERATE_SYNC': {
-      const res = await regenerateSync(await getServerConfig(), {
+      const server = await getServerConfig();
+      return call('regenerate_request_failed', sink => regenerateSync(server, {
         video_id: message.payload.videoId,
         lyrics: message.payload.lyrics,
         line_meta: message.payload.lineMeta,
         attribution: message.payload.attribution,
-      });
-      return res ? { data: res } : { error: 'regenerate_request_failed' };
+      }, sink));
     }
 
     case 'JOB_STATUS': {
-      const res = await getJobStatus(await getServerConfig(), message.payload.jobId);
-      return res ? { data: res } : { error: 'job_status_failed' };
+      const server = await getServerConfig();
+      return call('job_status_failed', sink => getJobStatus(server, message.payload.jobId, sink));
     }
 
     case 'JOB_CANCEL': {
-      const res = await cancelJob(await getServerConfig(), message.payload.jobId);
-      return res ? { data: res } : { error: 'job_cancel_failed' };
+      const server = await getServerConfig();
+      return call('job_cancel_failed', sink => cancelJob(server, message.payload.jobId, sink));
     }
 
     case 'NOTIFY': {
@@ -104,16 +124,21 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     }
 
     case 'TRANSLATE': {
-      const res = await translateLyrics(
-        await getServerConfig(), message.payload.text, message.payload.targetLang,
-        { title: message.payload.title, artist: message.payload.artist },
-      );
-      return res ? { data: res } : { error: 'translate_failed' };
+      const server = await getServerConfig();
+      return call('translate_failed', sink => translateLyrics(
+        server, message.payload.text, message.payload.targetLang,
+        { title: message.payload.title, artist: message.payload.artist }, sink,
+      ));
     }
 
     case 'SERVER_HEALTH': {
-      return { data: { ok: await checkHealth(await getServerConfig()) } };
+      return { data: await checkServerStatus(await getServerConfig()) };
     }
+
+    // 최근 서버 요청 몇 건 — 패널·PiP의 접이식 로그가 펼쳐질 때만 가져간다.
+    // 경로·본문의 키류는 everyric-api가 기록 시점에 이미 마스킹했다.
+    case 'SERVER_LOG':
+      return { data: getServerLog() };
 
     case 'VOCARO_LOOKUP': {
       const direct = await vocaroLookup(message.payload.title);
@@ -124,36 +149,37 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     }
 
     case 'SYNC_LINK': {
-      const res = await linkSync(await getServerConfig(), {
+      const server = await getServerConfig();
+      return call('link_failed', sink => linkSync(server, {
         video_id: message.payload.videoId,
         source_video_id: message.payload.sourceVideoId,
         offset_sec: message.payload.offsetSec,
         rate: message.payload.rate,
-      });
-      return res ? { data: res } : { error: 'link_failed' };
+      }, sink));
     }
 
     case 'SYNC_UNLINK': {
-      const res = await unlinkSync(await getServerConfig(), message.payload.videoId);
-      return res ? { data: res } : { error: 'unlink_failed' };
+      const server = await getServerConfig();
+      return call('unlink_failed', sink => unlinkSync(server, message.payload.videoId, sink));
     }
 
     case 'SYNC_RESET': {
-      const res = await resetSync(await getServerConfig(), message.payload.videoId);
-      return res ? { data: res } : { error: 'sync_reset_failed' };
+      const server = await getServerConfig();
+      return call('sync_reset_failed', sink => resetSync(server, message.payload.videoId, sink));
     }
 
     case 'SYNC_OFFSET': {
-      const res = await saveUserOffset(
-        await getServerConfig(), message.payload.videoId, message.payload.offsetSec,
-      );
-      return res ? { data: res } : { error: 'sync_offset_failed' };
+      const server = await getServerConfig();
+      return call('sync_offset_failed', sink =>
+        saveUserOffset(server, message.payload.videoId, message.payload.offsetSec, sink));
     }
 
     case 'SYNC_LIST': {
-      // 검색 필터가 생겨 후보를 넉넉히 받는다 — 서버 목록은 최신순
-      const res = await listSyncs(await getServerConfig(), 200);
-      return { data: res ?? [] };
+      // 검색 필터가 생겨 후보를 넉넉히 받는다 — 서버 목록은 최신순.
+      // 빈 배열([])과 "서버가 못 줬다"를 화면이 구분할 수 있게 실패 사유를 함께 보낸다
+      const sink: FailureSink = {};
+      const res = await listSyncs(await getServerConfig(), 200, sink);
+      return { data: res ?? [], failure: sink.failure };
     }
 
     case 'VOCARO_PAGE':
@@ -163,18 +189,19 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     // POT(proof-of-origin) 강제로 브라우저 플레이어 밖에선 빈 응답이 온다 (실측).
     // 트랙 **목록**은 content가 워치 페이지에서 직접 읽으므로 서버를 부르지 않는다.
     case 'YT_CAPTION_TEXT': {
-      const res = await fetchCaptionLines(
-        await getServerConfig(),
-        message.payload.videoId, message.payload.lang, message.payload.auto,
-      );
-      return res ? { data: res.lines } : { error: 'caption_text_failed' };
+      const server = await getServerConfig();
+      const res = await call('caption_text_failed', sink => fetchCaptionLines(
+        server, message.payload.videoId, message.payload.lang, message.payload.auto, sink,
+      ));
+      return res.data ? { data: res.data.lines } : { error: res.error, failure: res.failure };
     }
 
     // 자막을 보고 있다가 누른 '싱크 생성' — 서버가 자막을 직접 읽는 전용 경로.
     // 아직 배포되지 않은 서버면 null이 오고, content가 기존 생성 경로로 폴백한다.
     case 'GENERATE_FROM_CAPTION': {
-      const res = await generateSyncFromCaption(await getServerConfig(), message.payload.videoId);
-      return res ? { data: res } : { error: 'generate_from_caption_unavailable' };
+      const server = await getServerConfig();
+      return call('generate_from_caption_unavailable', sink =>
+        generateSyncFromCaption(server, message.payload.videoId, sink));
     }
 
     default:
@@ -186,8 +213,10 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
 (globalThis as { __vocaroLookup?: typeof vocaroLookup }).__vocaroLookup = vocaroLookup;
 
 /** 우선순위: Everyric 서버(단어 타이밍 보존) → (skipLrclib가 아니면) LRCLIB 싱크 → LRCLIB 일반 */
-async function fetchLyricsChain(song: SongInfo, skipLrclib = false): Promise<LyricsData | null> {
-  const sync = await lookupSync(await getServerConfig(), song.videoId);
+async function fetchLyricsChain(
+  song: SongInfo, skipLrclib = false, sink?: FailureSink,
+): Promise<LyricsData | null> {
+  const sync = await lookupSync(await getServerConfig(), song.videoId, sink);
   // 서버에 저장된 영상별 사용자 오프셋 — 싱크가 없어도(found=false) 내려온다
   const userOffset = sync?.user_offset ?? undefined;
   if (sync?.found && sync.timestamps && sync.timestamps.length > 0) {

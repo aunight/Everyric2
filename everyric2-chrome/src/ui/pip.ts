@@ -1,16 +1,19 @@
-import type { LyricLine, SearchCandidate, SongInfo, SongKey, SongTempo, SyncDebugMeta } from '../types';
+import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo, SongKey, SongTempo, SyncDebugMeta } from '../types';
 import type { MicSample } from '../lib/mic-pitch';
+import { unknownStatus } from '../lib/server-status';
+import type { ThemeName } from '../lib/theme';
 import { h, icon } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
 import {
+  applyServerGate,
   buildEmptyState,
   buildErrorState,
   buildLoadingState,
   buildPlainLines,
   buildSearchSheet,
+  buildServerStatusSlot,
   createGenerateButton,
   renderCandidateList,
-  SERVER_UNAVAILABLE_TIP,
   type PanelCallbacks,
   type PanelContext,
 } from './panels';
@@ -87,8 +90,14 @@ export interface PipOptions {
   onVideoToggle: (on: boolean) => void;
   /** 가사 패널(가사 없음·검색·붙여넣기·싱크 생성) 콜백 — 메인 창과 같은 핸들러로 배선한다 */
   panel: PanelCallbacks;
-  /** 열 때의 서버 가용 상태 — 이후 갱신은 setServerAvailable */
-  serverAvailable: boolean;
+  /** 열 때의 테마 — content가 lib/theme.resolveTheme로 판정한 값. 이후 갱신은 setTheme */
+  theme: ThemeName;
+  /** 열 때의 서버 상태(사유 포함) — 이후 갱신은 setServerStatus */
+  serverStatus: ServerStatus;
+  /** 디버그 모드 — 서버가 정상일 때도 요청 로그를 노출할지 */
+  debug: boolean;
+  /** 최근 서버 요청 로그 — 접이식 섹션을 펼칠 때만 호출된다 */
+  loadServerLog: () => Promise<ServerLogEntry[]>;
   onClosed: () => void;
 }
 
@@ -149,7 +158,31 @@ const FIX_COLORS: Record<string, string> = {
   tail: '#ffa94d',    // 끝음 연장
   snap: '#da77f2',    // 무음 온셋 스냅
   leak: '#20c997',    // 간주 역방향 누출 — ja 타이밍 스플라이스
+  // 원문 글자 융합 — 라인 경계는 그대로 두고 라인 **안쪽** 글자 분포만 다시 만든다.
+  // 채도 높은 핑크: 빨강 계열(stretch/repeat)·주황(tail)·보라(snap)와 색상이 뚜렷이 갈린다
+  fuse: '#f06595',
 };
+
+/**
+ * 고스트(보정 전 타이밍)가 현재 라인 위치와 사실상 같다고 볼 허용 오차(초).
+ *
+ * fuse는 라인 경계를 옮기지 않으므로 orig이 현재 위치와 거의 같게 내려온다. 독음 정렬
+ * 곡은 거의 전 라인이 fuse라서, 그대로 그리면 고스트가 현재 위치를 뒤덮어 "무엇이 실제로
+ * 움직였는가"가 묻힌다. 서버는 정보를 버리지 않고 늘 orig을 주고, **겹칠 때 흐리게 그릴지는
+ * 여기서 판단한다.**
+ */
+const GHOST_SAME_EPS = 0.05;
+/** 겹친 고스트의 알파 — 배경 노트·가사를 가리지 않을 만큼 흐리되 흔적은 남는 값 */
+const GHOST_OVERLAP_ALPHA = 0.2;
+
+// 디버그 타이밍 레인 — CTC가 각 원문 글자·발음 음절에 실제로 준 시각을 시간축에 찍는다.
+// 독음(ko) 정렬 곡은 원문 글자 시간이 "발음 음절 → 모라 → 원문 글자" 3단 역매핑
+// 산물이라, 여러 글자가 같은 시각에 뭉치거나 길이 0으로 찍힌다(실측: 독음 정렬 곡은
+// 3글자 이상 동시 시작이 38~59%인데 원문 정렬 곡은 2%). 두 레인을 나란히 그리면
+// 발음은 매끄러운데 원문만 뭉쳐 있는 게 눈으로 바로 구분된다.
+const TIMING_WORD = '#74c0fc';       // 원문 글자 (지속 있음)
+const TIMING_WORD_ZERO = '#ff922b';  // 원문 글자 (길이 0 — 역매핑 실패 흔적)
+const TIMING_PRON = '#63e6be';       // 발음 음절 온셋
 
 interface PitchNote {
   midi: number;
@@ -288,8 +321,14 @@ export class PipController {
   private panelResultsEl: HTMLDivElement | null = null;
   /** 검색 시트를 열기 전 곡 정보 프리필용 */
   private lastSong: { title: string; artist: string } | null = null;
-  private serverAvailable = false;
+  private serverStatus: ServerStatus = unknownStatus();
+  /** 현재 창에 칠해진 테마 — 판정은 content(lib/theme)가 하고 여기선 받아 쓰기만 한다 */
+  private theme: ThemeName = 'dark';
+  private debug = false;
+  private loadServerLog: () => Promise<ServerLogEntry[]> = () => Promise.resolve([]);
   private generateButtons: HTMLButtonElement[] = [];
+  /** 창 안 서버 오류 배너 — 패널이 닫혀 있어도 보이도록 body 흐름에 둔다 */
+  private serverBarEl: HTMLDivElement | null = null;
   /** 전사 진행 칩 — 메인 패널의 .ey-gen-chip과 같은 정보를 창 안에 작게 */
   private chipEl: HTMLDivElement | null = null;
 
@@ -324,7 +363,10 @@ export class PipController {
     this.win = win;
     this.onSeek = opts.onSeek;
     this.panelCallbacks = opts.panel;
-    this.serverAvailable = opts.serverAvailable;
+    this.serverStatus = opts.serverStatus;
+    this.theme = opts.theme;
+    this.debug = opts.debug;
+    this.loadServerLog = opts.loadServerLog;
     this.generateButtons = [];
     this.videoRatio = opts.initialVideoRatio;
     this.pitchEnabled = opts.pitchEnabled;
@@ -346,6 +388,9 @@ export class PipController {
     doc.head.append(style);
     doc.body.className = 'ey-pip';
     doc.body.classList.toggle('ey-hide-pron', !opts.showPronunciation);
+    // 라이트 테마는 :root에 걸어야 한다 — 레인 캔버스 색을 readPitchColors가
+    // documentElement의 계산된 CSS 변수에서 읽기 때문이다 (body에만 걸면 캔버스가 다크로 남는다)
+    this.applyTheme();
     // 글자 크기 배율 — 레인(캔버스)뿐 아니라 스테이지 가사/발음/번역(CSS)에도 적용
     doc.body.style.setProperty('--ey-pip-fs', String(this.pitchFontScale));
 
@@ -542,6 +587,11 @@ export class PipController {
     this.chipEl = h('div', { className: 'ey-pip-chip' });
     this.chipEl.style.display = 'none';
 
+    // 서버 오류 배너 — 메인 패널과 같은 조각을 쓴다. 패널(가사 찾기)이 닫혀 있어도
+    // 보이도록 body 흐름에 두어, 가라오케 화면에서도 사유 한 줄이 사라지지 않는다
+    this.serverBarEl = h('div', { className: 'ey-server-bar-slot ey-pip-server-bar' });
+    this.serverBarEl.style.display = 'none';
+
     this.footerEl = h('div', { className: 'ey-pip-footer' },
       this.titleEl,
       h('div', { className: 'ey-pip-controls' },
@@ -558,12 +608,14 @@ export class PipController {
       this.panelEl,
       this.pitchDividerEl,
       this.pitchCanvas,
+      this.serverBarEl,
       this.chipEl,
       this.playlistEl,
       this.footerEl,
       h('div', { className: 'ey-pip-corner' }, this.cornerKaraokeBtn, this.cornerVideoBtn, this.cornerPanelBtn),
     );
     this.refreshPlayerControls();
+    this.renderServerBar(); // 서버가 이미 죽어 있는 채로 열렸다면 열자마자 사유를 보여 준다
 
     // 창 크기가 줄면 레인이 푸터를 밀어내지 않도록 즉시 재클램프
     win.addEventListener('resize', () => this.clampLaneHeight());
@@ -630,6 +682,7 @@ export class PipController {
       this.panelResultsEl = null;
       this.generateButtons = [];
       this.chipEl = null;
+      this.serverBarEl = null;
       this.prevBtn = null;
       this.nextBtn = null;
       this.playlistBtn = null;
@@ -797,9 +850,30 @@ export class PipController {
     if (this.win) this.renderLines();
   }
 
-  /** 테마 변경 등으로 CSS 변수가 바뀌었을 때 — 캐시된 레인 색을 버리고 재판독 */
+  /**
+   * 테마 변경 등으로 CSS 변수가 바뀌었을 때 — 캐시된 레인 색을 버리고 재판독.
+   * 일시정지 중엔 tick이 오지 않아 캔버스가 낡은 색으로 남으므로 즉시 한 번 다시 그린다.
+   */
   refreshColors(): void {
     this.pitchColors = null;
+    if (this.win) this.renderPitch(this.lastTime);
+  }
+
+  /**
+   * 테마 즉시 반영 — content가 lib/theme.resolveTheme로 판정한 값을 밀어넣는다.
+   * PiP 창은 스스로 판정하지 않는다(유튜브 페이지 컨텍스트가 없어 반드시 어긋난다).
+   */
+  setTheme(theme: ThemeName): void {
+    if (this.theme === theme) return;
+    this.theme = theme;
+    this.applyTheme();
+    this.refreshColors(); // 레인 색은 CSS 변수 캐시라 테마와 함께 다시 읽어야 한다
+  }
+
+  private applyTheme(): void {
+    // CSS 변수 재정의(:root.ey-light)를 문서 루트에 건다 — body가 아니라 루트여야
+    // getComputedStyle(documentElement)로 색을 읽는 레인 캔버스까지 함께 밝아진다
+    this.win?.document.documentElement.classList.toggle('ey-light', this.theme === 'light');
   }
 
   /** 원본 video 배속 — 마이크 궤적 시간축 보정용 (content가 tick마다 밀어넣는다) */
@@ -848,23 +922,45 @@ export class PipController {
         onCandidateSearch: query => cb?.onCandidateSearch(query),
         onPickCandidate: candidate => cb?.onPickCandidate(candidate),
         onOpenSearch: () => this.openPanelSearch(),
+        onOpenSettings: () => cb?.onOpenSettings(),
+        onRecheckServer: () => cb?.onRecheckServer(),
       },
       makeGenerateButton: (label, onClick) => {
-        const btn = createGenerateButton(label, this.serverAvailable, onClick);
+        const btn = createGenerateButton(label, this.serverStatus, onClick);
         this.generateButtons.push(btn);
         return btn;
       },
+      server: this.serverStatus,
+      debug: this.debug,
+      loadServerLog: () => this.loadServerLog(),
     };
   }
 
-  /** 서버 가용 상태 — 창 안 생성 버튼들을 일괄 갱신 (메인 패널과 동일 규칙) */
-  setServerAvailable(available: boolean): void {
-    this.serverAvailable = available;
+  /** 서버 상태 — 창 안 생성 버튼과 오류 배너를 일괄 갱신 (메인 패널과 동일 규칙·동일 조각) */
+  setServerStatus(status: ServerStatus): void {
+    this.serverStatus = status;
     this.generateButtons = this.generateButtons.filter(btn => btn.isConnected);
-    for (const btn of this.generateButtons) {
-      btn.disabled = !available;
-      btn.title = available ? '' : SERVER_UNAVAILABLE_TIP;
+    for (const btn of this.generateButtons) applyServerGate(btn, status);
+    this.renderServerBar();
+  }
+
+  /** 디버그 토글 — 서버 요청 로그의 노출 조건이라 배너를 다시 그린다 */
+  setDebug(debug: boolean): void {
+    this.debug = debug;
+    this.renderServerBar();
+  }
+
+  private renderServerBar(): void {
+    const slot = this.serverBarEl;
+    if (!slot) return;
+    const bar = buildServerStatusSlot(this.panelContext());
+    if (!bar) {
+      slot.replaceChildren();
+      slot.style.display = 'none';
+      return;
     }
+    slot.replaceChildren(bar);
+    slot.style.display = '';
   }
 
   /** 패널 내용 교체 공통 경로 — 이전 조각의 참조를 확실히 끊고 새로 그린다 */
@@ -891,10 +987,10 @@ export class PipController {
     this.setPanelContent(buildLoadingState(this.panelContext(), message));
   }
 
-  /** 오류 */
-  showPanelError(message: string): void {
+  /** 오류 — detail은 서버가 준 힌트 등 추가 사유 */
+  showPanelError(message: string, detail?: string): void {
     if (!this.win) return;
-    this.setPanelContent(buildErrorState(this.panelContext(), message));
+    this.setPanelContent(buildErrorState(this.panelContext(), message, detail));
   }
 
   /** 타임싱크가 없는 가사 — 목록을 보여주면서 싱크 생성 버튼을 함께 준다 */
@@ -1672,6 +1768,94 @@ export class PipController {
    * (규칙별 색: stretch/repeat=빨강, pull=파랑, tail=주황, snap=보라, 세로 틱 = 원본·보정 후 시작),
    * 우상단에 곡 전체 confidence(median/avg/저신뢰 비율)와 정렬 텍스트(독음/원문) 헤더.
    */
+  /**
+   * CTC가 각 원문 글자·발음 음절에 실제로 준 시각을 시간축 위 두 줄로 찍는다.
+   *
+   * 위 줄이 원문 글자다 — 시작에 세로 틱, 지속만큼 가로 막대. 길이가 0이면 막대 없이
+   * 주황 틱만 남으므로, 여러 글자가 한 지점에 겹쳐 찍히는 "뭉침"이 즉시 보인다.
+   * 아래 줄은 같은 라인의 발음 음절 온셋이다. 발음 줄은 고르게 퍼져 있는데 원문 줄만
+   * 뭉쳐 있으면 역매핑이 실패한 구간이고, 두 줄이 나란히 흐르면 정상이다.
+   */
+  private renderTimingLanes(
+    ctx: CanvasRenderingContext2D,
+    pages: PitchLine[],
+    t0: number, W: number,
+    x: (t: number) => number,
+    padTop: number,
+  ): void {
+    const wordY = padTop + 40;  // 고스트 3행 로테이션(padTop+6 ~ +22) 아래
+    const pronY = wordY + 18;
+    const t1 = t0 + W;
+    // 글자 라벨은 촘촘하면 서로 겹쳐 못 읽는다 — 마지막으로 그린 x에서 이만큼 떨어져야
+    // 새로 그린다. 뭉친 구간에서는 라벨이 하나만 남아 그 자체로 뭉침 신호가 된다.
+    const LABEL_GAP = 9;
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    let drew = false;
+    let lastWordLabelX = -Infinity;
+    let lastPronLabelX = -Infinity;
+
+    for (const p of pages) {
+      if (p.end < t0 || p.start > t1) continue;
+      for (const w of p.line.words ?? []) {
+        if (w.end < t0 || w.start > t1) continue;
+        const xs = x(w.start);
+        const xe = x(w.end);
+        // 1px 미만은 화면상 점 — 길이 0과 구분해도 의미가 없으므로 같이 취급한다
+        const zero = xe - xs < 1;
+        const color = zero ? TIMING_WORD_ZERO : TIMING_WORD;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(xs, wordY - 3);
+        ctx.lineTo(xs, wordY + 3);
+        if (!zero) {
+          ctx.moveTo(xs, wordY);
+          ctx.lineTo(xe, wordY);
+        }
+        ctx.stroke();
+        // 이 시각에 CTC가 붙인 실제 원문 글자 — 레인 바로 위에 작게
+        if (w.word && xs - lastWordLabelX >= LABEL_GAP) {
+          ctx.fillStyle = color;
+          ctx.fillText(w.word, xs + 1, wordY - 5);
+          lastWordLabelX = xs;
+        }
+        drew = true;
+      }
+      for (const s of p.line.pronSegments ?? []) {
+        if (s.end < t0 || s.start > t1) continue;
+        const sx = x(s.start);
+        ctx.strokeStyle = TIMING_PRON;
+        ctx.beginPath();
+        ctx.moveTo(sx, pronY - 3);
+        ctx.lineTo(sx, pronY + 3);
+        ctx.stroke();
+        // 같은 시각의 전사 발음 음절
+        if (s.text && sx - lastPronLabelX >= LABEL_GAP) {
+          ctx.fillStyle = TIMING_PRON;
+          ctx.fillText(s.text, sx + 1, pronY - 5);
+          lastPronLabelX = sx;
+        }
+        drew = true;
+      }
+    }
+
+    if (drew) {
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.textBaseline = 'middle';
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = TIMING_WORD;
+      ctx.fillText('원문', 4, wordY);
+      ctx.fillStyle = TIMING_PRON;
+      ctx.fillText('발음', 4, pronY);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
   private renderDebugOverlay(
     ctx: CanvasRenderingContext2D,
     pages: PitchLine[],
@@ -1690,6 +1874,12 @@ export class PipController {
       const color = FIX_COLORS[dbg.fixes?.[0] ?? ''] ?? '#868e96';
       const gy = padTop + 6 + (row % 3) * 8; // 인접 라인 겹침 방지용 3행 로테이션
       row++;
+      const ns = p.line.time ?? p.start;
+      const ne = p.line.endTime ?? p.end;
+      // 라인 경계가 안 움직인 보정(fuse 등)은 고스트가 현재 위치에 겹쳐 그려진다 —
+      // 지우지 않고 흐리게만 남겨, 실제로 이동한 라인만 또렷하게 눈에 띄도록 한다
+      const unmoved = Math.abs(os - ns) <= GHOST_SAME_EPS && Math.abs(oe - ne) <= GHOST_SAME_EPS;
+      ctx.globalAlpha = unmoved ? GHOST_OVERLAP_ALPHA : 1;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([3, 3]);
@@ -1699,7 +1889,6 @@ export class PipController {
       ctx.stroke();
       ctx.setLineDash([]);
       // 세로 틱: 보정 전 시작(os)과 보정 후 시작 — 얼마나 옮겨졌는지 한눈에
-      const ns = p.line.time ?? p.start;
       ctx.beginPath();
       ctx.moveTo(x(os), gy - 3);
       ctx.lineTo(x(os), gy + 3);
@@ -1712,7 +1901,9 @@ export class PipController {
         ctx.textAlign = 'left';
         ctx.fillText(dbg.fixes.join('·'), Math.max(2, x(Math.max(os, t0)) + 2), gy - 6);
       }
+      ctx.globalAlpha = 1;
     }
+    this.renderTimingLanes(ctx, pages, t0, W, x, padTop);
     if (this.confStats) {
       // 사람이 읽는 등급 분포 — 글자 색과 같은 3색으로 "정렬 좋음 87% 보통 10% 낮음 3%"
       const s = this.confStats;

@@ -1,4 +1,5 @@
-import type { LyricLine, SearchCandidate, SongInfo } from '../types';
+import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo } from '../types';
+import { formatLogEntry, serverBlockedTip, serverKnownBad, serverUsable, statusLine } from '../lib/server-status';
 import { h, icon, ICONS } from './dom';
 
 /**
@@ -17,8 +18,6 @@ import { h, icon, ICONS } from './dom';
  * 노드를 appendChild하면 브라우저가 자동으로 adopt한다 (pip.ts가 이미 그렇게 동작 중).
  */
 
-export const SERVER_UNAVAILABLE_TIP = 'Everyric 서버에 연결할 수 없어요 (설정에서 서버 URL 확인)';
-
 /** 패널 조각들이 호스트에 되돌려 보내는 동작 — 패널·PiP 모두 content.ts의 같은 핸들러로 배선된다 */
 export interface PanelCallbacks {
   /** 가사 텍스트로 싱크 생성. attribution은 사용자가 적어 넣은 출처(선택) */
@@ -31,24 +30,138 @@ export interface PanelCallbacks {
   onPickCandidate: (candidate: SearchCandidate) => void;
   /** 상세 검색 시트 열기 (호스트가 자기 창 안에서 연다) */
   onOpenSearch: () => void;
+  /** 설정 열기 — 인증 실패 배너에서 API 키 칸으로 바로 보내기 위한 것 */
+  onOpenSettings: () => void;
+  /** 서버 상태 다시 확인 (배너의 '다시 확인') */
+  onRecheckServer: () => void;
 }
 
 /** 조각을 만들 때 필요한 호스트 능력 — 콜백 + 서버 상태에 연동되는 생성 버튼 팩토리 */
 export interface PanelContext {
   callbacks: PanelCallbacks;
-  /** 호스트가 만든 생성 버튼 (자기 목록에 등록해 setServerAvailable로 일괄 갱신한다) */
+  /** 호스트가 만든 생성 버튼 (자기 목록에 등록해 setServerStatus로 일괄 갱신한다) */
   makeGenerateButton: (label: string, onClick: () => void) => HTMLButtonElement;
+  /**
+   * 지금 서버를 쓸 수 있는가 + 못 쓴다면 왜인지.
+   * 조각들은 이걸 보고 "가사를 찾지 못했어요"와 "서버가 거부했어요"를 구분해 말한다.
+   */
+  server: ServerStatus;
+  /** 디버그 모드 — 서버가 정상일 때도 요청 로그를 노출할지 결정한다 */
+  debug: boolean;
+  /** 최근 서버 요청 로그 — 접힌 섹션을 펼칠 때만 호출된다 */
+  loadServerLog: () => Promise<ServerLogEntry[]>;
 }
 
-/** 서버 미가용 시 비활성 + 안내 툴팁이 붙는 '싱크 생성' 계열 버튼 */
+/** 서버 미가용 시 비활성 + 사유 툴팁이 붙는 '싱크 생성' 계열 버튼 */
 export function createGenerateButton(
-  label: string, serverAvailable: boolean, onClick: () => void,
+  label: string, server: ServerStatus, onClick: () => void,
 ): HTMLButtonElement {
   const btn = h('button', { className: 'ey-primary-btn ey-generate-btn', on: { click: onClick } },
     icon(ICONS.sparkle), label);
-  btn.disabled = !serverAvailable;
-  if (!serverAvailable) btn.title = SERVER_UNAVAILABLE_TIP;
+  applyServerGate(btn, server);
   return btn;
+}
+
+/** 서버가 필요한 컨트롤 하나를 상태에 맞춰 잠그거나 푼다 (사유는 툴팁으로) */
+export function applyServerGate(
+  btn: HTMLButtonElement, server: ServerStatus, enabledTitle = '',
+): void {
+  const usable = serverUsable(server);
+  btn.disabled = !usable;
+  btn.title = usable ? enabledTitle : serverBlockedTip(server);
+  btn.classList.toggle('ey-server-blocked', !usable);
+}
+
+// ── 서버 상태 배너 + 요청 로그 ───────────────────────────────────
+
+/**
+ * 최근 서버 요청 로그 (기본 접힘).
+ *
+ * **언제 보이나**: 서버 상태가 정상이 아닐 때는 디버그 모드와 무관하게 항상,
+ * 정상일 때는 디버그 모드에서만. 근거 — 뭔가 깨졌을 때 로그는 사용자가 원인을 짚거나
+ * 그대로 옮겨 신고할 수 있는 유일한 증거라 숨기면 안 되고, 멀쩡할 때는 평상시 화면을
+ * 어지럽히는 잡음일 뿐이다. 어느 경우든 **접힌 채로** 시작해 화면을 점유하지 않는다.
+ */
+export function buildServerLogSection(ctx: PanelContext): HTMLDetailsElement | null {
+  if (!serverKnownBad(ctx.server) && !ctx.debug) return null;
+
+  const list = h('div', { className: 'ey-log-list ey-state-sub', text: '펼치면 불러와요' });
+  const details = h('details', { className: 'ey-log' },
+    h('summary', { className: 'ey-log-summary', text: '최근 서버 요청 기록' }),
+    list,
+  );
+  let loading = false;
+  const refresh = () => {
+    if (loading) return;
+    loading = true;
+    list.replaceChildren(h('div', { className: 'ey-state-sub', text: '불러오는 중…' }));
+    void ctx.loadServerLog().then(entries => {
+      loading = false;
+      if (entries.length === 0) {
+        list.replaceChildren(h('div', { className: 'ey-state-sub', text: '기록이 없어요 (확장을 다시 로드하면 초기화돼요)' }));
+        return;
+      }
+      // 경로·본문의 키류는 기록 시점에 이미 마스킹됐다 — 여기서는 그대로 그린다
+      list.replaceChildren(...entries.map(e =>
+        h('div', { className: `ey-log-row${e.ok ? '' : ' bad'}`, text: formatLogEntry(e) })));
+    });
+  };
+  details.addEventListener('toggle', () => {
+    if (details.open) refresh();
+  });
+  return details;
+}
+
+/**
+ * 서버 문제 배너 — 사유 한 줄 + 원인 코드 + 복구 동작 + 접이식 로그.
+ *
+ * 메인 패널과 PiP가 **같은 이 조각**을 쓴다. 다만 그리는 자리는 각자의 창 골격
+ * (헤더 아래 / 푸터 위)이다 — 본문 상태 화면들이 각자 또 그리면 같은 배너가 두 번
+ * 보인다. 그래서 아래 build*State들은 이 함수를 부르지 않고 호스트에 맡긴다.
+ * 정상이거나 아직 확인 전이면 null이다 (첫 확인 전 빨간 배너는 없는 오류를 깜빡인다).
+ */
+export function buildServerStatusBar(ctx: PanelContext): HTMLDivElement | null {
+  const status = ctx.server;
+  if (!serverKnownBad(status)) return null;
+
+  const bar = h('div', { className: `ey-server-bar ey-server-${status.kind}` });
+  const head = h('div', { className: 'ey-server-bar-head' },
+    h('span', { className: 'ey-server-bar-icon', text: status.kind === 'auth' ? '🔑' : '⚠️' }),
+    h('span', { className: 'ey-server-bar-text', text: statusLine(status) }),
+  );
+  bar.append(head);
+  // 서버가 준 힌트가 있으면 그대로 — 사용자가 서버 로그를 뒤지지 않아도 되게
+  if (status.detail) bar.append(h('div', { className: 'ey-server-bar-detail', text: status.detail }));
+
+  const actions = h('div', { className: 'ey-server-bar-actions' },
+    h('button', {
+      className: 'ey-secondary-btn',
+      text: '다시 확인',
+      attrs: { title: '서버에 다시 연결해 봅니다' },
+      on: { click: () => ctx.callbacks.onRecheckServer() },
+    }),
+    h('button', {
+      className: 'ey-secondary-btn',
+      text: '설정 열기',
+      attrs: { title: '서버 URL과 API 키를 확인할 수 있어요' },
+      on: { click: () => ctx.callbacks.onOpenSettings() },
+    }),
+  );
+  bar.append(actions);
+  const log = buildServerLogSection(ctx);
+  if (log) bar.append(log);
+  return bar;
+}
+
+/**
+ * 호스트 골격(메인 패널 헤더 아래 / PiP 푸터 위)에 넣을 서버 상태 표시 한 덩어리.
+ *
+ * - 서버 고장: 배너(사유·코드·복구 버튼·접이식 로그)
+ * - 정상 + 디버그: 접이식 로그만
+ * - 그 밖(정상, 또는 아직 확인 전): 아무것도 안 그린다
+ */
+export function buildServerStatusSlot(ctx: PanelContext): HTMLElement | null {
+  return buildServerStatusBar(ctx) ?? buildServerLogSection(ctx);
 }
 
 /** 리스트 자리(.ey-result-list)에 한 줄 상태 메시지를 표시 */
@@ -192,8 +305,49 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
 
 // ── 상태 화면 ────────────────────────────────────────────────────
 
+/**
+ * 서버를 쓸 수 없을 때의 화면 — "가사를 찾지 못했어요" 대신 여기로 온다.
+ *
+ * 사용자가 겪은 문제가 정확히 이것이다: 서버가 401을 돌려줬는데 화면은 곡에 가사가
+ * 없는 것처럼 굴었다. 그래서 여기서는 **서버 문제라고 먼저 말하고**, 서버가 필요한
+ * 조작(싱크 생성·후보 검색·붙여넣기)은 아예 내놓지 않는다 — 눌러도 실패할 버튼을
+ * 보여 주는 건 작동하는 척하는 것이다. 반대로 **서버 없이 되는 것**(다른 사이트에서
+ * 가사 찾기, 자동 검색 재시도)은 그대로 남긴다.
+ */
+export function buildServerDownState(ctx: PanelContext, song: SongInfo | null): HTMLDivElement {
+  const status = ctx.server;
+  // 사유·원인 코드·복구 버튼·로그는 호스트가 그리는 배너(buildServerStatusBar)에 있다.
+  // 여기서는 "이 화면이 왜 비었는지"만 말한다.
+  const el = h('div', { className: 'ey-state' },
+    h('div', { className: 'ey-state-emoji', text: status.kind === 'auth' ? '🔑' : '🔌' }),
+    h('div', { className: 'ey-state-text', text: status.reason || '서버를 쓸 수 없어요' }),
+  );
+  if (status.code) el.append(h('div', { className: 'ey-state-sub', text: status.code }));
+  el.append(
+    // 서버가 죽어도 LRCLIB·위키 조회는 백그라운드가 직접 하므로, 여기까지 왔다는 건
+    // 외부 소스에도 이 곡 가사가 없었다는 뜻이다 — 둘 다 사실대로 말한다
+    h('div', {
+      className: 'ey-state-sub',
+      text: '가사 검색은 서버 없이도 되지만 이 곡은 외부 소스에서도 찾지 못했어요. '
+        + '싱크 생성·재생성·번역은 서버가 있어야 해요.',
+    }),
+    buildLyricsSearchLinks(song),
+    h('button', {
+      className: 'ey-secondary-btn',
+      text: '가사 다시 검색',
+      attrs: { title: '서버를 고친 뒤 누르면 처음부터 다시 찾아봐요' },
+      on: { click: () => ctx.callbacks.onRetrySearch() },
+    }),
+  );
+  return el;
+}
+
 /** "가사를 찾지 못했어요" — 재검색 폼 + 외부 검색 링크 + 붙여넣기 */
 export function buildEmptyState(ctx: PanelContext, song: SongInfo | null): HTMLDivElement {
+  // 서버가 고장난 것이 확인됐다면 "가사를 찾지 못했어요"는 거짓말이 된다 — 서버 문제를
+  // 먼저 말한다. 아직 확인 전(unknown)이면 단정하지 않고 평소 화면을 그대로 쓴다.
+  if (serverKnownBad(ctx.server)) return buildServerDownState(ctx, song);
+
   const form = buildSearchForm(
     { title: song?.title ?? '', artist: song?.artist ?? '' },
     {
@@ -233,13 +387,22 @@ export function buildLoadingState(ctx: PanelContext, message: string): HTMLDivEl
   );
 }
 
-/** 오류 상태 */
-export function buildErrorState(ctx: PanelContext, message: string): HTMLDivElement {
-  return h('div', { className: 'ey-state' },
+/**
+ * 오류 상태 — 무엇이 실패했는지(message)와 왜인지(서버 상태 배너)를 같이 보여 준다.
+ * detail은 호출부가 아는 추가 사유(예: 서버가 준 힌트)로, 배너와 별개로 한 줄 더 남긴다.
+ */
+export function buildErrorState(ctx: PanelContext, message: string, detail?: string): HTMLDivElement {
+  const el = h('div', { className: 'ey-state' },
     h('div', { className: 'ey-state-emoji', text: '⚠️' }),
     h('div', { className: 'ey-state-text', text: message }),
-    h('button', { className: 'ey-primary-btn', text: '다시 시도', on: { click: () => ctx.callbacks.onRetrySearch() } }),
   );
+  if (detail) el.append(h('div', { className: 'ey-state-sub', text: detail }));
+  el.append(h('button', {
+    className: 'ey-primary-btn',
+    text: '다시 시도',
+    on: { click: () => ctx.callbacks.onRetrySearch() },
+  }));
+  return el;
 }
 
 export interface GeneratingStateRefs {
@@ -313,6 +476,17 @@ export function buildSearchSheet(
     }),
     h('div', { className: 'ey-state-text', text: '가사 검색 — 결과에서 직접 선택할 수 있어요' }),
     h('div', { className: 'ey-state-sub', text: '보카로 위키(발음·번역 포함) + LRCLIB(싱크 가사)를 함께 검색합니다' }),
+  );
+  // 후보 검색 자체는 서버가 없어도 된다 (LRCLIB은 확장이 직접 조회한다) — 그래서 잠그지
+  // 않는다. 다만 위키 원제 매칭은 서버 인덱스를 쓰므로 결과가 줄어들 수 있음을 알린다.
+  // (사유·복구 버튼은 호스트가 그리는 배너에 있으므로 여기서 반복하지 않는다)
+  if (serverKnownBad(ctx.server)) {
+    el.append(h('div', {
+      className: 'ey-state-sub',
+      text: 'LRCLIB 검색은 그대로 되지만, 보카로 위키 원제 매칭과 싱크 생성은 서버가 필요해요.',
+    }));
+  }
+  el.append(
     form.el,
     results,
     h('div', { className: 'ey-divider' }),

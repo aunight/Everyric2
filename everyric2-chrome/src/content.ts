@@ -14,6 +14,7 @@ import {
   selectLyricTrack,
 } from './lib/yt-captions';
 import type {
+  ApiFailure,
   BgRequest,
   CaptionLine,
   ContentMessage,
@@ -24,12 +25,16 @@ import type {
   MessageResponse,
   PanelGeometry,
   SearchCandidate,
+  ServerLogEntry,
+  ServerStatus,
   Settings,
   SongInfo,
   SyncListItem,
   TranslateResult,
   TranslatedLine,
 } from './types';
+import { affectsServerStatus, failureToStatus, serverKnownBad, statusLine, unknownStatus } from './lib/server-status';
+import { resolveTheme } from './lib/theme';
 import type { VocaroLine, VocaroResult } from './lib/vocaro';
 
 let settings: Settings;
@@ -165,11 +170,12 @@ function observeNavigation(): void {
   document.addEventListener('yt-navigate-finish', () => window.setTimeout(checkCurrentPage, 300));
   window.setInterval(checkCurrentPage, 1500);
   window.setInterval(watchVideoBinding, 3000);
-  // 유튜브 다크모드 토글(html[dark])을 실시간 반영 — theme=auto일 때 패널·레인 색 갱신
+  // 유튜브 다크모드 토글(html[dark])을 실시간 반영 — theme=auto일 때 패널·PiP·레인 색 갱신.
+  // PiP는 유튜브 페이지 컨텍스트가 없어 스스로 판정할 수 없으므로 여기서 판정해 밀어넣는다.
   new MutationObserver(() => {
     if (settings.theme !== 'auto') return;
     overlay?.applySettings(settings);
-    pip.refreshColors();
+    pip.setTheme(resolveTheme(settings)); // 레인 색 재판독은 setTheme이 함께 처리
   }).observe(document.documentElement, { attributes: true, attributeFilter: ['dark'] });
 }
 
@@ -291,8 +297,17 @@ function ensureOverlay(): LyricsOverlay {
     onUnlinkSync: () => void handleUnlinkSync(),
     onRequestSyncList: () => void handleRequestSyncList(),
     onResetSync: () => void handleResetSync(),
+    onRecheckServer: () => void refreshServerStatus(),
+    loadServerLog: () => fetchServerLog(),
   }, initialGeometry);
+  overlay.setServerStatus(serverStatus); // 이미 알고 있는 상태를 새 패널에 즉시 반영
   return overlay;
+}
+
+/** 최근 서버 요청 기록 — 백그라운드가 마스킹까지 마친 것을 그대로 받는다 */
+async function fetchServerLog(): Promise<ServerLogEntry[]> {
+  const res = await sendToBackground<ServerLogEntry[]>({ type: 'SERVER_LOG' });
+  return res.data ?? [];
 }
 
 /** 오프셋 변경을 디바운스해 서버에 저장 (연타 중 매 클릭 요청 방지) */
@@ -360,7 +375,9 @@ async function tryCaptionFallback(
     synced: true,
     lines,
     plainText: lines.map(l => l.text).join('\n'),
-    attribution: { name: `유튜브 자막 · ${captionSourceLabel(track)}` },
+    // 출처 배지는 source가 'caption'이면 앞에 "유튜브 자막"을 이미 붙인다 —
+    // 여기서 또 붙이면 "유튜브 자막 · 유튜브 자막 · 일본어…"로 겹친다
+    attribution: { name: captionSourceLabel(track) },
   };
 }
 
@@ -387,7 +404,8 @@ async function handleLinkSync(sourceVideoId: string, offsetSec: number, rate: nu
       type: 'SYNC_RESET', payload: { videoId },
     });
     if (reset.error) {
-      ensureOverlay().setLinkStatus('자체 전사 삭제에 실패했어요 — 서버 상태를 확인해 주세요');
+      const note = failureNote(noteFailure(reset.failure));
+      ensureOverlay().setLinkStatus(`자체 전사 삭제에 실패했어요${note ? ` — ${note}` : ''}`);
       return;
     }
     for (const key of [...translationCache.keys()]) {
@@ -400,7 +418,11 @@ async function handleLinkSync(sourceVideoId: string, offsetSec: number, rate: nu
   });
   if (videoId !== currentVideoId) return;
   if (res.error || !res.data) {
-    ensureOverlay().setLinkStatus('연결 실패 — 원본 영상에 전사(싱크)가 있는지 확인해 주세요');
+    // 원본에 전사가 없어서일 수도, 서버 자체 문제일 수도 있다 — 아는 사유가 있으면 그것을 쓴다
+    const note = failureNote(noteFailure(res.failure));
+    ensureOverlay().setLinkStatus(note
+      ? `연결 실패 — ${note}`
+      : '연결 실패 — 원본 영상에 전사(싱크)가 있는지 확인해 주세요');
     return;
   }
   void searchLyrics(); // 링크된 싱크를 즉시 불러온다
@@ -412,7 +434,8 @@ async function handleUnlinkSync(): Promise<void> {
   const res = await sendToBackground<{ removed: boolean }>({ type: 'SYNC_UNLINK', payload: { videoId } });
   if (videoId !== currentVideoId) return;
   if (res.error) {
-    ensureOverlay().setLinkStatus('해제 실패 — 서버 상태를 확인해 주세요');
+    const note = failureNote(noteFailure(res.failure));
+    ensureOverlay().setLinkStatus(`해제 실패${note ? ` — ${note}` : ' — 서버 상태를 확인해 주세요'}`);
     return;
   }
   ensureOverlay().setLinked(null);
@@ -421,13 +444,18 @@ async function handleUnlinkSync(): Promise<void> {
 
 async function handleRequestSyncList(): Promise<void> {
   const res = await sendToBackground<SyncListItem[]>({ type: 'SYNC_LIST' });
+  noteFailure(res.failure); // 빈 목록이 "없음"인지 "못 받음"인지 상태로 남긴다
   overlay?.showSyncList(res.data ?? []);
 }
 
 async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   settings = await saveSettings(patch);
   overlay?.applySettings(settings);
-  if (patch.serverUrl !== undefined) void refreshServerStatus();
+  // 키를 고치는 것이 인증 실패의 정상 복구 경로다 — URL과 함께 즉시 재확인한다
+  if (patch.serverUrl !== undefined || patch.apiKey !== undefined) void refreshServerStatus();
+  if (patch.debugInfo !== undefined) pip.setDebug(patch.debugInfo);
+  // 메인 패널은 위 applySettings에서 이미 바뀐다 — PiP도 같은 판정값으로 함께 맞춘다
+  if (patch.theme !== undefined) pip.setTheme(resolveTheme(settings));
 
   if (patch.showTranslation === true || (patch.translationLanguage && settings.showTranslation)) {
     void loadTranslations();
@@ -669,13 +697,21 @@ async function loadTranslations(): Promise<void> {
     return;
   }
 
+  // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
+  if (serverKnownBad(serverStatus)) {
+    overlay?.setTranslationStatus(`번역 불가 — ${statusLine(serverStatus)}`);
+    return;
+  }
   overlay?.setTranslationStatus('번역·발음 생성 중…');
   const lines = await requestTranslation(videoId, data.lines.map(l => l.text));
   if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜
   if (!settings.showTranslation || settings.translationLanguage !== lang) return;
 
   if (!lines || lines.length === 0) {
-    overlay?.setTranslationStatus('번역 실패 — 서버 확인');
+    // requestTranslation이 실패 사유를 이미 상태에 반영했다 — 그 사유를 그대로 보여 준다
+    overlay?.setTranslationStatus(serverKnownBad(serverStatus)
+      ? `번역 실패 — ${statusLine(serverStatus)}`
+      : '번역 실패 — 서버가 결과를 주지 않았어요');
     return;
   }
   applyTranslations(data, lines);
@@ -734,6 +770,7 @@ function requestTranslation(
         artist: currentSong?.artist ?? undefined,
       },
     });
+    noteFailure(res.failure); // 번역은 서버 전용 경로 — 실패 사유를 상태로 남긴다
     const lines = res.data?.lines;
     if (lines && lines.length > 0) {
       translationCache.set(key, lines);
@@ -834,12 +871,16 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
     payload: { ...song, skipLrclib: wikiFirst },
   });
   if (seq !== searchSeq || videoId !== currentVideoId) return;
+  // 서버 조회가 실패했다면(401·연결 불가 등) 사유를 먼저 상태에 반영한다 — 그래야
+  // 아래 applyLyricsData(null)이 "가사를 찾지 못했어요" 대신 서버 문제 화면을 띄운다
+  const lookupFailure = noteFailure(res.failure);
   if (res.error) {
     // 서버가 흔들려도 이전 곡 상태가 남으면 안 된다 — 먼저 리셋하고 오류 문구로 덮어쓴다
     // (currentSong은 인식에 성공한 새 곡이므로 유지)
     applyLyricsData(null);
-    panel.showError('가사를 불러오지 못했어요');
-    if (pip.isOpen()) pip.showPanelError('가사를 불러오지 못했어요');
+    const note = failureNote(lookupFailure);
+    panel.showError('가사를 불러오지 못했어요', note);
+    if (pip.isOpen()) pip.showPanelError('가사를 불러오지 못했어요', note);
     return;
   }
 
@@ -1147,8 +1188,9 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
         },
       });
     if (res.error || !res.data) {
+      const note = failureNote(noteFailure(res.failure));
       if (videoId === currentVideoId && seq === searchSeq) {
-        panel.showError('싱크 생성 요청에 실패했어요. 서버 상태를 확인해 주세요.');
+        panel.showError('싱크 생성 요청에 실패했어요.', note);
       }
       return;
     }
@@ -1201,7 +1243,8 @@ async function handleRegenerate(): Promise<void> {
       },
     });
     if (res.error || !res.data) {
-      if (videoId === currentVideoId) ensureOverlay().showError('재생성 요청에 실패했어요. 서버 상태를 확인해 주세요.');
+      const note = failureNote(noteFailure(res.failure));
+      if (videoId === currentVideoId) ensureOverlay().showError('재생성 요청에 실패했어요.', note);
       return;
     }
     generatingJobs.set(videoId, { jobId: res.data.job_id, progress: 0, title: currentSong?.title });
@@ -1221,7 +1264,7 @@ async function handleResetSync(): Promise<void> {
     type: 'SYNC_RESET', payload: { videoId },
   });
   if (res.error) {
-    ensureOverlay().showError('싱크 초기화에 실패했어요. 서버 상태를 확인해 주세요.');
+    ensureOverlay().showError('싱크 초기화에 실패했어요.', failureNote(noteFailure(res.failure)));
     return;
   }
   // 세션 캐시(언어별 번역·발음)와 진행 중 잡 추적도 함께 비워 완전히 처음부터
@@ -1242,7 +1285,7 @@ async function handleCancelGenerate(): Promise<void> {
     type: 'JOB_CANCEL', payload: { jobId: job.jobId },
   });
   if (res.error) {
-    ensureOverlay().showError('취소 요청에 실패했어요 — 서버 상태를 확인해 주세요');
+    ensureOverlay().showError('취소 요청에 실패했어요.', failureNote(noteFailure(res.failure)));
     return;
   }
   // 그 사이 이미 완료된 잡이면 취소 대신 결과를 반영한다
@@ -1392,8 +1435,14 @@ async function handlePipToggle(): Promise<void> {
       onCandidateSearch: query => void handleCandidateSearch(query),
       onPickCandidate: candidate => void handlePickCandidate(candidate),
       onOpenSearch: () => { /* PiP는 자기 창 안에서 연다 (pip.openPanelSearch) */ },
+      // 설정 UI는 메인 패널에만 있다 — PiP에서 누르면 유튜브 탭의 패널에 설정을 펼쳐 준다
+      onOpenSettings: () => ensureOverlay().openSettings(),
+      onRecheckServer: () => void refreshServerStatus(),
     },
-    serverAvailable: serverOnline,
+    serverStatus,
+    theme: resolveTheme(settings), // 판정은 페이지 컨텍스트에서만 가능 — PiP는 받아 쓴다
+    debug: settings.debugInfo,
+    loadServerLog: () => fetchServerLog(),
     showVideo: settings.pipShowVideo,
     // 저장된 창 크기가 있으면 그대로, 없으면(0) 기존 기본값(440 / 영상 유무에 따라 500·260)
     width: settings.pipWidth > 0 ? settings.pipWidth : 440,
@@ -1499,14 +1548,47 @@ function restoreOverlayState(): void {
 
 // ── 서버 상태/유틸 ─────────────────────────────────────────────
 
-/** 마지막으로 확인된 서버 가용 상태 — PiP를 새로 열 때 초기값으로 넘긴다 */
-let serverOnline = false;
+/** 마지막으로 확인된 서버 상태(사유 포함) — PiP를 새로 열 때 초기값으로 넘긴다 */
+let serverStatus: ServerStatus = unknownStatus();
+
+function applyServerStatus(next: ServerStatus): void {
+  const kindChanged = serverStatus.kind !== next.kind;
+  serverStatus = next;
+  overlay?.setServerStatus(next);
+  pip.setServerStatus(next); // PiP도 같은 규칙·같은 배너로 잠근다
+  // "가사 없음" 화면은 서버 상태에 따라 문구 자체가 달라진다 — 상태 판정이 검색보다
+  // 늦게 도착했으면 PiP 쪽도 다시 그린다 (메인 패널은 setServerStatus가 알아서 한다)
+  if (kindChanged && currentData === null && pip.isOpen()) pip.showPanelEmpty(currentSong);
+}
 
 async function refreshServerStatus(): Promise<void> {
-  const res = await sendToBackground<{ ok: boolean }>({ type: 'SERVER_HEALTH' });
-  serverOnline = res.data?.ok ?? false;
-  overlay?.setServerAvailable(serverOnline);
-  pip.setServerAvailable(serverOnline); // PiP 패널의 생성 버튼도 같은 규칙으로 잠근다
+  const res = await sendToBackground<ServerStatus>({ type: 'SERVER_HEALTH' });
+  // 백그라운드 자체와 통신이 끊긴 경우(확장 재설치 등)도 서버를 못 쓰는 상태로 본다
+  applyServerStatus(res.data ?? failureToStatus(res.failure));
+}
+
+/**
+ * 개별 요청이 돌려준 실패 사유를 전역 서버 상태에 반영한다.
+ *
+ * `/health`는 공개 엔드포인트라 401을 절대 못 본다 — 헬스체크만 믿으면 "서버 정상"인 채로
+ * 모든 /api 호출이 401나는 상황이 그대로 재현된다. 그래서 **실제 호출의 실패**도 상태
+ * 판정의 근거로 쓴다. 다만 엔드포인트 국소 실패(404 등)로 서버 전체를 죽었다고 하면
+ * 멀쩡한 서버에서 버튼이 잠기므로 affectsServerStatus()가 거른다.
+ *
+ * 회복(→ ok)은 여기서 하지 않는다. 성공한 요청이 Everyric 서버를 거친 것인지
+ * (LRCLIB·위키는 서버를 안 탄다) 응답만으로는 알 수 없기 때문이며, 회복 판정은
+ * refreshServerStatus()의 명시적 확인에 맡긴다.
+ */
+function noteFailure(failure: ApiFailure | undefined): ApiFailure | undefined {
+  if (failure && affectsServerStatus(failure.kind)) applyServerStatus(failureToStatus(failure));
+  return failure;
+}
+
+/** 실패 사유를 화면 문구 뒤에 붙일 한 줄로 — 없으면 undefined */
+function failureNote(failure: ApiFailure | undefined): string | undefined {
+  if (!failure) return undefined;
+  const status = failureToStatus(failure);
+  return status.detail ? `${statusLine(status)} — ${status.detail}` : statusLine(status);
 }
 
 async function sendToBackground<T>(message: BgRequest): Promise<MessageResponse<T>> {

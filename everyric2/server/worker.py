@@ -2294,15 +2294,13 @@ def _run_alignment(
                     "clamped": i in clamped_lines,
                 }
                 # 보정된 라인은 보정 전 원본 타이밍 + 적용 규칙 라벨을 함께 내려준다.
-                # orig(고스트)는 라인 경계가 실제로 움직였을 때만 — 융합(fuse)처럼 라인
-                # 내부만 바꾸는 보정은 경계가 그대로라 고스트가 현재 위치와 겹쳐 그려지고,
-                # ko 경로에선 거의 전 라인에 붙어 디버그 화면을 못 쓰게 만든다.
+                # 융합(fuse)처럼 라인 내부만 바꾸는 보정은 경계가 그대로라 고스트가 현재
+                # 위치에 겹쳐 그려진다 — 정보를 버리지 않고 그대로 내려보내되, 겹치는
+                # 고스트를 흐리게 그릴지는 클라이언트가 판단한다(확장 디버그 오버레이).
                 fx = fixes.get(i)
                 if fx:
+                    seg["debug"]["orig"] = [round(raw_spans[i][0], 2), round(raw_spans[i][1], 2)]
                     seg["debug"]["fixes"] = fx
-                    os_, oe_ = raw_spans[i]
-                    if abs(os_ - r.start_time) > 0.01 or abs(oe_ - r.end_time) > 0.01:
-                        seg["debug"]["orig"] = [round(os_, 2), round(oe_, 2)]
             timestamps.append(seg)
 
         # 가라오케용 음정(MIDI 노트) 주석 — 실패해도 싱크 생성 자체는 계속한다.
