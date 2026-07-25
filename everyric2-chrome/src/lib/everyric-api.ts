@@ -137,8 +137,18 @@ async function request<T>(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    // AbortSignal.timeout은 TimeoutError를 던진다 — 그 밖은 서버에 닿지 못한 것
-    const timedOut = error instanceof DOMException && error.name === 'TimeoutError';
+    // AbortSignal.timeout은 TimeoutError를 던진다 — 그 밖은 서버에 닿지 못한 것.
+    //
+    // **Chrome 103~123은 TimeoutError 대신 AbortError를 던진다**(124에서 고쳐졌다).
+    // 우리 하한이 103이라 그 구간 사용자는 "2500ms 초과"가 아니라 "오프라인"으로 오분류된
+    // 문구를 봤다 — 실패한다는 결과는 같지만 원인이 틀리면 서버를 의심할 자리에서 네트워크를
+    // 의심하게 된다.
+    //
+    // AbortError도 타임아웃으로 단정해도 되는 이유: **이 fetch에 붙는 signal은 timeout
+    // 하나뿐이고 수동 취소 경로가 없다.** 나중에 사용자 취소를 붙이면 그때는 둘을 갈라야
+    // 한다(그 경우 signal.reason으로 판정해야 한다 — name만으로는 구별되지 않는다).
+    const timedOut = error instanceof DOMException
+      && (error.name === 'TimeoutError' || error.name === 'AbortError');
     const message = error instanceof Error ? error.message : String(error);
     return fail(timedOut ? 'timeout' : 'offline', undefined, timedOut ? `${timeoutMs}ms 초과` : message);
   }
