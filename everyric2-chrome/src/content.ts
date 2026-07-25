@@ -871,7 +871,12 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
       pronApplied = true;
     }
   });
-  overlay?.setTranslationStatus(null);
+  // 서버가 복구하지 못한 줄(응답 잘림 등)은 failed로 온다. 조용히 비워 두면 사용자는
+  // 왜 그 줄만 번역이 없는지 알 수 없다 — 완료 알림까지 기다리지 않고 여기서 바로 말한다.
+  const failed = translated.filter(t => t?.failed).length;
+  overlay?.setTranslationStatus(
+    failed > 0 ? `번역 일부 실패 — ${failed}줄은 서버가 결과를 주지 못했어요` : null,
+  );
   overlay?.refreshTranslations();
   // 발음이 새로 붙었으면 PiP 내부 변환 캐시(setLines 시점 복사)도 다시 채운다
   if (pronApplied && currentData === data) pip.setLines(data.lines);
@@ -1128,7 +1133,17 @@ async function handleCandidateSearch(query: { title: string; artist: string }): 
     payload: { ...query, duration: currentSong?.duration ?? 0 },
   });
   if (videoId !== currentVideoId) return;
-  ensureOverlay().showSearchResults(res.data ?? []);
+  // 실패를 빈 배열로 접으면 패널이 "결과가 없어요 — 제목을 줄여 보세요"를 띄운다. 서버가
+  // 죽었거나 키가 틀린 것을 검색어 탓으로 돌리는 셈이고, 사용자는 틀린 행동을 반복한다.
+  // 사용자가 직접 누른 버튼이니 실패는 실패라고 말한다.
+  if (!res.data) {
+    ensureOverlay().setNoticeChip(
+      `후보를 불러오지 못했어요 — ${failureNote(noteFailure(res.failure)) ?? res.error ?? '알 수 없는 오류'}`,
+      8000,
+    );
+    return;
+  }
+  ensureOverlay().showSearchResults(res.data);
 }
 
 /** 후보 선택: 해당 소스에서 가사를 받아 현재 가사를 교체한다 (잘못 가져온 가사 롤백 경로) */
@@ -1697,16 +1712,34 @@ function completionVerdict(label: string): { message: string; warning: string | 
   if (!expectsPronunciation(data.lines.map(l => l.text))) {
     return { message: `${label} — 가사 싱크가 준비됐어요`, warning: null };
   }
+  // `some()`으로 "하나라도 있는가"만 보면 안 된다 — 한 줄만 붙고 나머지가 비어도 "준비됐어요"가
+  // 된다. 서버는 응답이 잘린 줄을 failed로 표시해 보내는데(TranslatedLine.failed) 그것도
+  // 여태 아무도 읽지 않았다. 부분 실패는 전무와 다른 사실이므로 다르게 말한다.
+  const n = data.lines.length;
+  const noPron = data.lines.filter(l => !l.pronunciation).length;
+  const noTr = data.lines.filter(l => !l.translation).length;
   const missing: string[] = [];
-  if (!data.lines.some(l => l.pronunciation)) missing.push('발음');
-  if (!data.lines.some(l => l.translation)) missing.push('번역');
-  if (missing.length === 0) {
+  const partial: string[] = [];
+  if (noPron === n) missing.push('발음');
+  else if (noPron > 0) partial.push(`발음 ${n - noPron}/${n}줄`);
+  if (noTr === n) missing.push('번역');
+  else if (noTr > 0) partial.push(`번역 ${n - noTr}/${n}줄`);
+
+  if (missing.length === 0 && partial.length === 0) {
     return { message: `${label} — 가사 싱크·발음·번역이 준비됐어요`, warning: null };
   }
+  if (missing.length === 0) {
+    const some = partial.join(' · ');
+    return {
+      message: `${label} — 싱크는 준비됐지만 일부 줄이 비었어요 (${some})`,
+      warning: `일부 줄에 ${some}만 붙었어요 — 재생성하면 다시 시도해요`,
+    };
+  }
   const what = missing.join('·');
+  const tail = partial.length ? ` (${partial.join(' · ')})` : '';
   return {
-    message: `${label} — 싱크는 만들어졌지만 ${what}이 없어요`,
-    warning: `싱크는 만들어졌지만 ${what}이 붙지 않았어요 — 재생성하면 다시 시도해요`,
+    message: `${label} — 싱크는 만들어졌지만 ${what}이 없어요${tail}`,
+    warning: `싱크는 만들어졌지만 ${what}이 붙지 않았어요${tail} — 재생성하면 다시 시도해요`,
   };
 }
 

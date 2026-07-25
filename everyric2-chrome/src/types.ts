@@ -426,6 +426,10 @@ export interface TranslatedLine {
   original: string;
   translation: string;
   pronunciation?: string | null;
+  /** 서버가 이 줄만 복구하지 못했다는 표시(응답 잘림 등) — 원문만 채워져 온다.
+   *  서버는 처음부터 이 필드를 보냈지만 타입에 없어 아무도 읽지 않았고, 그래서 일부 줄이
+   *  빈 채로 와도 완료 알림이 "번역이 준비됐어요"라고 말했다. 부분 실패를 말하려면 필요하다. */
+  failed?: boolean;
 }
 
 export interface TranslateResult {
