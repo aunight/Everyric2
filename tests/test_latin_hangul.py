@@ -160,6 +160,20 @@ def test_rules_alone_reproduce_the_measured_words(word, expected):
         ("fire", "파이"),  # 후치 r은 모음에 흡수된다 (파일이 아니다)
         ("angel", "앤겔"),  # 뒤에 모음이 오는 ng는 /ŋ/이 아니다 (애엘이 되면 자음이 사라진다)
         ("believe", "벨립"),  # 어말이 아닌 ie는 /iː/
+        # ``ear`` — ``ea``가 먼저 먹으면 모음이 틀린다(learn→린). 자음이 뒤따르면 /ɜːr/,
+        # 어말이면 /ɪər/. ``ar``은 원래부터 맞았다(car 카, part 팟) — 사상 문제가 아니라
+        # 자소 우선순위 문제였다.
+        ("learn", "런"),
+        ("earth", "엇"),
+        ("heard", "헏"),
+        ("search", "서치"),
+        ("early", "얼리"),
+        ("hear", "히"),
+        ("year", "이"),
+        ("years", "잇"),  # 복수의 s는 어말 판정을 막지 않는다
+        ("car", "카"),
+        ("part", "팟"),
+        ("start", "스탓"),
     ],
 )
 def test_rules_follow_korean_loanword_shapes(word, expected):
@@ -197,6 +211,11 @@ def test_unknown_words_always_come_out_as_hangul():
         # give는 규칙으로도 나왔었지만(-ive를 magic e에서 뺐을 때) 그 예외가 drive·five·
         # alive를 망가뜨려 걷어냈다. 그래서 실측값을 표에서 잡는다.
         ("give", "깁"),
+        # heart·hearth만 ear를 /ɑːr/로 읽는다(닫힌 예외 2개) — 규칙은 /ɜːr/(런·엇)로 간다
+        ("heart", "핫"),
+        # 일본어 가사의 라틴이 영어가 아니라 가타카나로 불리는 부류. ボーカロイド는 6음절이고
+        # 규칙의 영어 읽기(보캘로읻)는 4음절이다. 코퍼스에서 33회/4곡으로 가장 흔하다.
+        ("VOCALOID", "보오카로이도"),
     ],
 )
 def test_pinned_words_are_used_verbatim(word, expected):
@@ -219,6 +238,60 @@ def test_single_letters_and_vowelless_initialisms_are_spelled_out():
     assert latin_word_to_hangul("TV") == "티브이"
     # 관사 a는 글자 이름(에이)이 아니다 — 부르지 않는 음절이 하나 늘어난다
     assert latin_word_to_hangul("a") == "어"
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # 모음이 있어 자모 구성으로는 낱말과 구별되지 않는다 — 표로 잡는다.
+        # ATM을 낱말로 읽으면 앳(1음절)인데 사람은 에이티엠(4음절)을 부른다. 이 변경이
+        # 고치려던 오류(음절 수 불일치)를 반대 방향으로 만드는 것이라 반드시 잡아야 한다.
+        ("ATM", "에이티엠"),
+        ("VIP", "브이아이피"),
+        ("ID", "아이디"),
+        ("USB", "유에스비"),
+        ("DVD", "디브이디"),
+        # 모음이 없으면 표 없이도 잡힌다
+        ("NG", "엔지"),
+        ("BGM", "비지엠"),
+        ("SNS", "에스엔에스"),
+    ],
+)
+def test_acronyms_are_spelled_out(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # **대문자 낱말이 깨지지 않는다.** 이 방향이 더 중요하다: 로컬 코퍼스 4662줄에서
+        # 전부 대문자 토큰은 낱말이 압도적이다(VOCALOID 33회/4곡 · BOY 4회 · VOX 2회 대
+        # NG 2회 · AC 2회). BOY(3자)·AT(2자)가 "길이로 두문자어를 가른다"의 직접 반례다.
+        ("BOY", "보이"),
+        ("VOX", "복스"),
+        ("LOVE", "럽"),
+        ("STOP", "스톱"),
+        ("YEAH", "예"),
+        ("AIM", "에임"),  # 팀리드 보고의 'VIP 名声 AIM' — AIM은 낱말이다
+        ("HELLO", "헬로"),
+        ("DANCE", "댄스"),
+        ("YES", "예스"),
+        ("HEY", "헤이"),
+    ],
+)
+def test_uppercase_words_are_not_spelled_out(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+def test_the_acronym_rule_needs_uppercase_source():
+    # 소문자는 낱말이다 — 두문자어 목록에 있어도 적용하지 않는다
+    assert latin_word_to_hangul("id") != "아이디"
+    assert latin_word_to_hangul("atm") != "에이티엠"
+
+
+def test_acronym_lines_from_the_defect_report():
+    assert wiki_pronunciation("おまえはATM") == "오마에와 에이티엠"
+    assert wiki_pronunciation("VIP 名声 AIM") == "브이아이피 메이세이 에임"
 
 
 def test_bare_w_is_dropped_because_it_is_laughter_not_a_word():
