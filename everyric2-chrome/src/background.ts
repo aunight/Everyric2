@@ -269,6 +269,7 @@ async function fetchLyricsChain(
         tempo: sync.tempo ?? undefined,
         key: sync.key ?? undefined,
         qualityScore: sync.quality_score ?? undefined,
+        createdAt: sync.created_at ?? undefined,
         linked: sync.linked
           ? {
               sourceVideoId: sync.linked.source_video_id,

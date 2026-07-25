@@ -139,16 +139,16 @@ def kana_to_hangul(text: str) -> str:
 
 
 def kanji_to_kana(text: str) -> str:
-    """잔존 한자를 pykakasi로 가나화한다 (LLM이 일부 한자를 남긴 경우의 폴백).
+    """잔존 한자를 형태소 분석(ja_reading)으로 가나화한다 (LLM이 한자를 남긴 경우의 폴백).
 
-    LLM이 이미 가나로 쓴 부분은 pykakasi를 통과해도 그대로이므로, LLM의 문맥 읽기를
-    보존하면서 빠뜨린 한자만 사전 읽기로 메꾼다. 실패 시 원문 그대로 반환.
+    LLM이 이미 가나로 쓴 부분은 읽기가 자기 자신이므로 그대로 남는다 — LLM의 문맥 읽기를
+    보존하면서 빠뜨린 한자만 메꾼다. 사전 표제어를 문맥 없이 긁던 pykakasi 대신
+    ja_reading을 쓰는 이유는 같다(止められない→とめ 등 문맥 의존 훈독). 실패 시 원문 그대로.
     """
     try:
-        import pykakasi
+        from everyric2.text.ja_reading import kana_reading
 
-        reader = pykakasi.kakasi()
-        return "".join(item.get("hira", "") for item in reader.convert(text))
+        return kana_reading(text)
     except Exception:
         return text
 

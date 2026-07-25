@@ -909,10 +909,14 @@ class TestLowQualityBatchRetry:
 
 
 class TestAmbiguousReadingHints:
-    """수정 4: pykakasi 오독을 '정답 참조'로 박아넣지 않고 후보로 제시한다.
+    """사전 오독을 '정답 참조'로 박아넣지 않고 후보로 제시한다.
 
     실증: 今更止められない → pykakasi는 いまさら"やめ"られない (정답 とめ),
     涙を止める → なみだを"やめる", 風が止む → かぜが"とむ" (정답 やむ).
+
+    참조 읽기는 이제 형태소 분석(ja_reading)이 만들고 그쪽은 위 케이스를 다 맞힌다 —
+    그래서 후보 주석은 pykakasi 폴백일 때만 붙는다. 맞은 읽기 위에 "とめ/やめ 중
+    골라라"를 얹으면 모델이 맞은 답을 다시 흔들기 때문이다.
     """
 
     def setup_method(self):
@@ -940,7 +944,12 @@ class TestAmbiguousReadingHints:
             lines.append(ln)
         return lines
 
-    def test_candidates_are_attached_to_the_ambiguous_line(self):
+    def test_candidates_are_attached_to_the_ambiguous_line_on_dictionary_fallback(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "everyric2.translation.translator.reading_source", lambda: "pykakasi"
+        )
         prompt = self.probe._build_prompt(
             "今更止められない\n静かな夜だ", "ja", "ko", include_pronunciation=True
         )
@@ -952,7 +961,24 @@ class TestAmbiguousReadingHints:
         assert len(with_candidates) == 1
         assert with_candidates[0].startswith("1. ")
 
-    def test_line_without_ambiguity_gets_no_candidates(self):
+    def test_morphological_readings_get_no_candidates(self):
+        # 형태소 분석이 とめ를 이미 맞히므로 후보를 얹지 않는다 (기본 경로)
+        from everyric2.text.ja_reading import reading_source
+
+        assert reading_source() == "fugashi"
+        prompt = self.probe._build_prompt(
+            "今更止められない\n静かな夜だ", "ja", "ko", include_pronunciation=True
+        )
+        readings = self._reading_lines(prompt)
+        assert len(readings) == 2
+        assert all("CANDIDATES" not in ln for ln in readings)
+        # 참조 줄 자체는 문맥 맞는 읽기(とめ)로 채워진다
+        assert readings[0].startswith("1. いまさらとめられない")
+
+    def test_line_without_ambiguity_gets_no_candidates(self, monkeypatch):
+        monkeypatch.setattr(
+            "everyric2.translation.translator.reading_source", lambda: "pykakasi"
+        )
         prompt = self.probe._build_prompt(
             "静かな夜だった", "ja", "ko", include_pronunciation=True
         )
@@ -976,11 +1002,15 @@ class TestAmbiguousReadingHints:
         assert "きみ" in _reading_candidates("君にだけ")
         assert _reading_candidates("静かな夜") == ""
 
-    def test_romaji_target_also_gets_candidates(self):
+    def test_romaji_target_also_gets_candidates(self, monkeypatch):
+        # 후보 게이트는 target_lang과 무관하다 — 읽기 엔진만 본다
+        monkeypatch.setattr(
+            "everyric2.translation.translator.reading_source", lambda: "pykakasi"
+        )
         prompt = self.probe._build_prompt(
             "今更止められない", "ja", "en", include_pronunciation=True
         )
-        assert "CANDIDATES" in prompt
+        assert any("CANDIDATES" in ln for ln in self._reading_lines(prompt))
 
 
 class TestPromptBuilding:

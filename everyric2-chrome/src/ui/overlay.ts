@@ -934,6 +934,8 @@ export class LyricsOverlay {
     const video = info.videoInfo === 'none' ? 'none' : `${info.videoBound ? 'OK' : 'MISMATCH'}(${info.videoInfo})`;
     const g = info.confGrades;
     const diag = [
+      // 이 싱크가 언제 만들어졌는가 — 수정 배포 후에도 옛 싱크는 그대로라 판단 기준이 된다
+      info.syncCreated ? `생성=${info.syncCreated}` : null,
       // 사람이 읽는 등급 분포 (글자 색과 동일 기준: 좋음=초록, 보통=노랑, 낮음=빨강)
       g ? `정렬 좋음${Math.round(g.ok * 100)}%·보통${Math.round(g.mid * 100)}%·낮음${Math.round(g.low * 100)}%` : null,
       info.quality != null ? `conf=${fmtConf(info.quality)}` : null,

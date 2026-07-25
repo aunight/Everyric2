@@ -3,7 +3,6 @@ import logging
 import os
 import random
 import re
-import threading
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +14,7 @@ from dotenv import load_dotenv
 
 from everyric2.config.settings import TranslationSettings, get_settings
 from everyric2.inference.prompt import LyricLine
+from everyric2.text.ja_reading import kana_reading, reading_source
 
 load_dotenv()
 
@@ -50,19 +50,13 @@ _JA_CHAR_RE = re.compile(r"[぀-ヿ㐀-鿿]")
 # 원문 대조용 정규화 — 공백·문장부호를 지운다 (모델이 원문을 되돌려줄 때의 사소한 정리 흡수)
 _ALIGN_STRIP_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 
-_kakasi_reader = None
-# 발음 프롬프트를 만드는 _kana_readings는 번역 배치가 병렬로 돌면서 여러 스레드에서
-# 동시에 불린다. 지연 생성 싱글턴의 생성 경합(사전 중복 로드)과 변환기 내부 상태 공유를
-# 함께 막기 위해 변환 구간 전체를 잠근다 — 라인당 밀리초 수준이라 8초짜리 HTTP 호출
-# 옆에서는 직렬화 비용이 사실상 없다.
-_kakasi_lock = threading.Lock()
-
 # pykakasi가 문맥 없이 오독하거나 훈독이 갈리는 대표 항목 — 단일 확정값 대신 후보를
 # 함께 제시해 모델이 문맥으로 고르게 한다. 실측(pykakasi 2.3):
 #   今更止められない → いまさら"やめ"られない (정답 とめ), 涙を止める → なみだを"やめる",
 #   風が止む → かぜが"とむ" (정답 やむ), 君にだけ → "くん"にだけ (노래에선 きみ)
 # 문맥으로 판별 가능한 것만 담는다 — 行く(いく/ゆく)나 明日(あした/あす)처럼 텍스트만으로
 # 정할 수 없는 것은 오히려 사전값보다 나빠질 수 있어 넣지 않는다.
+# 표는 남겨 두지만 적용은 pykakasi 폴백 경로로 좁혔다(_build_prompt 참조).
 _AMBIGUOUS_READINGS: tuple[tuple[str, str], ...] = (
     ("君", "きみ (you) / くん (name suffix)"),
     ("止め", "とめ (stop something) / やめ (quit, give up)"),
@@ -74,28 +68,21 @@ _AMBIGUOUS_READINGS: tuple[tuple[str, str], ...] = (
 
 
 def _kana_readings(text: str) -> list[str] | None:
-    """일본어 원문 각 라인의 히라가나 읽기 (pykakasi) — 발음 프롬프트의 정답 참조.
+    """일본어 원문 각 라인의 히라가나 읽기 — 발음 프롬프트의 참조.
 
-    일본어 문자가 없거나 pykakasi 사용 불가 시 None (힌트 없이 진행).
+    읽기 엔진은 everyric2.text.ja_reading이 단독 소유한다(형태소 분석 우선, pykakasi
+    폴백). 스레드 안전(번역 배치가 병렬로 부른다)도 그 모듈이 락으로 책임진다.
+
+    일본어 문자가 없거나 읽기 실패 시 None (힌트 없이 진행).
     라인 수·순서는 입력 텍스트의 줄과 1:1.
     """
     if not _JA_CHAR_RE.search(text):
         return None
-    global _kakasi_reader
     try:
-        with _kakasi_lock:
-            if _kakasi_reader is None:
-                import pykakasi
-
-                _kakasi_reader = pykakasi.kakasi()
-            readings = []
-            for ln in text.split("\n"):
-                ln = ln.strip()
-                readings.append(
-                    "".join(item.get("hira", "") for item in _kakasi_reader.convert(ln))
-                    if ln
-                    else ""
-                )
+        readings = [
+            kana_reading(stripped) if (stripped := ln.strip()) else ""
+            for ln in text.split("\n")
+        ]
         return readings if any(readings) else None
     except Exception:
         logger.exception("kana reading hints failed; prompting without them")
@@ -106,7 +93,8 @@ def _reading_candidates(line: str) -> str:
     """라인에 다의어 훈독이 있으면 후보 목록 주석을 만든다 (없으면 빈 문자열).
 
     사전 참조값을 '정답'으로 박아두면 모델이 오독을 그대로 베낀다 — 갈리는 항목만
-    후보를 함께 보여 문맥으로 고르게 한다.
+    후보를 함께 보여 문맥으로 고르게 한다. 적용 여부는 호출부가 읽기 엔진을 보고
+    정한다(_build_prompt) — 여기는 표 조회만 한다.
     """
     hits = [f"{key}={cands}" for key, cands in _AMBIGUOUS_READINGS if key in line]
     return f"  [CANDIDATES: {'; '.join(hits)}]" if hits else ""
@@ -204,16 +192,24 @@ class BaseTranslator(ABC):
         )
 
         if include_pronunciation:
-            # 일본어 원문이면 pykakasi 가나 읽기를 참조로 프롬프트에 심는다. 단 pykakasi는
-            # 사전 읽기라 문맥 의존 한자를 오독한다 (실측: 君にだけ→くんにだけ — 노래에선
-            # きみ). 그래서 '정답'이 아니라 '참조 + 오독은 문맥으로 교정'으로 지시한다.
+            # 일본어 원문이면 가나 읽기를 참조로 프롬프트에 심는다. 기계 읽기는 여전히
+            # '정답'이 아니라 '참조 + 오독은 문맥으로 교정'으로 지시한다.
             reading_block = ""
             readings = _kana_readings(text)
             if readings:
                 text_lines = text.split("\n")
+                # 다의어 후보 주석은 사전 읽기(pykakasi) 폴백일 때만 붙인다. 형태소 분석은
+                # 문맥으로 이미 とめ/やむ를 맞히는데 그 위에 "とめ/やめ 중 골라라"를 얹으면
+                # 맞은 읽기를 모델이 다시 흔든다. 표(_AMBIGUOUS_READINGS)는 폴백 경로에서
+                # 여전히 유효하므로 남겨 두고 적용 조건만 좁혔다.
+                with_candidates = reading_source() == "pykakasi"
                 numbered = "\n".join(
                     f"{i + 1}. {r}"
-                    + _reading_candidates(text_lines[i] if i < len(text_lines) else "")
+                    + (
+                        _reading_candidates(text_lines[i] if i < len(text_lines) else "")
+                        if with_candidates
+                        else ""
+                    )
                     for i, r in enumerate(readings)
                 )
                 reading_block = (

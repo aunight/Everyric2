@@ -50,6 +50,8 @@ dependencies = [
     "torchfcpe>=0.0.4",
     # 발음 표기 음절 타이밍(pron_segments)용 한자→가나 읽기
     "pykakasi>=2.3.0",
+    "fugashi>=1.5.2",
+    "unidic-lite>=1.0.8",
 ]
 
 [project.optional-dependencies]

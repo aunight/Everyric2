@@ -1894,6 +1894,67 @@ def _post_interlude_windows(vad_regions, min_gap_sec: float) -> list[tuple[float
     return windows
 
 
+# 비가창 판정 임계 — 라인 구간에서 발성이 차지하는 비율이 이 값 이하면 "무음 위에 떠 있다".
+# 간주 누출 판정(mass_leak_max_coverage=0.3)보다 훨씬 엄격하게 잡는다: 여기서는 라인을
+# **삭제**하므로 애매한 것은 건드리지 않아야 한다.
+_NONVOCAL_MAX_RATIO = 0.05
+# 앞뒤 각각 이 개수까지만 훑는다 (크레딧은 몇 줄이고, 그 이상 지우는 건 다른 문제다)
+_EDGE_DROP_MAX = 4
+# 이보다 적게 남을 수 있으면 아무것도 지우지 않는다 (짧은 곡을 통째로 비우지 않게)
+_EDGE_DROP_MIN_KEEP = 4
+# «Vocal : 初音ミク», «作詞：〇〇», «Music & Lyrics : 40mP» — 짧은 머리말 + 콜론 + 내용.
+# 머리말에 글자가 하나라도 있어야 한다: «3:00»처럼 숫자만 있는 진짜 가사를 제외하기 위한 조건.
+_CREDITISH_LINE_RE = re.compile(r"^(?=[^:：]*[^\W\d_])[^:：]{1,24}[:：]\s*\S")
+_URLISH_RE = re.compile(r"https?://|www\.|@[A-Za-z0-9_]{3,}")
+
+
+def _looks_non_lyric(text: str) -> bool:
+    """가사로 보이지 않는 줄인가 (크레딧 표기·출처·URL·계정 표기)."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    return bool(_URLISH_RE.search(t) or _CREDITISH_LINE_RE.match(t))
+
+
+def _drop_nonvocal_nonlyric_edges(
+    timestamps: list[dict[str, Any]],
+    max_ratio: float = _NONVOCAL_MAX_RATIO,
+    max_drop: int = _EDGE_DROP_MAX,
+    min_keep: int = _EDGE_DROP_MIN_KEEP,
+) -> list[str]:
+    """가사 앞뒤의 비가창 줄을 제거하고, 지운 줄 텍스트를 돌려준다 (timestamps를 제자리 수정).
+
+    자막에는 «Music & Lyrics : 40mP»처럼 크레딧이 가사 줄로 섞여 들어오고, 붙여넣기 가사에도
+    «作詞：〇〇» 헤더가 함께 넘어온다. 이런 줄은 정렬에 들어가면 화면 첫 줄부터 「뮤우짓쿠 안도
+    레릿쿠스」 같은 독음으로 박힌다(실측: TXzfQ0cP1P0).
+
+    **두 근거가 동시에 성립할 때만** 버린다:
+      ① 그 라인 구간에 발성이 사실상 없다 (VAD active_ratio ≤ max_ratio)
+      ② 텍스트가 가사로 보이지 않는다 (_looks_non_lyric)
+
+    하나만 보면 안 된다 — ①만 보면 CTC가 무음에 잘못 얹은 **진짜 첫 줄**을 지우고, ②만 보면
+    노래 안에서 콜론이 든 가사를 지운다. 크레딧은 곡의 맨 앞/맨 뒤에 붙으므로 양 끝에서만
+    안쪽으로 훑고, 조건이 깨지는 첫 줄에서 멈춘다.
+    """
+    dropped: list[str] = []
+
+    def is_candidate(seg: dict[str, Any]) -> bool:
+        ratio = (seg.get("debug") or {}).get("active_ratio")
+        if ratio is None or ratio > max_ratio:
+            return False
+        return _looks_non_lyric(seg.get("text", ""))
+
+    while (
+        len(timestamps) > min_keep and len(dropped) < max_drop and is_candidate(timestamps[0])
+    ):
+        dropped.append(timestamps.pop(0).get("text", ""))
+    while (
+        len(timestamps) > min_keep and len(dropped) < max_drop and is_candidate(timestamps[-1])
+    ):
+        dropped.append(timestamps.pop().get("text", ""))
+    return dropped
+
+
 def _interlude_gaps(vad_regions, min_gap_sec: float) -> list[tuple[float, float]]:
     """VAD 리전 사이의 긴 무음 구간 [gap_start, gap_end] 목록 (시간순)."""
     regions = sorted((reg.start, reg.end) for reg in vad_regions or [])
@@ -2779,6 +2840,12 @@ def _run_alignment(
                 f"Re-attached {attached} excluded gloss line(s) to their source segment "
                 f"for display (alignment input untouched)"
             )
+
+        # 앞뒤에 섞여 들어온 비가창 줄(크레딧·출처·URL) 제거 — 발성 근거와 텍스트 근거가
+        # 함께 성립할 때만 버린다. 자세한 판정 근거는 _drop_nonvocal_nonlyric_edges 참고.
+        if vad_regions is not None:
+            for text in _drop_nonvocal_nonlyric_edges(timestamps):
+                logger.info(f"Dropped non-vocal non-lyric edge line: {text!r}")
 
         # 가라오케용 음정(MIDI 노트) 주석 — 실패해도 싱크 생성 자체는 계속한다.
         # f0 전곡 추론은 위에서 정렬과 병렬로 이미 돌고 있다(f0_future) — 여기서 그 결과를

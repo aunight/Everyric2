@@ -713,7 +713,35 @@ function pushDebug(time: number | null): void {
     quality: currentData?.qualityScore ?? null,
     ...lineConfSummary(),
     alignmentText: currentData?.debugMeta?.alignment_text ?? null,
+    syncCreated: formatSyncCreated(currentData?.createdAt),
   });
+}
+
+/**
+ * 서버 싱크 생성 시각 → «2026-07-25 18:59 (3시간 전)».
+ *
+ * 파이프라인을 고쳐도 **이미 만들어진 싱크는 그대로**다. 지금 보고 있는 싱크가 언제 만들어진
+ * 것인지 모르면 "고쳐진 건지 옛 결과를 보고 있는 건지"를 판단할 수 없어서, 경과 시간까지 함께
+ * 보여 준다.
+ *
+ * 서버 문자열("2026-07-25 09:59:51")에는 타임존 표기가 없지만 값은 UTC다 — 그대로 Date에
+ * 넘기면 브라우저가 현지 시각으로 읽어 9시간(KST) 밀린다. 표기가 없을 때만 Z를 붙여 못 박는다.
+ */
+function formatSyncCreated(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const text = raw.trim();
+  const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(text);
+  const at = new Date(hasZone ? text : `${text.replace(' ', 'T')}Z`);
+  if (Number.isNaN(at.getTime())) return text; // 형식이 바뀌면 원본을 그대로 보여 준다
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    + ` ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  const mins = Math.round((Date.now() - at.getTime()) / 60000);
+  const age = mins < 1 ? '방금'
+    : mins < 60 ? `${mins}분 전`
+      : mins < 60 * 48 ? `${Math.round(mins / 60)}시간 전`
+        : `${Math.round(mins / 1440)}일 전`;
+  return `${stamp} (${age})`;
 }
 
 function currentJobStatus(): string | null {

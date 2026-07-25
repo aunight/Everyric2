@@ -2,8 +2,8 @@
 
 오디오/모델 코드와 무관한 순수 텍스트 모듈이다. 흐름은 다음과 같다.
 
-1. ``text_to_moras``: 원문 라인을 pykakasi로 읽어 모라(가나 1음) 시퀀스로 분해한다.
-   각 모라는 원문의 어느 글자 구간에서 왔는지(char_start/char_end)를 들고 있다.
+1. ``text_to_moras``: 원문 라인을 ``ja_reading``으로 읽어 모라(가나 1음) 시퀀스로
+   분해한다. 각 모라는 원문의 어느 글자 구간에서 왔는지(char_start/char_end)를 들고 있다.
 2. ``align_pron_to_moras``: 위키 등에 사람이 적어 둔 한국어 발음 표기를 모라 시퀀스에
    DP(가중 편집거리)로 정렬해 음절별 모라 구간을 찾는다.
 3. ``pron_segments_for_line``: 위 둘을 CTC 글자 타이밍과 합쳐 발음 음절별 타임스탬프를
@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-import pykakasi
+from everyric2.text.ja_reading import tokenize_reading
 
 # ---------------------------------------------------------------------------
 # 데이터 모델
@@ -55,16 +55,6 @@ _SMALL_COMBINING = set("ゃゅょぁぃぅぇぉゎ")
 # 연속 ASCII(영단어/숫자, 아포스트로피·하이픈 포함)를 1 유닛으로 묶는 패턴
 _ASCII_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
 
-_kakasi_instance: pykakasi.kakasi | None = None
-
-
-def _get_kakasi() -> pykakasi.kakasi:
-    global _kakasi_instance
-    if _kakasi_instance is None:
-        _kakasi_instance = pykakasi.kakasi()
-    return _kakasi_instance
-
-
 def _is_japanese_char(ch: str) -> bool:
     """히라가나/가타카나/한자 범위인지 (일본어 유닛 판별용)."""
     cp = ord(ch)
@@ -72,7 +62,7 @@ def _is_japanese_char(ch: str) -> bool:
 
 
 def _hira_to_kana_moras(hira: str) -> list[str]:
-    """pykakasi 'hira' 문자열을 모라(가나) 리스트로 분해.
+    """히라가나 읽기 문자열을 모라(가나) 리스트로 분해.
 
     요음(ゃゅょ 등 소문자)은 직전 가나와 결합해 1모라. 촉음(っ)·발음(ん)·장음(ー)은
     각각 독립된 1모라(고전 일본어 박자 규칙과 동일).
@@ -89,36 +79,43 @@ def _hira_to_kana_moras(hira: str) -> list[str]:
 def text_to_moras(text: str) -> list[Mora]:
     """원문 라인을 모라 시퀀스로 분해.
 
-    pykakasi로 토큰화 + 읽기(가나)를 얻은 뒤, 일본어 토큰은 히라가나 읽기를 모라로
+    ``ja_reading``으로 토큰화 + 읽기(히라가나)를 얻은 뒤, 일본어 토큰은 읽기를 모라로
     쪼개고, 비일본어(ASCII 단어/숫자) 토큰은 공백/비ASCII 경계로 묶어 1 Mora로 만든다.
     공백·문장부호는 모라를 만들지 않고 글자 인덱스만 건너뛴다.
 
-    pykakasi의 토큰(orig)은 원문을 그대로 이어 붙이면 복원되므로, 누적 오프셋으로
-    char_start/char_end를 계산한다. 한 토큰에서 나온 여러 모라는 그 토큰의 글자
-    구간을 공유한다(한자 낱글자 단위로는 세분화할 수 없기 때문).
+    토큰은 원문 글자 구간(start/end)을 직접 들고 오며, 표면을 이어 붙이면 원문이
+    복원된다(ja_reading의 계약). 한 토큰에서 나온 여러 모라는 그 토큰의 글자 구간을
+    공유한다(한자 낱글자 단위로는 세분화할 수 없기 때문).
     """
-    items = _get_kakasi().convert(text)
+    tokens = tokenize_reading(text)
     moras: list[Mora] = []
-    pos = 0
-    for item in items:
-        chunk = item["orig"]
-        chunk_start = pos
-        chunk_end = pos + len(chunk)
-        pos = chunk_end
+    i, n = 0, len(tokens)
+    while i < n:
+        token = tokens[i]
+        if any(_is_japanese_char(c) for c in token.surface):
+            for kana in _hira_to_kana_moras(token.reading):
+                moras.append(Mora(kana=kana, char_start=token.start, char_end=token.end))
+            i += 1
+            continue
 
-        if any(_is_japanese_char(c) for c in chunk):
-            for kana in _hira_to_kana_moras(item["hira"]):
-                moras.append(Mora(kana=kana, char_start=chunk_start, char_end=chunk_end))
-        else:
-            for match in _ASCII_WORD_RE.finditer(chunk):
-                moras.append(
-                    Mora(
-                        kana=match.group(),
-                        char_start=chunk_start + match.start(),
-                        char_end=chunk_start + match.end(),
-                        is_ascii=True,
-                    )
+        # 비일본어 토큰은 인접한 것끼리 한 덩이로 묶어서 본다 — 형태소 분석기는 Don't를
+        # Don / ' / t 로 쪼개므로 토큰 단위로 ASCII 단어 경계를 잡으면 아포스트로피
+        # 단어가 갈라져 유닛 수가 늘어난다. 토큰 구간이 빈틈 없이 이어진다는 계약을
+        # 이용해 원문 구간을 통째로 보고 경계를 다시 잡는다.
+        j = i
+        while j + 1 < n and not any(_is_japanese_char(c) for c in tokens[j + 1].surface):
+            j += 1
+        run_start, run_end = token.start, tokens[j].end
+        for match in _ASCII_WORD_RE.finditer(text[run_start:run_end]):
+            moras.append(
+                Mora(
+                    kana=match.group(),
+                    char_start=run_start + match.start(),
+                    char_end=run_start + match.end(),
+                    is_ascii=True,
                 )
+            )
+        i = j + 1
     return moras
 
 
@@ -614,7 +611,7 @@ def map_pron_alignment_to_line(
     발음 음절 순으로 시간을 만들었다면, 여기서는 발음 음절이 이미 오디오에 정렬돼
     있고(ko CTC), 그 음절 시간을 모라를 거쳐 원문 글자에 되돌린다.
 
-    체인: 발음 음절 k ─(DP 정렬)→ 모라 구간 ─(pykakasi char_start/end)→ 원문 글자.
+    체인: 발음 음절 k ─(DP 정렬)→ 모라 구간 ─(모라의 char_start/end)→ 원문 글자.
 
     Args:
         text: 원문 라인 (표시용, 한자 포함).

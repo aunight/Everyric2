@@ -84,6 +84,8 @@ export interface LyricsData {
   key?: SongKey;
   /** 곡 전체 평균 정렬 신뢰도 (기하평균 확률 평균) — 디버그 표시용 */
   qualityScore?: number;
+  /** 서버 싱크 생성 시각 (서버가 준 원본 문자열, 타임존 표기 없는 UTC) — 디버그 표시용 */
+  createdAt?: string;
   /** 다른 영상의 싱크에 링크된 상태 (해제 UI 표시용) — rate는 원곡 대비 배속.
    *  verified는 반주 크로스 코릴레이션 검증을 통과한 자동 링크임을 뜻한다 (수동 링크는 false) */
   linked?: { sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean };
@@ -414,6 +416,10 @@ export interface DebugInfo {
   confGrades: { ok: number; mid: number; low: number } | null;
   /** 정렬에 쓴 텍스트 (독음/원문) — 서버 debug 메타 */
   alignmentText: string | null;
+  /** 이 싱크가 언제 만들어졌는가 — 현지 시각 + 경과 시간으로 미리 다듬은 문구.
+   *  "지금 보는 싱크가 어느 시점 파이프라인 산물인가"를 화면에서 바로 알기 위한 것이다
+   *  (수정 배포 후에도 옛 싱크는 그대로라, 이걸 모르면 고쳐졌는지 판단할 수 없다). */
+  syncCreated: string | null;
 }
 
 export interface TranslatedLine {

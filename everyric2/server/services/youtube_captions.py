@@ -169,9 +169,17 @@ def download_track_lines(video_id: str, lang: str, auto: bool) -> list[dict[str,
             raise CaptionUnavailable("empty_caption", f"이 영상에 {lang} 자막이 없어요")
         data = json.loads(files[0].read_text(encoding="utf-8"))
         lines = json3_events_to_lines(data)
-        if not lines:
+        # 표시용 경로도 가사 생성 경로와 **같은 규칙**으로 정리한다 — 크레딧·효과음 표기가
+        # 확장 화면에는 가사인 양 보이는데 생성된 싱크에는 없으면 그 자체로 혼란이다.
+        # 타이밍은 표시에 필요하므로 줄을 버리거나 텍스트만 바꾸고 start/end는 보존한다.
+        cleaned: list[dict[str, Any]] = []
+        for line in lines:
+            text = _clean_line(line.get("text", ""))
+            if text:
+                cleaned.append({**line, "text": text})
+        if not cleaned:
             raise CaptionUnavailable("empty_caption", "자막 트랙이 비어 있어요")
-        return lines
+        return cleaned
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -349,10 +357,63 @@ _LEAD_MARKER_RE = re.compile(r"^(?:>>+|♪+|-(?=\s))\s*")
 _SPEAKER_RE = re.compile(r"^[^\s:：]{1,12}[:：]\s+")
 _TRAIL_NOTE_RE = re.compile(r"[♪♫♬\s]+$")
 
+# 업로더 자막의 크레딧 줄 — «Music & Lyrics : 40mP», «Vocal : 初音ミク», «作詞：〇〇».
+# 가사가 아닌데 정렬에 들어가면 첫 줄부터 「뮤우짓쿠 안도 레릿쿠스」 같은 독음이 박힌다
+# (실측: TXzfQ0cP1P0의 자막 첫 세 줄이 전부 크레딧이었다).
+#
+# 판정은 **콜론 앞이 전부 역할어일 때만** 참이다. «3:00»이나 «君: 僕»처럼 콜론이 든 진짜
+# 가사를 잘라내지 않기 위한 조건이고, 목록에 없는 말은 아예 건드리지 않는다. 역할어는
+# 소문자로 비교하므로 목록도 소문자로 둔다(일본어·한국어는 대소문자가 없다).
+_CREDIT_ROLES = frozenset({
+    # 영어
+    "music", "lyric", "lyrics", "composer", "compose", "composed", "composition",
+    "arrange", "arranged", "arrangement", "arranger", "vocal", "vocals", "voice",
+    "sung", "singer", "chorus", "mix", "mixed", "mixing", "mastering", "mastered",
+    "master", "illust", "illustration", "illustrations", "illustrator", "art",
+    "artwork", "movie", "video", "mv", "pv", "animation", "anime", "director",
+    "direction", "produce", "produced", "producer", "production", "guitar", "bass",
+    "drum", "drums", "piano", "keyboard", "strings", "violin", "synth", "translation",
+    "translated", "translator", "subtitle", "subtitles", "encode", "encoded",
+    "thanks", "staff", "credit", "credits", "tuning", "editing", "editor", "cast",
+    # 일본어
+    "作詞", "作曲", "編曲", "補作", "詞", "曲", "歌", "唄", "歌唱", "歌手", "ボーカル",
+    "ボカロ", "コーラス", "調声", "調整", "ミックス", "ミキシング", "マスタリング",
+    "イラスト", "絵", "画", "動画", "映像", "撮影", "監督", "演出", "制作", "製作",
+    "企画", "演奏", "ギター", "ベース", "ドラム", "ドラムス", "ピアノ", "キーボード",
+    "翻訳", "字幕", "協力", "出演", "原曲", "本家", "音源", "スタッフ",
+    # 한국어
+    "작사", "작곡", "편곡", "노래", "보컬", "코러스", "믹스", "믹싱", "마스터링",
+    "일러스트", "그림", "영상", "편집", "제작", "기획", "연주", "기타", "베이스",
+    "드럼", "피아노", "번역", "자막", "원곡", "출연", "스태프",
+})
+# 역할어를 잇는 구분자 — «Music & Lyrics», «作詞・作曲», «Vocal/Mix»
+_CREDIT_SEP_RE = re.compile(r"[\s&/,、・·+＋]+")
+# 콜론 앞이 이보다 길면 크레딧 표기로 보지 않는다 (역할어 4개까지 이어 붙는 정도)
+_CREDIT_HEAD_MAX = 28
+_COLON_RE = re.compile(r"[:：]")
+_URL_LINE_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.IGNORECASE)
+
+
+def _is_credit_line(text: str) -> bool:
+    """«역할어 : 이름» 형태의 크레딧 줄인가."""
+    m = _COLON_RE.search(text)
+    if not m:
+        return False
+    head, tail = text[: m.start()], text[m.end() :]
+    if not tail.strip() or len(head) > _CREDIT_HEAD_MAX:
+        return False
+    roles = [t for t in _CREDIT_SEP_RE.split(head.strip().lower()) if t]
+    return bool(roles) and len(roles) <= 4 and all(r in _CREDIT_ROLES for r in roles)
+
 
 def _clean_line(raw: str) -> str:
     text = _BRACKET_RE.sub(" ", raw or "")
     text = _LEAD_MARKER_RE.sub("", text.strip())
+    # 크레딧·URL 판정은 화자 표기 제거보다 **먼저** 한다 — «作詞: 〇〇»는 _SPEAKER_RE에
+    # 걸려 역할어만 떨어져 나가고 이름이 가사 줄로 남는다
+    text = " ".join(text.split())
+    if _is_credit_line(text) or _URL_LINE_RE.match(text):
+        return ""
     text = _SPEAKER_RE.sub("", text)
     text = _TRAIL_NOTE_RE.sub("", text)
     text = " ".join(text.split())
