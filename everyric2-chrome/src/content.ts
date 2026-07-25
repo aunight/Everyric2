@@ -232,31 +232,112 @@ function watchVideoBinding(): void {
 function shouldFollow(): boolean {
   if (overlay?.isVisible()) return true; // 사용자가 열어둔 패널은 항상 따라간다
   // PiP가 열려 있다는 것만으로 추종하지는 않는다 — searchLyrics가 메인 패널을
-  // setVisible(true)로 되살리므로, 브이로그로 넘어갈 때마다 사용자가 X로 닫은 패널이
-  // 다시 튀어나온다. 추종하지 않는 영상에서 이전 곡을 지우는 일은 checkCurrentPage가
-  // 따로 처리한다(추종 여부와 무관한 정리).
+  // setVisible(true)로 되살리므로, 사용자가 X로 닫은 패널이 곡을 넘길 때마다 다시 열린다.
+  // 추종하지 않는 영상에서 이전 곡을 지우는 일은 checkCurrentPage가 따로 처리한다.
+  //
+  // 정정: 이 주석은 처음에 "브이로그로 넘어갈 때마다 닫은 패널이 되살아난다"를 이 조건의
+  // 근거로 적었는데 **그 인과는 틀렸다.** 브라우저 검증에서 PiP를 열지 않은 대조군에서도
+  // 같은 증상이 나왔고, 원인은 낡은 microdata였다(isLikelyMusicVideo 주석 참조).
+  // 조건 자체는 유지한다 — 닫은 패널이 자동으로 되살아나는 것은 여전히 원치 않는 동작이다.
   if (!settings.autoSearch) return false;
   // 쇼츠는 기본적으로 자동으로 열지 않는다 (설정으로 허용 가능, 수동 열기는 그대로)
   if (!settings.autoSearchShorts && location.pathname.startsWith('/shorts/')) return false;
   return isLikelyMusicVideo();
 }
 
+/**
+ * 이 페이지의 microdata가 **지금 이 영상의 것**인가.
+ *
+ * SPA 이동 후 microdata 블록은 통째로 이전 영상 값으로 남는다(실측): 비음악 영상으로 옮긴
+ * 뒤에도 identifier·name·genre가 전부 이전 곡이었고 genre는 "Music"이었다. 반면
+ * document.title·채널명은 750ms 안에 갱신됐다.
+ *
+ * 다행히 그 블록에는 **어느 영상의 것인지가 함께 실려 있다** — meta[itemprop=identifier]가
+ * videoId다(실측: 이동 후 `identifier=s5Rkv_5Sbbo`인데 주소는 `v=jNQXAC9IVRw`). 그래서
+ * "몇 ms 뒤면 갱신된다"는 시간 추측 대신 **값 자체로** 신선도를 판정한다.
+ */
+function microdataMatchesCurrentVideo(videoId: string): boolean {
+  const id = document.querySelector<HTMLMetaElement>('meta[itemprop="identifier"]')?.content?.trim();
+  if (id) return id === videoId;
+  // identifier가 없는 레이아웃이면 워치 URL로 대조한다 (문서 순서상 첫 link[itemprop=url]가
+  // 이 영상의 watch URL이다 — 뒤의 것들은 채널·썸네일 URL이다)
+  const url = document.querySelector<HTMLLinkElement>('link[itemprop="url"]')?.getAttribute('href') ?? '';
+  // 둘 다 없으면 판정할 근거가 없다 → 신선하다고 단정하지 않는다
+  return url.includes(videoId);
+}
+
 /** 음악 영상 판별 — 유튜브 자체 신호 우선, 없으면 채널/제목 휴리스틱 */
 function isLikelyMusicVideo(): boolean {
   // 1) 설명란 '음악' 섹션 (콘텐츠 ID로 곡이 식별된 영상) — 가장 신뢰
   if (document.querySelector('ytd-video-description-music-section-renderer')) return true;
-  // 2) 워치 페이지 microdata 장르 — 있으면 그대로 믿는다 (Music이 아니면 차단)
+  // 2) 워치 페이지 microdata 장르 — **이 영상의 microdata일 때만** 믿는다 (Music이 아니면 차단).
+  //
+  // 낡은 블록을 믿으면 양방향으로 틀린다: 음악 영상 뒤의 브이로그가 음악으로 판별돼 X로 닫은
+  // 패널이 되살아나고(실측), 반대로 브이로그 뒤의 음악 영상은 차단된다. 낡았으면 아래 3·4단계
+  // (채널·제목 — 750ms 안에 갱신되는 것이 실측으로 확인됐다)로 넘긴다.
+  //
+  // **대가를 알고 택한 것이다**: microdata는 SPA 이동에서 아예 갱신되지 않는다(두 번의 독립
+  // 측정에서 12초까지 이전 영상 값). 즉 이 신호는 사실상 **전체 페이지 로드에서만** 쓸 수 있고,
+  // SPA 이동에서는 제목·채널만 남는다. 그래서 제목에 표기가 없는 음악 영상은 SPA 이동 시
+  // 자동으로 열리지 않는다(실측: 「하츠네 미쿠의 소실…【Official】」— 4단계 정규식이 【Official】을
+  // 잡지 않는다). 그 반대(브이로그에서 패널이 되살아남)를 택하지 않은 이유는, 안 열리는 것은
+  // 툴바 아이콘 한 번으로 사용자가 되돌릴 수 있는 반면 닫은 패널이 스스로 열리는 것은
+  // 사용자가 되돌릴 방법이 없는 침입이기 때문이다. 자동 열기 범위를 되찾고 싶으면 4단계
+  // 제목 정규식을 넓히는 것이 맞는 자리다(이 판정을 낡은 값으로 되돌리는 것이 아니다).
+  const videoId = getCurrentVideoId();
   const genre = document.querySelector<HTMLMetaElement>('meta[itemprop="genre"]');
-  if (genre?.content) {
+  if (genre?.content && videoId && microdataMatchesCurrentVideo(videoId)) {
     const g = genre.content.trim().toLowerCase();
     return g === 'music' || g === '음악';
   }
   // 3) 자동 생성 음악 채널(" - Topic")
   const channel = document.querySelector('ytd-watch-metadata ytd-channel-name a')?.textContent?.trim() ?? '';
   if (/ - Topic$/.test(channel)) return true;
-  // 4) 제목 휴리스틱 — MV/가사/커버/보컬로이드 계열 표기
+  // 4) 제목 휴리스틱 — MV/가사/커버/보컬로이드 계열 표기.
+  //
+  // microdata가 SPA 이동에서 갱신되지 않으므로(2단계 주석) **이동 후에는 사실상 이 단계가
+  // 유일한 양성 신호**다. 그래서 놓친 표기를 보태는 자리도 여기다.
+  //
+  // 이번에 추가한 것 (실측으로 놓친 것 + 음악에만 쓰이는 표기):
+  //   · 괄호 안 Official·公式 — 실측 누락 「하츠네 미쿠의 소실(…)/cosMo＠폭주P【Official】」
+  //   · Music Video — 기존 항목은 'Official' 뒤에만 붙어서 단독 표기를 못 잡았다
+  //   · オリジナル曲 / ボカロ — 보카로 오리지널 곡 표기
+  //
+  // **일부러 넣지 않은 것** (나중에 넓힐 사람을 위한 근거):
+  //   · 맨 Official·公式 (괄호 없이) — "Official Trailer"·"公式チャンネル"처럼 비음악에서
+  //     더 흔하다. 브이로그·예고편에서 패널이 자동으로 열리는 것을 막으려고 방금 2단계를
+  //     고쳤는데, 그 오탐을 제목 쪽으로 되들이는 셈이 된다. 그래서 **괄호 표기 안에 있을
+  //     때만** 인정한다 — 【Official】·[Official]·(公式)는 음악 업로드의 태그 관습이다.
+  //   · feat.·ft. — 원래부터 있던 항목이라 그대로 두었다(내가 넣은 것이 아니다).
+  //   · 아티스트 구분자 '/'·'-' — 음악에 흔하지만 비음악 제목에도 흔해 오탐만 늘린다.
+  //   · Lyric Video·MV — 이미 lyrics?·M\/?V가 잡는다(중복 추가 안 함).
   const title = document.title;
-  return /(M\/?V|Official\s*(Music\s*)?Video|뮤직\s*비디오|가사|lyrics?|\bcover(ed)?\b|커버|불러보았다|歌ってみた|feat\.|ft\.|【[^】]*(MV|PV|오리지널|Original)[^】]*】)/i.test(title);
+  return /(M\/?V|Official\s*(Music\s*)?Video|Music\s*Video|뮤직\s*비디오|가사|lyrics?|\bcover(ed)?\b|커버|불러보았다|歌ってみた|オリジナル曲|ボカロ|feat\.|ft\.|【[^】]*(MV|PV|오리지널|Original)[^】]*】|[【\[(（][^】\])）]*(?:Official|公式)[^】\])）]*[】\])）])/i.test(title);
+}
+
+/**
+ * 추종을 시작할 때 본 document.title — 다음 이동에서 **DOM이 아직 이전 영상의 것인지**를
+ * 값으로 판정하는 기준이다(시간으로 기다리지 않는다). 아래 checkCurrentPage 주석 참조.
+ */
+let followedPageTitle = '';
+/** 판정을 미루고 있는 videoId와 미룬 횟수 — 같은 영상을 무한히 미루지 않기 위한 표식 */
+let deferredVideoId: string | null = null;
+let deferCount = 0;
+/**
+ * 추종 판정 보류 상한(연속 tick 수). tick은 이동 직후 1회 + 1.5초 간격이라 대략 6초다 —
+ * 실측된 DOM 정체 최대 2초의 세 배쯤에서 끊는다.
+ *
+ * 상한을 둔 이유는 **제목이 영원히 같을 수 있기 때문**이다(제목이 완전히 같은 재업로드).
+ * 그때 상한에 걸려 판정해도 손해가 없다: 그 제목은 **새 영상의 제목이기도** 하므로 판정이
+ * 옳다. 반대로 상한이 없으면 그 영상은 영구히 무시된다.
+ */
+const MAX_FOLLOW_DEFERS = 4;
+
+/** 이 영상을 추종하기 시작한다 — 판정 기준이 되는 제목도 이 시점 값으로 함께 새긴다 */
+function beginFollowing(videoId: string): void {
+  currentVideoId = videoId;
+  followedPageTitle = document.title;
+  deferredVideoId = null;
 }
 
 function checkCurrentPage(): void {
@@ -266,6 +347,32 @@ function checkCurrentPage(): void {
     return;
   }
   if (videoId === currentVideoId) return;
+  // SPA 이동 직후에는 **주소만 새 영상이고 DOM은 아직 이전 영상의 것**이다 — document.title과
+  // 채널명이 이전 값으로 남는 것이 실측됐다(새 videoId + 이전 제목인 표본: 한 번은 750ms까지,
+  // 다른 런에서는 2초까지). 그 창에서 판정하면 이전 곡의 음악성이 새 영상에 상속된다:
+  // 비음악 영상(jNQXAC9IVRw)인데 이전 제목의 "(cover)"가 4단계에 걸려 추종이 시작됐고,
+  // 패널은 한 번 열리면 스스로 닫히지 않아(searchLyrics는 setVisible(true)만 한다) 그 오판이
+  // 그대로 굳었다 — 실측 22/24 표본.
+  //
+  // 시간으로 기다리지 않는다(창 길이가 런마다 750ms~2초로 들쭉날쭉했다). **값으로** 판정한다:
+  // 제목이 아직 이전 영상의 것과 같으면 이번 tick은 넘기고 다음 tick(≤1.5초)에 다시 본다.
+  // 보류 횟수는 MAX_FOLLOW_DEFERS로 묶는다(그 주석에 상한이 안전한 이유가 있다).
+  //
+  // 패널이 열려 있을 때는 미루지 않는다: shouldFollow가 DOM을 아예 보지 않고 true를 주므로
+  // (첫 분기) 미룰 이유가 없고, 미루면 그 사이 cleanupForPage가 패널을 숨겨 곡을 넘길 때마다
+  // 패널이 깜빡인다.
+  const titleStale = followedPageTitle !== '' && document.title === followedPageTitle;
+  if (!overlay?.isVisible() && titleStale) {
+    if (deferredVideoId !== videoId) {
+      deferredVideoId = videoId;
+      deferCount = 0;
+    }
+    if (deferCount < MAX_FOLLOW_DEFERS) {
+      deferCount++;
+      cleanupForPage(); // 이전 곡 상태를 버리는 것은 지금 해도 안전하다 (판정만 미룬다)
+      return;
+    }
+  }
   // 추종하지 않는 영상(브이로그·게임 등)이라도 **이전 곡 상태는 반드시 버린다.**
   // 유튜브는 <video> 엘리먼트를 재사용하므로 그냥 return하면 엔진이 새 영상의
   // currentTime을 읽는데 currentVideoId·currentData는 이전 곡에 고정된 채 남았다 —
@@ -276,7 +383,7 @@ function checkCurrentPage(): void {
     cleanupForPage();
     return;
   }
-  currentVideoId = videoId;
+  beginFollowing(videoId);
   void searchLyrics();
 }
 
@@ -311,6 +418,14 @@ function cleanupForPage(): void {
     pip.setDebugMeta(null);
     pip.setGenerationChip(null);
     pip.showPanelEmpty(null);
+    // 미러를 **반드시** 다시 붙인다 — 미러는 captureStream()이라 영상이 바뀌면 이전 트랙이
+    // 끝나 프레임이 멈추고, PiP 영상 영역이 순수 검정(videoWidth=0)으로 남는다.
+    // 예전에는 이 함수가 pip.close()를 불러 "미러가 죽은 빈 창"이 존재할 수 없었는데,
+    // 창을 살려 두기로 하면서(위 근거) 이 경로에도 재부착이 필요해졌다. 유튜브는 SPA
+    // 이동에서 <video> 엘리먼트를 재사용하므로 watchVideoBinding(엘리먼트 교체만 감지)은
+    // 발동하지 않는다 — 실측: 이 경로로 들어가면 11초간 검정, applyLyricsData 경로(같은
+    // 대상 영상, refreshPipMirror를 부른다)로 들어가면 videoW=320으로 정상.
+    refreshPipMirror();
   }
   karaokeAudio.setNotes([]);
   karaokeAudio.setTempo(null);
@@ -326,7 +441,7 @@ async function toggleOverlay(): Promise<void> {
   if (!videoId) return;
   ensureOverlay().setVisible(true);
   if (videoId !== currentVideoId || !currentData) {
-    currentVideoId = videoId;
+    beginFollowing(videoId); // 수동으로 연 것도 추종 시작이다 — 판정 기준 제목을 함께 새긴다
     await searchLyrics();
   }
 }
@@ -601,7 +716,15 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   // 메인 패널은 위 applySettings에서 이미 바뀐다 — PiP도 같은 판정값으로 함께 맞춘다
   if (patch.theme !== undefined) pip.setTheme(resolveTheme(settings));
 
-  if (patch.showTranslation === true || (patch.translationLanguage && settings.showTranslation)) {
+  if (patch.translationLanguage && settings.showTranslation) {
+    // 언어를 바꿨으면 **이미 실린 번역을 먼저 비운다.** loadTranslations의 조기 반환은
+    // "모든 줄에 번역이 있으면 끝"이라 어느 언어의 번역인지 보지 않는다 — 비우지 않으면
+    // ko→en으로 바꿔도 재요청이 일어나지 않고 한국어 번역이 그대로 남는다(브라우저 검증에서
+    // 상태 문구가 아예 뜨지 않는 것으로 관측됐다). 캐시 키에는 언어가 들어 있으니 조회
+    // 자체는 옳다 — 잘못된 것은 조회에 닿기 전에 반환하는 이 가드뿐이다.
+    clearTranslations();
+    void loadTranslations();
+  } else if (patch.showTranslation === true) {
     void loadTranslations();
   } else if (patch.showTranslation === false) {
     clearTranslations();
@@ -1411,12 +1534,14 @@ function refreshPipMirror(video?: HTMLVideoElement): void {
 }
 
 /**
- * 이 video에 미러 재부착 리스너를 한 번만 건다.
+ * 이 video에 소스 교체 리스너를 한 번만 건다 — 미러 재부착 + 곡 제목 재판독.
  *
  * 광고↔본편처럼 **엘리먼트는 그대로인데 소스만 바뀌는** 전환에서는 watchVideoBinding이
  * 아무것도 못 잡는다(엘리먼트 동일성만 본다). 그때 captureStream 트랙이 끝나 PiP에는
  * 정지 프레임이 남는다. loadeddata만 듣는다 — playing까지 듣으면 일시정지 후 재생마다
  * 미러가 다시 붙어 화면이 깜빡인다.
+ *
+ * 같은 신호로 제목도 다시 읽는다: 두 문제의 원인이 같은 사건(이 엘리먼트의 소스가 바뀜)이다.
  */
 const mirrorBound = new WeakSet<HTMLVideoElement>();
 function bindMirrorRefresh(video: HTMLVideoElement): void {
@@ -1424,7 +1549,46 @@ function bindMirrorRefresh(video: HTMLVideoElement): void {
   mirrorBound.add(video);
   video.addEventListener('loadeddata', () => {
     if (pip.isOpen() && settings.pipShowVideo) pip.attachVideo(video);
+    refreshSongTitle();
   });
+  // 제목은 'playing'에서도 한 번 더 읽는다 — loadeddata 시점에 mediaSession이 이미 본편
+  // 메타로 갱신돼 있는지는 **확인하지 못했다**(광고를 재현하지 못했다). 늦게 채워지면
+  // loadeddata 재판독이 광고 제목을 다시 잡아 수정이 헛돌기 때문에 신호를 하나 더 둔다.
+  // refreshSongTitle은 값이 같으면 아무 일도 하지 않으므로(멱등) 재생·일시정지 반복에
+  // 부작용이 없다. **미러는 여기 태우지 않는다** — 매 재생마다 다시 붙어 화면이 깜빡인다.
+  video.addEventListener('playing', () => refreshSongTitle());
+}
+
+/**
+ * 곡 제목·아티스트만 다시 읽는다 — **조회도 잡도 건드리지 않는다.**
+ *
+ * 왜 필요한가: detectSong()은 navigator.mediaSession.metadata를 우선하는데 **광고 중에는
+ * 그것이 광고 메타**다. 그 순간 검색이 돌면 광고 제목이 currentSong에 굳고, checkCurrentPage는
+ * videoId가 같으면 조기 반환하므로 광고가 끝난 뒤 다시 읽을 기회가 없었다 — 실측 2회로
+ * 제목이 광고("홈키파홈매트… — Henkel Consumer Brand Korea", "29 Halmeoni 16x9 15s")로
+ * 남았다(가사는 정상 92줄이었다: 조회는 videoId로 하므로 제목과 무관하다).
+ *
+ * 왜 **다시 조회하지 않는가**: 같은 영상에서 searchLyrics를 새로 발사하면 searchSeq가 올라
+ * 진행 중인 검색 응답이 버려지고, 서버 요청도 공짜가 아니다. 반면 제목은 갱신 가치가 크다 —
+ * 화면 표시뿐 아니라 생성·재생성 때 **싱크에 새겨져 커버 매칭의 유일한 단서**가 되므로,
+ * 광고 제목이 저장되면 그 곡의 후보 탐색이 영구히 어긋난다.
+ *
+ * duration은 덮지 않는다: 광고 중 읽으면 광고 길이(15초 등)라, 이미 가진 본편 길이를
+ * 그것으로 갈아치우면 LRCLIB 후보 매칭이 망가진다.
+ */
+function refreshSongTitle(): void {
+  const videoId = currentVideoId;
+  if (!videoId || videoId !== getCurrentVideoId()) return; // 이동 중이면 새 조회가 알아서 읽는다
+  const info = detectSong();
+  if (!info?.title || info.videoId !== videoId) return;
+  if (
+    currentSong
+    && info.title === currentSong.title
+    && (info.artist ?? '') === (currentSong.artist ?? '')
+  ) return; // 바뀐 게 없으면 아무것도 하지 않는다
+  currentSong = { ...info, duration: currentSong?.duration || info.duration };
+  overlay?.setSong(currentSong);
+  if (pip.isOpen()) pip.setSong(currentSong.title, currentSong.artist ?? '');
 }
 
 async function waitForVideo(maxRetries = 10, delayMs = 500): Promise<HTMLVideoElement | null> {
