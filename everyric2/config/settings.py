@@ -301,6 +301,65 @@ class AlignmentSettings(BaseSettings):
         "since the eng adapter was dropped) the rescale is the identity.",
     )
 
+    pron_referee: bool = Field(
+        default=True,
+        description="Let the AUDIO decide which reading a line is actually sung with. The "
+        "deterministic pronunciation path (text/pron_style.py) reaches 82.1% exact agreement with "
+        "the 2,207 human-written wiki pronunciation lines, and virtually all of the remaining "
+        "mismatch collapses onto a single question — WHICH READING (私 와타시 vs 와타쿠시, 三日月 "
+        "미카즈키 vs 밋카츠키, 数え事 카조에 고토 vs 코토 (連濁), 何も 나니모 vs 난모, and ateji "
+        "furigana like 涙（シル） that no dictionary knows but the singer sings). A dictionary cannot "
+        "settle those; the audio can, and it is FREE: the [1, T, V] log-softmax emission is computed "
+        "once per song and already resident, so scoring an alternative token sequence is just another "
+        "F.forced_align DP over the line's frame window — NO model forward. After the first pass the "
+        "engine slices each line's window, force-aligns every candidate reading from "
+        "pron_style.pronunciation_candidates, and adopts the winner only if it beats the current "
+        "reading by pron_referee_margin in per-token average log-probability. Lines with a single "
+        "candidate are never scored (cost 0), so songs whose readings are unambiguous pay nothing. "
+        "Set false to keep the pre-referee behaviour exactly (the candidate argument to "
+        "CTCEngine.align is optional and the code path is identical when unused).",
+    )
+
+    pron_referee_margin: float = Field(
+        default=0.15,
+        description="Margin a challenger reading must beat the current reading by, in PER-TOKEN "
+        "AVERAGE LOG-PROBABILITY (nats), before the audio referee replaces a line's pronunciation. "
+        "Normalising by token count is mandatory — comparing sums of (negative) frame log-probs "
+        "would hand victory to whichever candidate has the fewest tokens. Why 0.15: on the kor "
+        "adapter a typical aligned character scores exp(score)≈0.05, i.e. about -3.0 nats per token, "
+        "and a genuinely wrong reading is wrong in 1-2 syllables out of ~10 in a line, so the true "
+        "signal is on the order of (2 x 3.0)/10 = 0.6 nats/token. 0.15 sits ~4x below that expected "
+        "signal yet far above numeric jitter between two near-identical token sequences, which is "
+        "the conservative side: failing to fix a reading only leaves today's 82.1%, while flipping a "
+        "correct reading on noise makes the karaoke syllables WRONG. This is the same philosophy as "
+        "dual_align_min_ratio (require a clear margin or keep the incumbent), expressed as an "
+        "absolute log-prob difference instead of a ratio because the two sides here are measured on "
+        "the SAME emission with the same adapter, so no scale correction is needed. NOT calibrated "
+        "on real audio yet — re-measure per deployment before loosening.",
+    )
+
+    pron_referee_human_margin: float = Field(
+        default=0.4,
+        description="Larger margin required when the line's incumbent pronunciation was written by "
+        "a HUMAN (merged from the vocaloid wiki) rather than produced deterministically. Human "
+        "readings are included as candidates rather than exempted from arbitration, because humans "
+        "do miss furigana/ateji occasionally, but they are right far more often than the 82.1% "
+        "deterministic path, so the audio must be decisively clearer before overriding one. Detected "
+        "without extra plumbing: the incumbent is human exactly when it differs from "
+        "pron_style.pronunciation_candidates()[0] (the deterministic default). ~2.7x "
+        "pron_referee_margin, i.e. still below the ~0.6 nats/token a genuinely wrong reading costs.",
+    )
+
+    pron_referee_max_candidates: int = Field(
+        default=8,
+        description="Upper bound on candidate readings scored per line (including the incumbent). "
+        "Generation cost is negligible (60 lines of candidates in 0.064s measured) and each extra "
+        "candidate is one small DP over the line window, but every extra comparison raises the "
+        "chance that the maximum over challengers exceeds the incumbent by luck, so the count is "
+        "capped. 8 is the depth at which the human reading of 三日月の夜 (미카즈키) enters the "
+        "MeCab n-best candidate list (measured: it is the 7th distinct rendering).",
+    )
+
     synth_all_lines_conf: float = Field(
         default=0.0,
         description="OPT-IN whole-song synth floor (default 0 = disabled). The DEFAULT intra-line "

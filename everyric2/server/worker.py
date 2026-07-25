@@ -216,6 +216,13 @@ def _index_line_meta(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[s
     return by_text
 
 
+def _referee_switched(seg: dict[str, Any]) -> bool:
+    """오디오 심판이 이 세그먼트의 독음을 기본값과 다른 후보로 바꿨는가 (debug 메타 근거)."""
+    ref = (seg.get("debug") or {}).get("referee") or {}
+    chosen = ref.get("chosen")
+    return bool(chosen) and chosen != ref.get("default")
+
+
 def merge_line_meta(timestamps: list[dict[str, Any]], line_meta: list[dict[str, Any]]) -> int:
     """세그먼트에 발음/번역을 라인 텍스트 매칭으로 병합. 병합된 세그먼트 수를 반환."""
     by_text = _index_line_meta(line_meta)
@@ -226,7 +233,12 @@ def merge_line_meta(timestamps: list[dict[str, Any]], line_meta: list[dict[str, 
         if not m:
             continue
         if m.get("pronunciation"):
-            seg["pronunciation"] = m["pronunciation"]
+            # 오디오 심판이 고른 독음은 line_meta 값으로 되돌리지 않는다. line_meta의 발음이
+            # 바로 심판이 **오디오 점수로 이미 진 기본값**이고, pron_segments(음절 스팬)는
+            # 이긴 후보 기준이라 표기만 갈아끼우면 음절 수가 어긋난다(캐시 재사용·늦은 메타
+            # 병합 경로에서 발생). 재병합은 표시 메타를 채우는 경로일 뿐 판정 지점이 아니다.
+            if not _referee_switched(seg):
+                seg["pronunciation"] = m["pronunciation"]
             _attach_pron_segments(seg)
         if m.get("translation"):
             seg["translation"] = m["translation"]
@@ -2296,12 +2308,72 @@ def _pron_coverage(lyric_lines, by_text: dict[str, dict[str, Any]]) -> float:
     return have / len(lyric_lines)
 
 
-def _align_with_pronunciation(engine, audio, lyric_lines, by_text: dict[str, dict[str, Any]]):
+def _referee_candidates(
+    lyric_lines, pron_for_line: list[str], align_settings
+) -> tuple[dict[int, list[str]], dict[int, float]]:
+    """오디오 심판에 넘길 라인별 후보 독음과 라인별 마진.
+
+    기본 후보는 line_meta의 발음(결정론 또는 위키·사람)이다 — 그것을 [0]에 두고
+    ``pronunciation_candidates``의 대안을 뒤에 붙인다.
+
+    **사람이 쓴 발음도 심판 대상에 포함하되 마진을 더 크게 요구한다.** 근거: 사람은 결정론
+    경로(사람 발음 2,207줄 대비 82.1%)보다 옳을 확률이 훨씬 높으므로 기본값으로 둘 이유가
+    분명하지만, 사람이 후리가나·아테지를 놓친 줄이 실제로 있다(涙（シル）류). 아예 제외하면
+    그 줄은 영구히 못 고치고, 같은 마진으로 두면 사람 표기가 노이즈로 뒤집힌다 — 그래서
+    포함 + 큰 마진이다. 사람이 쓴 발음인지는 별도 플래그 없이 판정된다: 결정론 기본값
+    (``candidates[0]``)과 다르면 그 발음은 다른 출처(위키 병합·LLM)에서 온 것이다.
+    """
+    from everyric2.text.pron_style import pronunciation_candidates
+
+    cands: dict[int, list[str]] = {}
+    margins: dict[int, float] = {}
+    limit = max(2, int(align_settings.pron_referee_max_candidates))
+    for i, pron in enumerate(pron_for_line):
+        if not pron:
+            continue
+        alts = pronunciation_candidates(lyric_lines[i].text, max_candidates=limit)
+        merged = [pron] + [a for a in alts if a != pron]
+        if len(merged) < 2:
+            continue  # 후보 없음 → 심판을 돌리지 않는다 (비용 0)
+        cands[i] = merged[:limit]
+        human = bool(alts) and pron != alts[0]
+        margins[i] = float(
+            align_settings.pron_referee_human_margin
+            if human
+            else align_settings.pron_referee_margin
+        )
+    return cands, margins
+
+
+def _log_referee_decisions(decisions: list[dict]) -> None:
+    """심판 판정을 로그로 남긴다 — 조용히 바꾸면 사후 추적이 불가능하다."""
+    if not decisions:
+        return
+    switched = [d for d in decisions if d.get("chosen") != d.get("default")]
+    for d in switched:
+        logger.info(
+            f"Audio referee switched line {d['line']} pronunciation: "
+            f"{d['default']!r} → {d['chosen']!r} (+{d['gain']:.4f} nats/token >= margin "
+            f"{d['margin']}, window {d['frames']} frames; candidates {d['scores']})"
+        )
+    logger.info(
+        f"Audio referee: {len(switched)}/{len(decisions)} scored line(s) switched reading "
+        f"(lines with a single candidate were not scored)"
+    )
+
+
+def _align_with_pronunciation(
+    engine, audio, lyric_lines, by_text: dict[str, dict[str, Any]], align_settings=None
+):
     """독음(ko) 텍스트로 CTC 정렬 후 원문 라인에 역매핑.
+
+    ``align_settings``를 주고 ``pron_referee``가 켜져 있으면 라인별 후보 독음을 함께 넘겨
+    **오디오가 어느 독음이 맞는지 고르게** 한다 (``_referee_candidates``). 주지 않으면
+    후보 없이 정렬하므로 기존 동작과 동일하다.
 
     반환: (results, pron_data)
       results: 원문 텍스트 SyncResult 목록 (타이밍/word_segments는 독음 정렬 역매핑값).
-      pron_data: line_idx → {"pronunciation", "translation", "pron_segments"}.
+      pron_data: line_idx → {"pronunciation", "translation", "pron_segments", "heard", "referee"}.
     """
     from everyric2.inference.prompt import LyricLine, SyncResult, WordSegment
     from everyric2.text.reading import map_pron_alignment_to_line
@@ -2314,12 +2386,32 @@ def _align_with_pronunciation(engine, audio, lyric_lines, by_text: dict[str, dic
         LyricLine(text=pron, line_number=ln.line_number)
         for pron, ln in zip(pron_for_line, lyric_lines)
     ]
-    ko_results = engine.align(audio, pron_lines, language="ko")
+    referee_cands: dict[int, list[str]] = {}
+    referee_margins: dict[int, float] = {}
+    if align_settings is not None and getattr(align_settings, "pron_referee", False):
+        referee_cands, referee_margins = _referee_candidates(
+            lyric_lines, pron_for_line, align_settings
+        )
+    ko_results = engine.align(
+        audio,
+        pron_lines,
+        language="ko",
+        line_candidates=referee_cands or None,
+        referee_margins=referee_margins or None,
+    )
+    # ko 정렬 직후에 포착한다 — 이후 ja 교차정렬이 엔진의 직전-정렬 기록을 덮는다
+    # (pron_star_spans와 같은 사정).
+    decisions = list(getattr(engine, "_last_referee", None) or [])
+    heard = dict(getattr(engine, "_last_heard", None) or {})
+    _log_referee_decisions(decisions)
+    by_line_decision = {d["line"]: d for d in decisions}
 
     results = []
     pron_data: dict[int, dict[str, Any]] = {}
     for i, (ln, kr) in enumerate(zip(lyric_lines, ko_results)):
-        pron = pron_for_line[i]
+        # 심판이 이 라인의 독음을 바꿨으면 SyncResult.text가 이긴 후보다 — 역매핑·표시가
+        # 모두 **실제로 정렬된** 독음을 써야 음절 스팬과 발음 표기가 어긋나지 않는다.
+        pron = kr.text or pron_for_line[i]
         ko_words = kr.word_segments or []
         # 음절별 confidence까지 함께 넘겨 글자별 conf 역매핑을 살린다 (라인 균일 부여 회귀 수정)
         spans = [(w.word, w.start, w.end, w.confidence) for w in ko_words]
@@ -2353,10 +2445,18 @@ def _align_with_pronunciation(engine, audio, lyric_lines, by_text: dict[str, dic
             )
         )
         meta = by_text.get(_normalize_line(ln.text)) or {}
+        decision = by_line_decision.get(i)
         pron_data[i] = {
             "pronunciation": pron or None,
             "translation": meta.get("translation"),
             "pron_segments": pron_segments,
+            # 진단용: 모델이 이 라인 구간에서 실제로 「들은」 텍스트와 심판의 판정 근거.
+            # 노래 ASR은 약해서 heard로 발음을 만들면 안 되지만, 정렬 텍스트와의 불일치는
+            # posterior 크기에 무관한 라인 단위 품질 지표다(conf는 곡 단위로만 유효).
+            "heard": heard.get(i) or None,
+            "referee": (
+                {k: v for k, v in decision.items() if k != "line"} if decision else None
+            ),
         }
     return results, pron_data
 
@@ -2455,10 +2555,14 @@ def _run_alignment(
         coverage = _pron_coverage(lyric_lines, by_text)
         pron_data: dict[int, dict[str, Any]] | None = None
         alignment_text = "original"
+        # 원문 정렬 경로의 「들은 것」 — 독음 경로는 ko 라인 창 기준이라 pron_data가 들고 간다.
+        # ja를 나중에 채택하는 분기들은 이 dict를 비워 둔다(엉뚱한 라인 창의 텍스트를 보고하지
+        # 않기 위해). 심판 진단은 독음 경로에서만 의미가 있으므로 손실이 없다.
+        heard_by_line: dict[int, str] = {}
         if settings.alignment.use_pronunciation and coverage >= 0.9:
             try:
                 results, pron_data = _align_with_pronunciation(
-                    engine, align_audio, lyric_lines, by_text
+                    engine, align_audio, lyric_lines, by_text, settings.alignment
                 )
                 alignment_text = "pronunciation"
                 logger.info(f"Pronunciation alignment used (coverage={coverage:.2f})")
@@ -2466,10 +2570,12 @@ def _run_alignment(
                 logger.exception("Pronunciation alignment failed; falling back to original text")
                 results = engine.align(align_audio, lyric_lines, language=language or "auto")
                 pron_data = None
+                heard_by_line = dict(getattr(engine, "_last_heard", None) or {})
         else:
             if settings.alignment.use_pronunciation:
                 logger.info(f"Pronunciation coverage {coverage:.2f} < 0.9; using original text")
             results = engine.align(align_audio, lyric_lines, language=language or "auto")
+            heard_by_line = dict(getattr(engine, "_last_heard", None) or {})
 
         # 독음 정렬의 star span (아래 VAD 확보 후 '발성 삼킴' 게이트에 쓴다) — 이중정렬/가드
         # ja가 engine._last_star_spans를 덮으므로 어떤 재정렬보다 먼저 ko 정렬 직후 포착한다.
@@ -2804,6 +2910,7 @@ def _run_alignment(
                 )
             # 독음 정렬 경로: 발음 음절 스팬을 멜로디 앵커·발음 표시용으로 직접 부착한다
             # (기존 DP 근사 pron_segments 대신 — 실제 정렬 타이밍이라 더 정확).
+            pd: dict[str, Any] = {}
             if pron_data is not None:
                 pd = pron_data.get(i) or {}
                 if pd.get("pronunciation"):
@@ -2812,24 +2919,32 @@ def _run_alignment(
                     seg["translation"] = pd["translation"]
                 if pd.get("pron_segments"):
                     seg["pron_segments"] = pd["pron_segments"]
+            debug: dict[str, Any] = {}
             if vad_regions is not None:
                 # 라인 구간 중 실제 발성 비율 + 클램프 여부 — 확장 디버그 스트립용
                 dur = max(0.001, r.end_time - r.start_time)
                 vocal = sum(
                     max(0.0, min(e, r.end_time) - max(s, r.start_time)) for s, e in vad_regions
                 )
-                seg["debug"] = {
-                    "active_ratio": round(vocal / dur, 2),
-                    "clamped": i in clamped_lines,
-                }
+                debug["active_ratio"] = round(vocal / dur, 2)
+                debug["clamped"] = i in clamped_lines
                 # 보정된 라인은 보정 전 원본 타이밍 + 적용 규칙 라벨을 함께 내려준다.
                 # 융합(fuse)처럼 라인 내부만 바꾸는 보정은 경계가 그대로라 고스트가 현재
                 # 위치에 겹쳐 그려진다 — 정보를 버리지 않고 그대로 내려보내되, 겹치는
                 # 고스트를 흐리게 그릴지는 클라이언트가 판단한다(확장 디버그 오버레이).
                 fx = fixes.get(i)
                 if fx:
-                    seg["debug"]["orig"] = [round(raw_spans[i][0], 2), round(raw_spans[i][1], 2)]
-                    seg["debug"]["fixes"] = fx
+                    debug["orig"] = [round(raw_spans[i][0], 2), round(raw_spans[i][1], 2)]
+                    debug["fixes"] = fx
+            # 「들은 것」(모델의 greedy 전사)과 심판 판정 근거 — 기존 debug 키와 같은 방식.
+            # 실오디오 검증에서 후보별 점수를 못 보면 판정을 되짚을 수 없으므로 반드시 싣는다.
+            heard = pd.get("heard") if pron_data is not None else heard_by_line.get(i)
+            if heard:
+                debug["heard"] = heard
+            if pd.get("referee"):
+                debug["referee"] = pd["referee"]
+            if debug:
+                seg["debug"] = debug
             timestamps.append(seg)
 
         # 정렬 입력에서 뺀 병기 줄을 표시용으로 되붙인다 — 사용자가 붙여넣은 줄이 화면에서

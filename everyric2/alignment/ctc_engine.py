@@ -253,6 +253,106 @@ def _resolve_token_char(char: str, vocab) -> str | None:
     return _oov_substitute(char, vocab)
 
 
+# ---------------------------------------------------------------------------
+# 오디오 심판 (라인별 후보 독음 채점) + 「들은 것」 greedy 디코딩
+#
+# 왜 여기인가: emission은 곡당 한 번 계산되는 [1, T, V] log-softmax 텐서이고 `align()`
+# 안에서만 살아 있다(80MB급이라 밖으로 내보내면 수명·메모리 문제가 생긴다). 후보 채점은
+# 그 위의 DP(`F.forced_align`)뿐이라 **모델 forward가 없다** — 같은 emission에 다른 토큰열을
+# 넣어 점수만 비교하면 되므로 비용이 사실상 0이다.
+# ---------------------------------------------------------------------------
+
+# greedy 디코딩에서 글자로 내보내지 않는 토크나이저 특수 토큰. blank(pad)는 id로 따로 걸러진다.
+_SPECIAL_TOKENS = frozenset({"<pad>", "<s>", "</s>", "<unk>", "[PAD]", "[UNK]"})
+
+# 설정을 못 읽을 때 쓰는 심판 마진 (AlignmentSettings.pron_referee_margin와 같은 값 —
+# 근거는 그 필드 description에 있다). 0으로 떨어지면 노이즈로도 독음이 뒤집힌다.
+_DEFAULT_REFEREE_MARGIN = 0.15
+
+
+def _candidate_tokens(text: str, vocab) -> tuple[list[str], list[int]]:
+    """후보 문자열 → (정렬에 실제로 들어가는 원문 글자 목록, 토큰 id 열).
+
+    글자 선택 규칙은 1패스와 **똑같이** `_resolve_token_char`를 쓴다 — 규칙이 갈라지면
+    기본값과 후보가 서로 다른 글자 집합으로 채점돼 점수 비교가 성립하지 않는다.
+    """
+    chars: list[str] = []
+    ids: list[int] = []
+    for ch in text:
+        tok = _resolve_token_char(ch, vocab)
+        if tok is not None:
+            chars.append(ch)
+            ids.append(vocab[tok])
+    return chars, ids
+
+
+def _min_ctc_frames(ids: list[int]) -> int:
+    """이 토큰열을 CTC로 강제정렬하는 데 필요한 최소 프레임 수.
+
+    같은 토큰이 연달아 오면 사이에 blank가 반드시 하나 들어가야 하므로 그만큼 더 필요하다.
+    창이 이보다 짧으면 forced_align이 실패하거나 무의미한 경로를 낸다 → 그 후보는 버린다.
+    """
+    return len(ids) + sum(1 for a, b in zip(ids, ids[1:]) if a == b)
+
+
+def _score_tokens(window: torch.Tensor, ids: list[int], blank_id: int):
+    """창(emission 슬라이스)에 토큰열을 강제정렬하고 (토큰당 평균 로그확률, 스팬)을 낸다.
+
+    **토큰 수로 정규화**하는 것이 핵심이다 — 프레임 로그확률의 합으로 비교하면 토큰이 적은
+    후보가 무조건 이긴다(음수의 합이므로 항이 적을수록 크다). `span.score`가 이미 그 토큰
+    구간의 평균 로그확률이므로(emission이 log_softmax) 스팬 평균이 곧 토큰당 평균이다.
+    """
+    targets = torch.tensor([ids], dtype=torch.int32, device=window.device)
+    aligned, scores = F.forced_align(window, targets, blank=blank_id)
+    spans = F.merge_tokens(aligned[0], scores[0], blank=blank_id)
+    if not spans:
+        return None, None
+    return sum(float(s.score) for s in spans) / len(spans), spans
+
+
+def _line_frame_windows(char_info: list[dict], token_spans) -> dict[int, tuple[int, int]]:
+    """라인 인덱스 → 그 라인이 차지한 [첫 글자 시작, 마지막 글자 끝) 프레임 창.
+
+    1패스가 잡은 창이므로 심판·greedy 디코딩이 라인 밖 오디오를 보지 않는다. 라인 구분자
+    "|"와 star는 char_info에 없으므로 자연히 창에서 빠진다.
+    """
+    windows: dict[int, tuple[int, int]] = {}
+    n = len(token_spans)
+    for ci in char_info:
+        idx = ci["token_idx"]
+        if idx >= n:
+            continue
+        line_idx = ci["line_idx"]
+        span = token_spans[idx]
+        cur = windows.get(line_idx)
+        windows[line_idx] = (
+            int(span.start) if cur is None else cur[0],
+            int(span.end),
+        )
+    return windows
+
+
+def _greedy_text(ids: list[int], blank_id: int, id_to_token: dict[int, str]) -> str:
+    """CTC greedy 디코딩: 반복 축약 → blank 제거 → 토큰 문자열 연결.
+
+    "모델이 실제로 들은 것"이다. 정렬 텍스트와의 불일치는 **posterior 크기에 의존하지 않는**
+    라인 단위 품질 지표다(현재 conf는 어댑터 vocab 크기에 스케일 의존해 곡 단위로만 유효하다).
+    노래 ASR은 약하므로 이 텍스트로 발음을 만들면 안 된다 — 후보 중 고르기와 진단 전용이다.
+    """
+    out: list[str] = []
+    prev: int | None = None
+    for tid in ids:
+        if tid != prev:
+            prev = tid
+            if tid == blank_id:
+                continue
+            tok = id_to_token.get(tid)
+            if tok is None or tok in _SPECIAL_TOKENS:
+                continue
+            out.append(" " if tok == "|" else tok)
+    return " ".join("".join(out).split())
+
+
 class CTCEngine(BaseAlignmentEngine):
     def __init__(self, config: AlignmentSettings | None = None):
         super().__init__(config)
@@ -275,6 +375,11 @@ class CTCEngine(BaseAlignmentEngine):
         self._last_match_stats = None
         # 직전 정렬에서 star 토큰이 흡수한 (start, end) 구간들 — 디버그/진단용
         self._last_star_spans: list[tuple[float, float]] = []
+        # 직전 정렬의 오디오 심판 판정 기록 (line_idx 오름차순). 워커가 로그·디버그 메타에
+        # 실어 실오디오에서 판정 근거를 되짚을 수 있게 한다 — 조용히 바꾸면 사후 추적 불가.
+        self._last_referee: list[dict] = []
+        # 직전 정렬에서 모델이 라인 구간에서 "들은" greedy 디코딩 텍스트 (line_idx → 텍스트)
+        self._last_heard: dict[int, str] = {}
 
     def is_available(self) -> bool:
         try:
@@ -456,12 +561,138 @@ class CTCEngine(BaseAlignmentEngine):
             del emis
         return stitch_chunk_outputs(pieces, windows, n, frame_axis=1)
 
+    def _heard_lines(
+        self,
+        emission: torch.Tensor,
+        base_dim: int,
+        blank_id: int,
+        vocab,
+        line_window: dict[int, tuple[int, int]],
+    ) -> dict[int, str]:
+        """라인별 「들은 것」 greedy 디코딩. 추가 연산이 사실상 없다 (argmax 1회).
+
+        정렬 결과를 **바꾸지 않는다** — 진단·디버그 표시 전용이다. 실패는 빈 dict로 삼킨다
+        (진단 기능이 정렬을 죽이면 안 된다).
+        """
+        if not line_window:
+            return {}
+        try:
+            id_to_token = {tid: tok for tok, tid in vocab.items()}
+            greedy = emission[0, :, :base_dim].argmax(dim=-1).tolist()
+            return {
+                line_idx: _greedy_text(greedy[f0:f1], blank_id, id_to_token)
+                for line_idx, (f0, f1) in sorted(line_window.items())
+            }
+        except Exception:
+            logger.warning("Greedy decode of heard text failed; continuing", exc_info=True)
+            return {}
+
+    def _referee_lines(
+        self,
+        emission: torch.Tensor,
+        base_dim: int,
+        blank_id: int,
+        vocab,
+        line_window: dict[int, tuple[int, int]],
+        line_candidates: dict[int, list[str]] | None,
+        referee_margins: dict[int, float] | None,
+    ) -> tuple[dict[int, list[tuple[str, int, int, float]]], dict[int, str]]:
+        """라인별 후보 독음을 같은 emission에 강제정렬해 오디오가 고르게 한다.
+
+        판정 철학은 곡 단위 이중정렬(worker의 ``_dual_align_*``)과 같다 — 두 후보를 정렬해
+        점수로 고르고, 바닥 근처 노이즈로 뒤집히지 않게 **마진**을 요구한다. 다른 것은
+        단위(곡 → 라인)와 비용(정렬 패스 1회 추가 → 0회, 같은 emission 위 DP뿐)이다.
+
+        반환: (line_idx → [(글자, 시작프레임, 끝프레임, 로그확률)], line_idx → 이긴 후보 텍스트).
+        교체하지 않은 라인은 두 dict에 아예 들어가지 않는다(= 1패스 결과 그대로).
+        """
+        self._last_referee = []
+        overrides: dict[int, list[tuple[str, int, int, float]]] = {}
+        chosen: dict[int, str] = {}
+        if not line_candidates:
+            return overrides, chosen
+
+        # 설정에 마진이 없는 구성(직접 호출·구버전 config)에서도 0으로 떨어지지 않게 한다 —
+        # 마진 0은 노이즈로도 독음이 뒤집히는 값이다. 기본값은 AlignmentSettings와 같다.
+        default_margin = float(
+            getattr(self.config, "pron_referee_margin", None) or _DEFAULT_REFEREE_MARGIN
+        )
+        margins = referee_margins or {}
+        for line_idx, raw in sorted(line_candidates.items()):
+            window_range = line_window.get(line_idx)
+            if window_range is None:
+                continue  # 정렬된 글자가 0개인 라인 — 창이 없어 심판할 수 없다
+            # 중복 후보는 제거하고 순서를 보존한다. 1개만 남으면 심판을 돌리지 않는다 → 비용 0.
+            cands = list(dict.fromkeys(c for c in (raw or []) if c))
+            if len(cands) < 2:
+                continue
+            f0, f1 = window_range
+            n_frames = f1 - f0
+            window = emission[:, f0:f1, :base_dim].contiguous()
+
+            scored: list[tuple[str, float, list[str], object]] = []
+            # 토큰열이 같은 후보(문절 띄어쓰기만 다른 변종 등)는 점수도 같다 — 한 번만 채점해
+            # 낭비와 다중비교 부풀림을 함께 줄인다. 동점이면 먼저 나온 후보(기본값)가 남는다.
+            by_tokens: dict[tuple[int, ...], str] = {}
+            for text in cands:
+                chars, ids = _candidate_tokens(text, vocab)
+                if not ids:
+                    continue
+                key = tuple(ids)
+                if key in by_tokens:
+                    continue
+                if _min_ctc_frames(ids) > n_frames:
+                    continue  # 창이 후보 토큰열보다 짧다 — 이 후보는 건너뛴다
+                try:
+                    score, spans = _score_tokens(window, ids, blank_id)
+                except Exception:
+                    logger.warning(
+                        "Referee scoring failed on line %d candidate %r", line_idx, text,
+                        exc_info=True,
+                    )
+                    continue
+                if score is None:
+                    continue
+                by_tokens[key] = text
+                scored.append((text, score, chars, spans))
+
+            # 기본값(첫 후보)을 못 채점했으면 비교 기준이 없다 — 라인을 그대로 둔다.
+            if not scored or scored[0][0] != cands[0]:
+                continue
+            base_text, base_score, _, _ = scored[0]
+            margin = float(margins.get(line_idx, default_margin))
+            best = max(scored[1:], key=lambda s: s[1], default=None)
+            adopt = best is not None and (best[1] - base_score) >= margin
+
+            record = {
+                "line": line_idx,
+                "default": base_text,
+                "chosen": best[0] if adopt else base_text,
+                "margin": round(margin, 4),
+                "gain": round(best[1] - base_score, 4) if best is not None else 0.0,
+                "frames": n_frames,
+                # 후보별 토큰당 평균 로그확률 — 실오디오에서 판정 근거를 되짚는 유일한 자료다.
+                "scores": [[t, round(s, 4)] for t, s, _, _ in scored],
+            }
+            self._last_referee.append(record)
+            if not adopt:
+                continue
+            _, _, best_chars, best_spans = best  # pyright: ignore[reportOptionalSubscript]
+            chosen[line_idx] = best[0]
+            overrides[line_idx] = [
+                (ch, f0 + int(sp.start), f0 + int(sp.end), float(sp.score))
+                for ch, sp in zip(best_chars, best_spans)  # pyright: ignore[reportArgumentType]
+            ]
+        return overrides, chosen
+
     def _align_cjk(
         self,
         waveform: torch.Tensor,
         lyrics: list[LyricLine],
         language: str,
         progress_callback: Callable[[int, int], None] | None = None,
+        line_candidates: dict[int, list[str]] | None = None,
+        referee_margins: dict[int, float] | None = None,
     ) -> list[SyncResult]:
         device = self._get_device()
 
@@ -486,6 +717,10 @@ class CTCEngine(BaseAlignmentEngine):
         # 상수 상쇄) 기존 결과와 동일하다.
         use_star = getattr(self.config, "star_tokens", False)
         star_id = emission.shape[-1]
+        # 심판 채점과 greedy 디코딩은 star 채널을 **제외한** 원래 vocab 폭만 본다: star는
+        # log(1.0)=0.0이라 argmax가 항상 star를 고르고, 후보 비교도 실제 토큰 확률로만
+        # 해야 한다. 슬라이스로 보므로 텐서 복사가 없다(star를 붙인 뒤엔 뷰가 된다).
+        base_dim = star_id
         if use_star:
             star_col = torch.zeros(
                 (emission.shape[0], emission.shape[1], 1),
@@ -541,10 +776,10 @@ class CTCEngine(BaseAlignmentEngine):
         if not tokens:
             raise AlignmentError("No valid tokens found in lyrics for this language")
 
+        blank_id = self._processor.tokenizer.pad_token_id  # pyright: ignore[reportAttributeAccessIssue,reportOptionalMemberAccess]
         try:
             # emission이 청킹으로 CPU에 있으면 targets도 같은 디바이스여야 한다
             targets = torch.tensor([tokens], dtype=torch.int32, device=emission.device)
-            blank_id = self._processor.tokenizer.pad_token_id  # pyright: ignore[reportAttributeAccessIssue,reportOptionalMemberAccess]
             aligned_tokens, alignment_scores = F.forced_align(emission, targets, blank=blank_id)
             token_spans = F.merge_tokens(aligned_tokens[0], alignment_scores[0], blank=blank_id)
         except Exception as e:
@@ -552,6 +787,21 @@ class CTCEngine(BaseAlignmentEngine):
 
         if progress_callback:
             progress_callback(4, 5)
+
+        # 1패스 결과로 라인별 프레임 창이 정해진다 — 그 창 안에서만 후보를 심판하고
+        # greedy 디코딩을 뜬다. 정렬된 글자가 0개인 라인(전부 OOV)은 창이 없어 제외된다.
+        line_window = _line_frame_windows(char_info, token_spans)
+        self._last_heard = self._heard_lines(emission, base_dim, blank_id, vocab, line_window)
+        # 이긴 후보의 슬라이스 정렬 결과를 그대로 쓴다 → 3패스가 필요 없다.
+        referee_overrides, chosen_text = self._referee_lines(
+            emission,
+            base_dim,
+            blank_id,
+            vocab,
+            line_window,
+            line_candidates,
+            referee_margins,
+        )
 
         num_frames = emission.shape[1]
         audio_length = waveform.shape[0] / 16000
@@ -569,21 +819,30 @@ class CTCEngine(BaseAlignmentEngine):
         self._last_word_timestamps = []
         line_char_timestamps: dict[int, list[WordTimestamp]] = {}
 
+        # 심판이 교체한 라인은 1패스 스팬 대신 이긴 후보의 슬라이스 정렬 스팬을 쓴다.
+        # 그 밖의 라인은 예전과 완전히 같은 순서·값으로 채워진다 (후보가 없으면 항등).
+        line_chars: dict[int, list[dict]] = {}
         for ci in char_info:
-            idx = ci["token_idx"]
-            line_idx = ci["line_idx"]
-            if idx < len(token_spans):
-                span = token_spans[idx]
-                start_time = span.start * ratio
-                end_time = span.end * ratio
-                # emission이 log_softmax라 span.score는 평균 로그확률(음수) — 그대로
+            line_chars.setdefault(ci["line_idx"], []).append(ci)
+
+        for line_idx in range(len(lyrics)):
+            items = referee_overrides.get(line_idx)
+            if items is None:
+                items = [
+                    (ci["char"], span.start, span.end, float(span.score))
+                    for ci in line_chars.get(line_idx, [])
+                    if ci["token_idx"] < len(token_spans)
+                    for span in (token_spans[ci["token_idx"]],)
+                ]
+            for char, start_frame, end_frame, score in items:
+                # emission이 log_softmax라 score는 평균 로그확률(음수) — 그대로
                 # 내보내면 클라이언트 신뢰도 표시가 전부 '낮음'으로 찍힌다.
                 # exp로 기하평균 확률(0~1)로 변환해 저장한다.
                 wt = WordTimestamp(
-                    word=ci["char"],
-                    start=start_time,
-                    end=end_time,
-                    confidence=round(math.exp(min(0.0, float(span.score))), 6),
+                    word=char,
+                    start=start_frame * ratio,
+                    end=end_frame * ratio,
+                    confidence=round(math.exp(min(0.0, score)), 6),
                 )
                 self._last_word_timestamps.append(wt)
                 if line_idx not in line_char_timestamps:
@@ -610,11 +869,13 @@ class CTCEngine(BaseAlignmentEngine):
         #    순서가 깨지므로(역순·겹침), 앞뒤 정렬 줄 사이 간격에 끼워넣어 순서를 보존한다.
         self._interpolate_unaligned(line_times, audio_length)
 
-        # 3) SyncResult 생성
+        # 3) SyncResult 생성. 심판이 독음을 바꾼 라인은 **이긴 후보를 text로 내보낸다** —
+        #    호출부(worker의 독음 역매핑)가 이 텍스트로 모라를 쪼개야 음절 스팬과 표시
+        #    발음이 실제로 정렬된 독음과 일치한다.
         results = [
             SyncResult(
                 line_number=line.line_number,
-                text=line.text,
+                text=chosen_text.get(i, line.text),
                 start_time=line_times[i][0],
                 end_time=line_times[i][1],
                 word_segments=line_times[i][2],
@@ -790,7 +1051,25 @@ class CTCEngine(BaseAlignmentEngine):
         lyrics: list[LyricLine],
         language: str | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
+        line_candidates: dict[int, list[str]] | None = None,
+        referee_margins: dict[int, float] | None = None,
     ) -> list[SyncResult]:
+        """가사를 오디오에 강제정렬한다.
+
+        Args:
+            line_candidates: 라인 인덱스 → 그 라인의 **대체 독음 후보 목록**(``[0]``이 기본값).
+                주면 1패스 정렬 뒤 라인 프레임 창 안에서 후보들을 같은 emission에 다시
+                강제정렬해, 기본값을 마진 이상 이기는 후보가 있을 때만 그 라인을 교체한다
+                (``_referee_lines``). 교체된 라인의 ``SyncResult.text``는 이긴 후보다.
+                **선택적 인자다** — 주지 않으면(또는 후보가 1개면) 기존 동작과 완전히 동일하다.
+            referee_margins: 라인별 마진(토큰당 평균 로그확률 차). 없는 라인은 설정
+                ``pron_referee_margin``을 쓴다. 사람이 쓴 발음이 기본값인 라인처럼 더 큰
+                마진을 요구해야 하는 경우에 쓴다.
+        """
+        # 심판·「들은 것」 기록은 정렬마다 새로 쓴다 — 이전 정렬(예: ko)의 기록이 다음
+        # 정렬(ja) 뒤에 남아 있으면 호출부가 엉뚱한 라인 창의 텍스트를 보고한다.
+        self._last_referee = []
+        self._last_heard = {}
         force_mms = False
         if language and language != "auto":
             resolved_lang = language
@@ -821,10 +1100,24 @@ class CTCEngine(BaseAlignmentEngine):
                 waveform = waveform.mean(dim=0)
 
             if resolved_lang in LANG_MODEL_MAP:
-                results = self._align_cjk(waveform, lyrics, resolved_lang, progress_callback)
+                results = self._align_cjk(
+                    waveform,
+                    lyrics,
+                    resolved_lang,
+                    progress_callback,
+                    line_candidates=line_candidates,
+                    referee_margins=referee_margins,
+                )
                 self._last_match_stats = self._calculate_match_stats(results)
                 return results
             else:
+                # MMS_FA(라틴) 경로는 글자 단위 vocab이 아니라 단어 사전을 쓰고 라인 창도
+                # 다르게 잡힌다 — 심판은 CJK 경로 전용이므로 후보는 조용히 무시한다.
+                if line_candidates:
+                    logger.info(
+                        f"Pronunciation referee skipped: MMS_FA path ({resolved_lang}) "
+                        f"does not score per-line candidates"
+                    )
                 results = self._align_mms(waveform, lyrics, resolved_lang, progress_callback)
                 from everyric2.alignment.matcher import LyricsMatcher
 
@@ -875,6 +1168,18 @@ class CTCEngine(BaseAlignmentEngine):
             match_rate=match_rate,
             avg_confidence=avg_conf,
         )
+
+    def get_last_referee_decisions(self) -> list[dict]:
+        """직전 정렬에서 심판이 채점한 라인들의 판정 기록 (line_idx 오름차순).
+
+        각 항목: ``line``, ``default``, ``chosen``, ``margin``, ``gain``, ``frames``,
+        ``scores``(후보별 토큰당 평균 로그확률). ``chosen != default``인 항목이 교체된 라인이다.
+        """
+        return list(self._last_referee)
+
+    def get_last_heard_lines(self) -> dict[int, str]:
+        """직전 정렬에서 모델이 각 라인 프레임 창에서 「들은」 greedy 디코딩 텍스트."""
+        return dict(self._last_heard)
 
     def get_last_transcription_data(self) -> tuple[list[WordTimestamp], MatchStats | None, str]:
         return (self._last_word_timestamps, self._last_match_stats, "ctc")

@@ -171,17 +171,21 @@ def _token_readings(word, *, phonetic: bool = False) -> tuple[str, str]:
     return reading, surface_reading or reading
 
 
-def _tokenize_with_tagger(tagger, text: str, *, phonetic: bool = False) -> list[ReadingToken]:
+def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[ReadingToken]:
     """형태소 토큰을 원문 오프셋에 다시 앉힌다.
 
     MeCab은 공백을 토큰으로 내주지 않는다 — 표면을 그냥 이어 붙이면 원문보다 짧아져
     이후 오프셋이 전부 밀리고, 그 밀림은 예외 없이 조용히 발음 타이밍을 망가뜨린다.
     그래서 표면을 원문에서 앞으로 검색해 위치를 다시 잡고, 건너뛴 구간(공백 등)은
     읽기=표면인 리터럴 토큰으로 내보내 '표면 이어 붙이기 = 원문' 계약을 지킨다.
+
+    ``words``는 1순위 파스(``tagger(text)``)든 N-best 대안 파스(``nbestToNodeList``)든
+    같은 노드 열이라 같은 규칙으로 앉힌다 — 대안 파스마다 규칙을 복제하면 오프셋 계약이
+    한쪽에서만 깨진다.
     """
     tokens: list[ReadingToken] = []
     pos = 0
-    for word in tagger(text):
+    for word in words:
         surface = word.surface
         if not surface:
             continue
@@ -208,6 +212,10 @@ def _tokenize_with_tagger(tagger, text: str, *, phonetic: bool = False) -> list[
     if pos < len(text):
         tokens.append(ReadingToken(text[pos:], text[pos:], pos, len(text)))
     return tokens
+
+
+def _tokenize_with_tagger(tagger, text: str, *, phonetic: bool = False) -> list[ReadingToken]:
+    return _tokens_from_words(tagger(text), text, phonetic=phonetic)
 
 
 def _tokenize_with_kakasi(text: str) -> list[ReadingToken]:
@@ -296,6 +304,58 @@ def tokenize_reading(
     if adopt_ruby:
         _adopt_ruby_readings(text, tokens)
     return tokens
+
+
+def has_ruby(text: str) -> bool:
+    """``한자런（가나）`` 루비가 있는 라인인가 (``adopt_ruby``가 실제로 뭔가 바꿀 라인인가)."""
+    return bool(text) and _RUBY_RE.search(text) is not None
+
+
+def tokenize_reading_nbest(
+    text: str, *, n: int = 8, phonetic: bool = False, adopt_ruby: bool = False
+) -> list[list[ReadingToken]]:
+    """같은 라인의 **대안 파스**(MeCab N-best) 토큰 열들. 1순위 파스는 제외한다.
+
+    남은 오독은 대부분 "어느 독음이 맞나" 하나로 수렴하고(사람 발음 2,207줄 대비 82.1%),
+    그 갈림이 정확히 MeCab의 후순위 파스에 들어 있다 — ``私は三日月を見た``의 nbest는
+    ワタクシ/ワタシ와 ミッカツキ/ミッカズキ/ミカツキ를 모두 내놓는다(실측). 사전은 어느
+    쪽이 맞는지 모르지만 오디오는 알기 때문에(``ctc_engine`` 심판) 후보만 만들어 준다.
+
+    실패(폴백 엔진·미설치·nbest 예외)는 빈 목록이다 — 후보가 없으면 심판이 안 돌고
+    기존 동작 그대로다. 오프셋·표면 계약은 1순위 파스와 동일하다(``_tokens_from_words``).
+    """
+    if not text or n <= 1:
+        return []
+    parses: list[list[ReadingToken]] = []
+    with _lock:
+        tagger = _get_tagger()
+        if tagger is None:
+            return []
+        try:
+            # 1순위 파스는 호출부가 이미 갖고 있으므로 건너뛴다 (첫 열 = tagger(text))
+            for i, nodes in enumerate(tagger.nbestToNodeList(text, n)):
+                if i == 0:
+                    continue
+                parses.append(_tokens_from_words(nodes, text, phonetic=phonetic))
+        except Exception:
+            logger.warning("MeCab n-best parse failed for %r", text, exc_info=True)
+            return []
+    if adopt_ruby:
+        for tokens in parses:
+            _adopt_ruby_readings(text, tokens)
+    return parses
+
+
+def tokenize_reading_pykakasi(text: str) -> list[ReadingToken]:
+    """사전 표제어 기반(pykakasi) 토큰 열 — 형태소 분석과 **한자 독음이 갈리는** 변종.
+
+    폴백 경로를 후보 생성에 재사용한다: 今更止められない를 pykakasi는 いまさら"やめ"られない로
+    읽고 형태소 분석은 とめ로 읽는다(실측). 어느 쪽이 맞는지는 오디오가 고른다.
+    """
+    if not text:
+        return []
+    with _lock:
+        return _tokenize_with_kakasi(text)
 
 
 def kana_reading(text: str, *, phonetic: bool = False, adopt_ruby: bool = False) -> str:

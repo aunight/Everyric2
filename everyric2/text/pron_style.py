@@ -17,7 +17,13 @@ import re
 import unicodedata
 
 from everyric2.text import kana_hangul
-from everyric2.text.ja_reading import ReadingToken, tokenize_reading
+from everyric2.text.ja_reading import (
+    ReadingToken,
+    has_ruby,
+    tokenize_reading,
+    tokenize_reading_nbest,
+    tokenize_reading_pykakasi,
+)
 
 # ---------------------------------------------------------------------------
 # 문절(文節) 띄어쓰기
@@ -181,16 +187,14 @@ def _render(pieces: list[_Piece]) -> str:
     return "".join(out)
 
 
-def wiki_pronunciation(text: str) -> str:
-    """일본어 라인의 위키식 한글 발음 표기. 일본어가 없으면 빈 문자열.
+def _render_pronunciation(text: str, tokens: list[ReadingToken]) -> str:
+    """이미 만들어진 토큰 열을 위키 표기 관례로 렌더한다 (표기 규칙의 단일 구현).
 
-    라틴 문자·숫자는 **음차하지 않고 그대로 둔다**. 위키는 음차하지만(numb→넘,
-    Beat→비이토) 규칙화가 불가능하고(원어 발음 지식이 필요하다), 실측에서 라틴을 포함한
-    줄은 어느 경로로도 4.1%만 맞아 별도 문제로 남긴다.
+    토큰 열을 인자로 받는 이유: 같은 라인의 **다른 파스**(N-best·루비 미채택·표층 읽기·
+    pykakasi)를 같은 표기 규칙으로 렌더해 오디오 심판의 후보로 쓴다
+    (``pronunciation_candidates``). 규칙을 복제하면 후보와 기본값이 표기 관례에서
+    갈라져 심판이 "독음 차이"가 아니라 "표기 차이"를 재는 꼴이 된다.
     """
-    if not text or not (kana_hangul.has_kana(text) or kana_hangul.has_kanji(text)):
-        return ""
-
     groups: list[str] = []  # 완성된 문절
     cur: list[_Piece] = []  # 현재 문절
     pending: list[_Piece] = []  # 여는 괄호 등 — 다음 문절의 머리에 붙는다
@@ -211,7 +215,7 @@ def wiki_pronunciation(text: str) -> str:
         cur.append(piece)
 
     prev_pos = prev_pos2 = ""
-    for token in tokenize_reading(text, phonetic=True, adopt_ruby=True):
+    for token in tokens:
         surface = token.surface
         if not surface.strip():
             # 원문의 공백은 문절 경계다 (위키도 그 자리를 띄운다)
@@ -255,3 +259,70 @@ def wiki_pronunciation(text: str) -> str:
 
     result = _ELLIPSIS_RE.sub("…", " ".join(groups)).replace("・", " ")
     return " ".join(result.split())
+
+
+def _has_japanese(text: str) -> bool:
+    return bool(text) and (kana_hangul.has_kana(text) or kana_hangul.has_kanji(text))
+
+
+def wiki_pronunciation(text: str) -> str:
+    """일본어 라인의 위키식 한글 발음 표기. 일본어가 없으면 빈 문자열.
+
+    라틴 문자·숫자는 **음차하지 않고 그대로 둔다**. 위키는 음차하지만(numb→넘,
+    Beat→비이토) 규칙화가 불가능하고(원어 발음 지식이 필요하다), 실측에서 라틴을 포함한
+    줄은 어느 경로로도 4.1%만 맞아 별도 문제로 남긴다.
+    """
+    if not _has_japanese(text):
+        return ""
+    return _render_pronunciation(text, tokenize_reading(text, phonetic=True, adopt_ruby=True))
+
+
+def pronunciation_candidates(text: str, *, max_candidates: int = 8, nbest: int = 16) -> list[str]:
+    """오디오 심판(``ctc_engine``)에 넘길 후보 독음 목록. ``[0]``이 기본값이다.
+
+    왜 후보인가: 결정론 발음 표기는 사람이 쓴 보카로 위키 발음 2,207줄 대비 82.1%까지 왔고
+    남은 불일치가 거의 전부 **"어느 독음이 맞나"** 하나로 수렴한다 — 私 와타시/와타쿠시,
+    三日月 미카즈키/밋카츠키, 数え事 카조에 고토/코토(연탁), 何も 나니모/난모, 涙（シル）의
+    아테지. 사전은 이걸 모르지만 오디오는 안다. 그래서 여기서는 **고르지 않고** 서로 다른
+    독음이 실제로 나오는 축만 모아 준다:
+
+    1. 기본 — ``phonetic=True`` + 루비 채택 (``wiki_pronunciation``과 완전히 동일)
+    2. 루비 미채택 — 루비가 있는 라인만. 위키가 한자 독음과 루비를 **둘 다** 적는 경우가
+       있어 루비 채택의 순이득이 +0.7p(개선 14줄 / 악화 6줄)에 그쳤다. 그 6줄이 이 축이다.
+    3. 표층 읽기(``phonetic=False``) — 조사 は가 「하」가 되는 변종. 음가 우선이 실측
+       +3.5p(72.0%→75.5%)지만 뒤집히는 줄이 남는다.
+    4. MeCab N-best 대안 파스 — 위 예시의 갈림이 정확히 여기 있다(실측 확인).
+    5. pykakasi — 한자 독음이 갈리는 변종 (止められない: やめ vs とめ).
+
+    중복은 제거하고 순서를 보존한다. 반환이 1개면(또는 빈 목록이면) **후보 없음**이며
+    호출부는 심판을 아예 돌리지 않는다 → 비용 0. 일본어가 없는 라인은 빈 목록.
+
+    기본값 ``nbest=16``/``max_candidates=8``의 근거: 三日月の夜의 사람 표기(미카즈키)는
+    nbest 얕은 깊이에서 안 나오고 16에서 7번째 후보로 들어온다(실측). 생성 비용은 60줄
+    0.064초로 무시할 수준이고, 후보가 늘어난 만큼의 오채택 위험은 심판의 마진이 막는다.
+    """
+    if not _has_japanese(text) or max_candidates <= 0:
+        return []
+
+    out: list[str] = []
+
+    def add(tokens: list[ReadingToken]) -> None:
+        if len(out) >= max_candidates:
+            return
+        rendered = _render_pronunciation(text, tokens)
+        if rendered and rendered not in out:
+            out.append(rendered)
+
+    add(tokenize_reading(text, phonetic=True, adopt_ruby=True))
+    if not out:
+        # 기본값을 못 만드는 라인은 후보 비교의 기준이 없다 — 심판 대상이 아니다.
+        return []
+    if has_ruby(text):
+        add(tokenize_reading(text, phonetic=True, adopt_ruby=False))
+    add(tokenize_reading(text, phonetic=False, adopt_ruby=True))
+    for parse in tokenize_reading_nbest(text, n=nbest, phonetic=True, adopt_ruby=True):
+        if len(out) >= max_candidates:
+            break
+        add(parse)
+    add(tokenize_reading_pykakasi(text))
+    return out
