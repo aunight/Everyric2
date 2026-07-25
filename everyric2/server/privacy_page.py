@@ -98,6 +98,25 @@ Everyric은 YouTube/YouTube Music에서 재생 중인 곡의 시간 동기화 �
 서버 주소는 설정에서 이용자가 직접 구동하는 서버로 바꿀 수 있습니다(자체 호스팅).
 바꾸면 위 데이터는 그 주소로 전송됩니다.
 </p>
+<p>
+<strong>확장이 보내지는 않지만 서버가 보게 되는 것 &mdash; 접속 IP.</strong>
+위 표는 확장이 <em>담아 보내는</em> 것이고, 그와 별개로 인터넷 요청에는 접속 IP가 따라옵니다
+(이 확장뿐 아니라 모든 웹 요청이 그렇습니다). Everyric 서버는 남용을 막기 위해 그 IP로부터
+<strong>되돌릴 수 없는 해시</strong>를 만들어 <strong>사용량 제한 단위로만</strong> 씁니다.
+</p>
+<ul>
+<li><strong>IP 원문은 저장하지 않습니다.</strong> 솔트를 넣은 해시만 남깁니다 &mdash; 솔트가
+    없으면 IPv4 주소 공간이 좁아 해시에서 원래 주소를 되찾을 수 있기 때문입니다.</li>
+<li>가사 <strong>조회</strong>는 세지 않습니다. 서버 자원을 쓰는 <strong>싱크 생성</strong>만
+    셉니다(이용자당 1일 한도).</li>
+<li>이 값은 사용량 제한에만 쓰이며, 이용자를 식별하거나 이용 내역을 프로필로 모으는 데
+    쓰지 않습니다.</li>
+<li>설정에 API 키를 입력했다면 그 키가 제한 단위로 대신 쓰입니다.</li>
+</ul>
+<p>
+이 처리 때문에 <strong>확장이 새로 보내는 데이터는 없습니다</strong> &mdash; 이용자를 구분하기
+위해 확장이 식별자를 만들어 심는 방식(설치 ID·기기 지문 등)을 쓰지 않기로 한 결과입니다.
+</p>
 
 <h3>LRCLIB (<code>lrclib.net</code>) — 공개 가사 데이터베이스</h3>
 <table>
@@ -230,6 +249,26 @@ backend server and to public lyrics databases. Everything sent is listed below.
 <p>
 The server address can be pointed at a server the user runs themselves (self-hosting). If changed,
 the data above goes to that address instead.
+</p>
+<p>
+<strong>Not sent by the extension, but visible to the server &mdash; the connecting IP.</strong>
+The table above lists what the extension <em>puts into</em> its requests. Separately from that,
+every internet request carries the connecting IP (true of all web requests, not just this
+extension). To prevent abuse, the Everyric server derives a <strong>non-reversible hash</strong>
+from that IP and uses it <strong>solely as a rate-limiting key</strong>.
+</p>
+<ul>
+<li><strong>The raw IP is not stored.</strong> Only a salted hash is kept &mdash; without a salt
+    the IPv4 address space is small enough to recover the original address from the hash.</li>
+<li>Lyrics <strong>lookups</strong> are not counted. Only <strong>sync generation</strong>, which
+    consumes server resources, is counted (a daily per-user cap).</li>
+<li>The value is used for rate limiting only. It is not used to identify users or to build a
+    profile of what anyone listens to.</li>
+<li>If an API key is entered in settings, that key is used as the rate-limiting key instead.</li>
+</ul>
+<p>
+Because of this design the <strong>extension sends no additional data</strong> &mdash; a
+deliberate choice not to mint an identifier (install ID, device fingerprint) to tell users apart.
 </p>
 
 <h3>LRCLIB (<code>lrclib.net</code>) — public lyrics database</h3>

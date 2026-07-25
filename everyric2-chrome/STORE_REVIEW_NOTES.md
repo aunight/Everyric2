@@ -8,42 +8,64 @@ entries, and what a reviewer needs in order to actually exercise the features.
 
 ---
 
-## ⚠ 제출 전 필수: 심사자용 API 키를 대시보드에 입력할 것
+## 심사자 접근: 자격증명이 필요하지 않습니다
 
-**이 항목이 빠지면 심사자는 확장이 아무것도 하지 않는 것으로 봅니다.**
+**설치 직후 아무것도 입력하지 않은 상태에서 모든 기능이 동작합니다.** 심사자용 계정도
+API 키도 제공할 것이 없습니다.
 
-기본 설정의 API 키는 빈 문자열(`src/lib/settings.ts`)이고, 백엔드는 키 없는 요청을
-거부합니다(실측: `GET https://everyric.moref.co/api/health` → `401
-{"error":"unauthorized","hint":"personal key required"}`). 즉 확장을 설치만 하고 키를
-넣지 않으면 **가사가 한 줄도 표시되지 않습니다.** 심사자가 그 상태를 보면 "기능이 동작하지
-않는 확장"으로 판단합니다.
+실측 (2026-07-26, 인증 헤더를 전혀 보내지 않은 요청):
 
-키가 필요한 이유(심사자에게 설명할 내용): 가사 정렬은 서버에서 GPU로 오디오를 분석하는
-작업이라 한 곡당 수십 초의 연산이 듭니다. 무기명 공개 시 남용으로 서버가 마비되므로 키로
-사용량을 제한합니다. 개인 식별 정보와는 무관하며, 이용자가 설정에 직접 입력한 값만
-서버 인증 헤더로 전송됩니다(개인정보처리방침 2번 항목).
+| 요청 | 응답 |
+| --- | --- |
+| `GET /health` | `200 {"status":"healthy",…}` |
+| `GET /api/sync/8JRuowZtRBc` | `200` — 싱크 가사 데이터를 그대로 반환 |
+| `POST /api/sync/generate` `{}` | `422` (`video_id` 필드 누락) |
+| `POST /api/sync/regenerate` `{}` | `422` |
+| `POST /api/translate` `{}` | `422` |
 
-**해야 할 일**: 크롬 웹스토어 개발자 대시보드의 심사자용 자격증명 입력란(테스트 계정/로그인
-정보 필드)에 **심사 전용 키와 사용법**을 적습니다. 사용법은 다음과 같이 쓰면 됩니다.
+생성 계열이 `401`이 아니라 **`422`(입력 검증 실패)** 라는 것이 요점입니다 — 인증 단계를
+통과하고 본문 검증에서 멈췄으므로, 올바른 본문을 보내면 키 없이 실행됩니다. GPU 연산을
+일으키지 않고 인증 여부만 확인하기 위해 일부러 빈 본문으로 측정했습니다.
 
-> 1. 유튜브에서 아무 노래 영상을 엽니다(예: `https://www.youtube.com/watch?v=s5Rkv_5Sbbo`).
-> 2. 툴바의 Everyric 아이콘을 눌러 가사 패널을 엽니다.
-> 3. 패널 우측 상단의 ⚙(설정)을 열고 **API key** 칸에 아래 키를 붙여넣습니다.
-> 4. 패널이 자동으로 가사를 찾아 재생에 맞춰 한 줄씩 하이라이트합니다.
->
-> API key: `(대시보드에 직접 입력)`
+### 사용량 제한을 키 없이 어떻게 하는가
 
-**키 값을 이 파일에 적지 마십시오.** 이 저장소는 공개되어 있습니다. 키는 대시보드
-입력란에만 넣고, 심사가 끝나면 폐기·회전할 수 있는 전용 키를 쓰십시오.
+서버가 **연결 IP로부터 되돌릴 수 없는 해시**(솔트 포함)를 만들어 그것을 제한 단위로
+씁니다. 확장은 이 값을 만들지도, 보내지도, 알지도 못합니다.
 
-**English**: The default API key is empty and the backend rejects unauthenticated requests
-(`401 unauthorized`), so an installed extension shows no lyrics at all until a key is entered.
-A reviewer seeing that state would conclude the extension is non-functional. Provide a
-review-only key and the four steps above in the dashboard's reviewer-credentials field.
-Lyrics alignment runs GPU audio analysis on the server (tens of seconds per song), so
-anonymous access is rate-limited by key; the key is unrelated to any personal data and is only
-sent as an auth header when the user enters one. **Do not put the key value in this file — this
-repository is public.**
+- 가사 **조회**는 제한하지 않습니다(응답 비용이 무시할 만합니다)
+- 싱크 **생성**만 셉니다 — 이용자당 15건/일, 서버 전역 안전판 별도
+- IP 원문은 저장하지 않습니다(솔트를 넣은 해시만 남습니다)
+- 용도는 사용량 제한뿐이며 다른 목적에 쓰지 않습니다
+
+**따라서 이 확장이 새로 수집하거나 전송하는 이용자 데이터는 없습니다.** 데이터 유형 신고
+항목을 고를 때 이 사실이 기준입니다 — 확장이 보내는 자격증명이 없으므로 «인증 정보»가
+아니며, 서버 쪽 IP 파생값은 이용자가 어떤 웹사이트에 접속하든 서버가 이미 보는 값입니다.
+
+### API 키 칸은 왜 남아 있는가
+
+설정(⚙)의 **API key** 칸은 **선택 사항**입니다. 자체 호스팅 서버를 쓰거나 별도 할당량을
+받은 이용자를 위한 것이고, 비워 두면 인증 헤더 자체를 보내지 않습니다
+(개인정보처리방침 2번 항목). 심사자는 이 칸을 건드릴 필요가 없습니다.
+
+### 기능 확인 절차
+
+> 1. 유튜브에서 노래 영상을 엽니다 — 예: `https://www.youtube.com/watch?v=s5Rkv_5Sbbo`
+>    (싱크가 이미 준비된 곡이라 즉시 표시됩니다).
+> 2. 가사 패널이 자동으로 열립니다. 닫혔다면 툴바의 Everyric 아이콘을 누릅니다.
+> 3. 재생하면 현재 줄이 하이라이트되고, 원문 아래에 한글 발음·번역이 함께 표시됩니다.
+> 4. 싱크가 없는 곡에서 **✨ 싱크 생성**을 누르면 서버가 오디오를 분석합니다(곡당 수십 초).
+
+**English**: **No reviewer credentials are needed.** With nothing entered after install, every
+feature works. Measured with no auth header at all: `GET /health` → `200`;
+`GET /api/sync/8JRuowZtRBc` → `200` with lyrics data; `POST /api/sync/generate` with `{}` →
+`422` (missing `video_id`) rather than `401`, i.e. it clears authentication and stops at body
+validation. Rate limiting uses a **salted, non-reversible hash of the connecting IP** computed
+server-side — the extension neither creates, sends, nor sees it. Lookups are unlimited; only
+sync generation is counted (15/day per user). The raw IP is not stored. **The extension
+therefore collects and transmits no new user data**, which is the basis for the data-disclosure
+answers: there is no credential the extension sends, and the server-side IP-derived value is
+something any server already sees. The **API key** field in settings is optional (for
+self-hosting or a separate quota); left empty, no auth header is sent.
 
 ---
 
