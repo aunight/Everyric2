@@ -334,25 +334,47 @@ class AlignmentSettings(BaseSettings):
         "was scored. Direct proof the audio did not drive the outcome: of 52 switches with a "
         "greedy transcript, 40 left the distance to what was heard UNCHANGED. Do not turn this on "
         "again without (a) window normalisation, (b) dropping candidate axes the adapter cannot "
-        "hear, (c) a per-song/per-line confidence gate, and a re-measurement that shows a net win.",
+        "hear, (c) a per-song/per-line confidence gate, and a re-measurement that shows a net win. "
+        "REBUILT AND RE-MEASURED 2026-07-26 — the verdict above was about CANDIDATE GENERATION, not "
+        "about the referee. pron_style.pronunciation_candidates now emits candidates ONLY for words "
+        "in an explicit ambiguous-reading table, which structurally removes all three failures: "
+        "(a) it substitutes a reading in place and never deletes, so a shorter candidate cannot "
+        "exist; (b) the orthography axes the kor adapter cannot hear (오오/오우) are gone from the "
+        "generator entirely; (c) no confidence gate is needed because candidates only appear on the "
+        "lines that are genuinely ambiguous — 1.94% of 2,376 wiki corpus lines, and ZERO lines in "
+        "s5Rkv_5Sbbo, the very song this verdict came from. That song is now untouched because the "
+        "referee never runs on it. Deployed audit (4 songs, 351 lines, referee ON via env): 6 lines "
+        "scored, 5 adopted, ALL 5 correct, 0 wrong. 好き好きすぎて→스키스키스기테 (x4, the user "
+        "confirmed this one by listening to the song) and 何が→나니가; 行けば correctly REJECTED at "
+        "-0.133. Still default-false: the sample is 4 songs, and this is the switch that already "
+        "shipped a bad outcome once — turn it on per deployment with "
+        "EVERYRIC_ALIGNMENT_PRON_REFEREE=true (clearing the env line does NOT enable it, the code "
+        "default is off) and audit adopted lines from segment debug.referee before trusting it.",
     )
 
     pron_referee_margin: float = Field(
-        default=0.15,
+        default=0.03,
         description="Margin a challenger reading must beat the current reading by, in PER-TOKEN "
         "AVERAGE LOG-PROBABILITY (nats), before the audio referee replaces a line's pronunciation. "
         "Normalising by token count is mandatory — comparing sums of (negative) frame log-probs "
-        "would hand victory to whichever candidate has the fewest tokens. Why 0.15: on the kor "
-        "adapter a typical aligned character scores exp(score)≈0.05, i.e. about -3.0 nats per token, "
-        "and a genuinely wrong reading is wrong in 1-2 syllables out of ~10 in a line, so the true "
-        "signal is on the order of (2 x 3.0)/10 = 0.6 nats/token. 0.15 sits ~4x below that expected "
-        "signal yet far above numeric jitter between two near-identical token sequences, which is "
-        "the conservative side: failing to fix a reading only leaves today's 82.1%, while flipping a "
-        "correct reading on noise makes the karaoke syllables WRONG. This is the same philosophy as "
-        "dual_align_min_ratio (require a clear margin or keep the incumbent), expressed as an "
-        "absolute log-prob difference instead of a ratio because the two sides here are measured on "
-        "the SAME emission with the same adapter, so no scale correction is needed. NOT calibrated "
-        "on real audio yet — re-measure per deployment before loosening.",
+        "would hand victory to whichever candidate has the fewest tokens. "
+        "CALIBRATED ON REAL AUDIO 2026-07-26 (was 0.15, an uncalibrated estimate). The old value's "
+        "reasoning was: a kor-adapter character scores about -3.0 nats, a wrong reading is wrong in "
+        "1-2 of ~10 syllables, so the signal should be ~0.6 nats/token and 0.15 sits 4x below it. "
+        "MEASUREMENT REFUTED THAT MODEL — the real signal is an order of magnitude smaller. "
+        "好き好きすぎて differs from its correct reading in ONE syllable out of seven and gained only "
+        "+0.041..+0.073; 何が→なにが gained +0.0375. Meanwhile every wrong challenger measured so far "
+        "lost by a clear margin: 行ったり→윳타리 -0.056, 行けば -0.133, 弾く -0.228..-0.421, 刃 -0.228. "
+        "So correct and incorrect candidates separate cleanly around zero (worst correct +0.0375, "
+        "best incorrect -0.056) and 0.03 sits inside that gap. At 0.15 not one of the five real "
+        "fixes would have landed — including the one the user verified by ear (好き好き appears 4x in "
+        "that chorus). Sample is small (13 scored candidates over 4 songs, 5 adopted / 1 rejected in "
+        "the deployed audit): the sign could flip on a handful of new cases, so re-measure before "
+        "loosening further, and audit adopted lines one by one (worker writes each decision to the "
+        "segment's debug.referee — default, chosen, gain, margin, frames, per-candidate scores). "
+        "Erring low is not symmetric-free: failing to fix a reading only leaves today's 82.1%, while "
+        "flipping a correct reading on noise makes the karaoke syllables WRONG. The gap above is the "
+        "only reason a value this small is defensible.",
     )
 
     pron_referee_human_margin: float = Field(
