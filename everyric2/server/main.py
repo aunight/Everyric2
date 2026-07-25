@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from everyric2 import __version__
@@ -14,6 +15,7 @@ from everyric2.server.api.translate import router as translate_router
 from everyric2.server.api.vocaro import router as vocaro_router
 from everyric2.server.api.worker import router as worker_router
 from everyric2.server.db.connection import close_db, init_db
+from everyric2.server.privacy_page import PRIVACY_HTML
 
 # torch.cuda.is_available()이 GPU 사용 상태에 따라 호출당 ~2초까지 걸린다(드라이버 질의) —
 # /health가 요청마다 부르면 확장 헬스체크 타임아웃(1.5s)을 넘겨 생성 버튼이 잠긴다.
@@ -145,4 +147,19 @@ async def root():
         "name": "Everyric2 API",
         "version": __version__,
         "docs": "/docs",
+        "privacy": "/privacy",
     }
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy_policy():
+    """개인정보처리방침 — 크롬 웹스토어에 제출하는 **공개 URL**이다.
+
+    스토어는 방침을 URL로 요구하고 그 링크를 리스팅(설치 *전* 화면)에 표시하므로, 확장 내장
+    페이지로는 대신할 수 없다(``chrome-extension://``는 확장 ID에 묶여 외부에서 열 수 없고
+    심사자도 못 본다). 인증 없이 열려 있어야 한다 — 이 라우트에 API 키 검사를 붙이면 심사가
+    막힌다.
+
+    ``include_in_schema=False``: /docs의 API 목록에 낄 문서가 아니다.
+    """
+    return HTMLResponse(PRIVACY_HTML)
