@@ -1043,6 +1043,7 @@ export class PipController {
         onOpenSearch: () => this.openPanelSearch(),
         onOpenSettings: () => cb?.onOpenSettings(),
         onRecheckServer: () => cb?.onRecheckServer(),
+        onOpenPermissions: () => cb?.onOpenPermissions(),
       },
       makeGenerateButton: (label, onClick) => {
         const btn = createGenerateButton(label, this.serverStatus, onClick);

@@ -85,25 +85,47 @@ that module, no runtime network call).
 
 ---
 
-## `http://localhost:8000/*`, `http://127.0.0.1:8000/*`
+## `http://localhost:8000/*`, `http://127.0.0.1:8000/*` — **optional_host_permissions**
+
+**이 둘은 설치 시 부여되지 않습니다.** `optional_host_permissions`에 선언되어 있고,
+자체 호스팅을 쓰려는 사용자가 확장의 권한 설정 페이지에서 직접 허용해야만 부여됩니다.
+설치 화면 권한 목록에도 표시되지 않습니다.
 
 **한국어**: 사용자가 이 프로젝트의 오픈소스 백엔드 서버(`everyric2/server`, FastAPI)를
-자신의 컴퓨터에서 직접 구동해 확장에 연결할 수 있게 하는 기능입니다. 확장 설정 패널
-(⚙)에서 서버 URL을 `http://localhost:8000`으로 바꾸면, 개발자나 자체 호스팅을 원하는
-사용자가 시간 동기화 가사 생성(로컬 음원 분석 기반)과 번역을 자신의 컴퓨터에서 실행할
-수 있습니다. 기본값이 아니며(기본값은 `everyric.moref.co`), 사용자가 명시적으로 설정을
-변경해야만 사용됩니다. 두 주소(`localhost`, `127.0.0.1`)는 같은 로컬 서버를 가리키는
-동의어로, 브라우저/OS 환경에 따라 어느 쪽으로 해석될지 달라 둘 다 등록했습니다.
+자신의 컴퓨터에서 직접 구동해 확장에 연결할 수 있게 하는 기능입니다. 기본 서버는
+`everyric.moref.co`이고(`src/lib/settings.ts`), 대부분의 사용자는 이 권한을 부여받지
+않은 채로 확장의 모든 기능을 씁니다. 자체 호스팅을 원하는 사용자만 옵션 페이지
+(`src/options.html`)의 버튼으로 허용하고, 같은 페이지에서 언제든 철회할 수 있습니다.
 
-**English**: This enables users to run this project's open-source backend server
+권한이 없는 상태에서 로컬 주소로 요청하려 하면 확장이 **요청을 보내기 전에 막고**
+"호스트 권한 없음"이라고 표시합니다(`src/lib/host-permissions.ts`의
+`localPermissionBlock`). 권한 없이 fetch를 시도하면 실패가 네트워크 오류로 분류돼
+사용자가 서버를 의심하게 되므로, 원인을 정확히 말하도록 설계했습니다.
+
+두 주소를 모두 선언한 이유: 요청은 항상 `127.0.0.1`로 정규화되어 나가지만(Windows에서
+`localhost`가 IPv6를 먼저 시도해 요청마다 지연이 붙습니다), 정규화 규칙이 바뀌거나 이
+권한이 필수였던 이전 버전에서 이미 허용된 경우에도 목록에 보이고 철회할 수 있어야 합니다.
+**허용은 실제로 필요한 하나만 요청합니다** — 두 주소를 한꺼번에 부여받지 않습니다.
+
+**English**: These let a user run this project's open-source backend
 (`everyric2/server`, FastAPI) on their own machine and point the extension at it.
-Via the extension's settings panel (⚙), a user can change the server URL to
-`http://localhost:8000` to generate time-synced lyrics (via local audio analysis) and
-translations locally instead of using our hosted server. This is not the default
-(the default is `everyric.moref.co`) and only takes effect if the user explicitly
-changes the setting. Both `localhost` and `127.0.0.1` are registered because,
-depending on the browser/OS network stack, either form may be used to reach the same
-local server.
+**Neither is granted at install time** — they are declared under
+`optional_host_permissions` and are only granted if the user explicitly allows them on
+the extension's options page (`src/options.html`), which also offers revocation. The
+default server is `everyric.moref.co`, so the vast majority of users never receive
+these permissions and still get every feature.
+
+If the server URL points at a local address without the permission, the extension
+**blocks the request before sending it** and reports "no host permission" rather than
+letting the fetch fail and be misclassified as a network error — otherwise the user
+would suspect their server while the real cause is invisible
+(`localPermissionBlock` in `src/lib/host-permissions.ts`).
+
+Both forms are declared because requests are always normalised to `127.0.0.1` (on
+Windows, `localhost` resolves to IPv6 first and adds latency per request), yet the
+declaration must remain visible and revocable if that rule changes or if the permission
+was already granted by an older version where it was required. **Only the one pattern
+actually needed is requested** — the extension never asks for both at once.
 
 ---
 

@@ -1,5 +1,5 @@
 import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncListItem } from '../types';
-import { serverUsable, statusLine, unknownStatus } from '../lib/server-status';
+import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
 import { resolveTheme } from '../lib/theme';
 import { h, icon, ICONS } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
@@ -47,6 +47,8 @@ export interface OverlayCallbacks {
   onCloseSearch: () => void;
   /** 서버 상태 다시 확인 (서버 오류 배너의 '다시 확인') */
   onRecheckServer: () => void;
+  /** 로컬 서버 호스트 권한을 허용하는 확장 페이지 열기 (배너·설정의 '권한 설정 열기') */
+  onOpenPermissions: () => void;
   /** 최근 서버 요청 로그 — 접이식 섹션을 펼칠 때만 호출된다 */
   loadServerLog: () => Promise<ServerLogEntry[]>;
 }
@@ -103,6 +105,8 @@ export class LyricsOverlay {
   private collapseBtn: HTMLButtonElement;
   private settingsSheet: HTMLDivElement | null = null;
   private settingsDot: HTMLSpanElement | null = null;
+  /** 설정 시트의 '권한 설정 열기' — 로컬 서버 권한이 없을 때만 보인다 */
+  private settingsPermBtn: HTMLButtonElement | null = null;
   private sourceBadge: HTMLSpanElement;
   private offsetLabel: HTMLSpanElement;
   private progressBar: HTMLDivElement | null = null;
@@ -317,6 +321,7 @@ export class LyricsOverlay {
         onOpenSearch: () => this.openSearch(),
         onOpenSettings: () => this.openSettings(),
         onRecheckServer: () => this.callbacks.onRecheckServer(),
+        onOpenPermissions: () => this.callbacks.onOpenPermissions(),
       },
       makeGenerateButton: (label, onClick) => this.makeGenerateButton(label, onClick),
       server: this.serverStatus,
@@ -796,9 +801,12 @@ export class LyricsOverlay {
     this.renderServerBar();
 
     if (this.settingsDot) {
-      this.settingsDot.classList.toggle('ok', status.kind === 'ok');
-      this.settingsDot.classList.toggle('auth', status.kind === 'auth');
+      this.applyDotClasses(this.settingsDot, status);
       this.settingsDot.title = `서버 연결 상태 — ${statusLine(status)}`;
+    }
+    // 설정 시트가 열린 채로 상태가 바뀔 수 있다 (URL을 고치면 곧바로 재확인이 돌아온다)
+    if (this.settingsPermBtn) {
+      this.settingsPermBtn.style.display = needsHostPermission(status) ? '' : 'none';
     }
     if (prevKind !== status.kind && this.stateKind === 'empty') {
       // 설정 시트에서 키를 고치던 중일 수 있다 — 화면은 다시 그리되 시트는 되살린다
@@ -807,6 +815,13 @@ export class LyricsOverlay {
       this.showEmpty(this.lastSong);
       if (settingsWasOpen) this.openSettings();
     }
+  }
+
+  /** 설정 시트의 상태 점 색 — ok(초록) / auth(주황) / permission(파랑) / 그 밖(빨강) */
+  private applyDotClasses(dot: HTMLSpanElement, status: ServerStatus): void {
+    dot.classList.toggle('ok', status.kind === 'ok');
+    dot.classList.toggle('auth', status.kind === 'auth');
+    dot.classList.toggle('perm', status.kind === 'permission');
   }
 
   /** 서버가 필요한 헤더 버튼(재생성) 잠금 — 표시 여부는 기존 로직 그대로 */
@@ -1150,6 +1165,7 @@ export class LyricsOverlay {
     this.settingsSheet?.remove();
     this.settingsSheet = null;
     this.settingsDot = null;
+    this.settingsPermBtn = null;
   }
 
   private buildSettingsSheet(): HTMLDivElement {
@@ -1309,8 +1325,7 @@ export class LyricsOverlay {
     });
     // 점 색만으론 "왜 빨간지"를 알 수 없다 — 사유를 툴팁으로 붙이고, 인증 실패는 따로 표시
     const dot = h('span', { className: 'ey-dot', title: `서버 연결 상태 — ${statusLine(this.serverStatus)}` });
-    dot.classList.toggle('ok', this.serverStatus.kind === 'ok');
-    dot.classList.toggle('auth', this.serverStatus.kind === 'auth');
+    this.applyDotClasses(dot, this.serverStatus);
     this.settingsDot = dot;
     // 서버가 정상이 아니면 설정 안에서도 사유를 글자로 남긴다 (색맹·툴팁 미표시 환경 대비)
     const serverNote = h('div', { className: 'ey-settings-note ey-settings-server-note' });
@@ -1321,6 +1336,21 @@ export class LyricsOverlay {
     } else {
       serverNote.style.display = 'none';
     }
+    /**
+     * 로컬 서버 URL을 입력한 직후 사용자가 보고 있는 자리 — 여기에 허용 버튼을 둔다.
+     *
+     * 배너(buildServerStatusBar)에도 같은 버튼이 있지만 그건 패널 상단이고, URL을 막 고친
+     * 사람의 눈은 이 입력칸에 있다. 두 버튼은 **같은 콜백 하나**를 부르므로 갈라질 여지가
+     * 없다 (URL 입력을 두 곳에 두지 않은 것과 같은 이유다).
+     */
+    const permBtn = h('button', {
+      className: 'ey-secondary-btn ey-settings-perm-btn',
+      text: '권한 설정 열기',
+      attrs: { title: '자체 호스팅 서버 접근을 허용하는 페이지를 새 탭에서 엽니다' },
+      on: { click: () => this.callbacks.onOpenPermissions() },
+    });
+    this.settingsPermBtn = permBtn;
+    permBtn.style.display = needsHostPermission(this.serverStatus) ? '' : 'none';
 
     const apiKeyInput = h('input', { className: 'ey-input', attrs: { type: 'password', placeholder: '(선택) 서버 API 키' } });
     apiKeyInput.value = this.settings.apiKey;
@@ -1372,6 +1402,7 @@ export class LyricsOverlay {
         apiKeyInput,
       ),
       serverNote,
+      permBtn,
       h('div', { className: 'ey-settings-row' },
         h('label', { text: '낮은 정렬 신뢰도 경고', attrs: { title: '전사 신뢰도가 매우 낮은 곡에서 가사창 상단에 경고 바를 띄웁니다.' } }), lowConfWarning),
       h('div', { className: 'ey-settings-row' },

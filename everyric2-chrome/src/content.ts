@@ -194,6 +194,27 @@ function handleRuntimeMessage(message: ContentMessage): void {
     void toggleDebugInfo();
   } else if (message.type === 'SYNC_GENERATED' && message.payload.videoId === currentVideoId) {
     void searchLyrics();
+  } else if (message.type === 'PERMISSIONS_CHANGED') {
+    // 옵션 페이지(다른 탭)에서 로컬 서버 권한을 허용·철회했다 — 서버 상태는 그 권한을
+    // 근거로 판정되므로 다시 물어야 배너가 사라지거나 나타난다.
+    void refreshServerStatus();
+  }
+}
+
+/**
+ * 권한 관리 페이지를 연다 — `chrome.permissions.request()`가 여기서 안 되기 때문이다.
+ *
+ * 그 API는 확장 페이지·service worker에서만 쓸 수 있고(content script 불가), service
+ * worker에서 request()를 부르면 사용자 제스처 컨텍스트가 없어 실패한다. 그래서 확장 페이지를
+ * 하나 만들고, 그 페이지의 버튼 클릭을 제스처로 삼는다.
+ *
+ * 페이지를 못 열면 조용히 끝내지 않는다 — 그러면 버튼이 죽은 것처럼 보인다.
+ */
+async function openPermissionsPage(): Promise<void> {
+  const res = await sendToBackground({ type: 'OPEN_OPTIONS' });
+  if (res.error) {
+    showNotice('권한 설정 페이지를 열지 못했어요 — 확장 관리 페이지(chrome://extensions)에서 '
+      + 'Everyric의 "확장 프로그램 옵션"을 열어 주세요', 20000);
   }
 }
 
@@ -496,6 +517,7 @@ function ensureOverlay(): LyricsOverlay {
     onRequestSyncList: () => void handleRequestSyncList(),
     onResetSync: () => void handleResetSync(),
     onRecheckServer: () => void refreshServerStatus(),
+    onOpenPermissions: () => void openPermissionsPage(),
     loadServerLog: () => fetchServerLog(),
   }, initialGeometry);
   overlay.setServerStatus(serverStatus); // 이미 알고 있는 상태를 새 패널에 즉시 반영
@@ -2181,6 +2203,7 @@ async function handlePipToggle(): Promise<void> {
       // 설정 UI는 메인 패널에만 있다 — PiP에서 누르면 유튜브 탭의 패널에 설정을 펼쳐 준다
       onOpenSettings: () => ensureOverlay().openSettings(),
       onRecheckServer: () => void refreshServerStatus(),
+      onOpenPermissions: () => void openPermissionsPage(),
     },
     serverStatus,
     theme: resolveTheme(settings), // 판정은 페이지 컨텍스트에서만 가능 — PiP는 받아 쓴다

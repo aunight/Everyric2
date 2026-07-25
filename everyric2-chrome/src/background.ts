@@ -3,7 +3,7 @@ import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLi
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
 import { getSettings } from './lib/settings';
-import type { BgRequest, LRCLibTrack, LyricsData, MessageResponse, SearchCandidate, SongInfo } from './types';
+import type { BgRequest, ContentMessage, LRCLibTrack, LyricsData, MessageResponse, SearchCandidate, SongInfo } from './types';
 
 async function getServerConfig(): Promise<ServerConfig> {
   const { serverUrl, apiKey } = await getSettings();
@@ -40,7 +40,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   const isEveryric = origin === 'https://everyric.com' || origin.endsWith('.everyric.com');
   const videoId = (message?.payload as { videoId?: unknown } | undefined)?.videoId;
   if (isEveryric && message?.type === 'SYNC_COMPLETE' && typeof videoId === 'string') {
-    void broadcastToYouTubeTabs({ videoId });
+    void broadcastToYouTubeTabs({ type: 'SYNC_GENERATED', payload: { videoId } });
     sendResponse({ success: true });
   }
   return true;
@@ -72,6 +72,21 @@ chrome.commands.onCommand.addListener((command, tab) => {
   chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_DEBUG' }).catch(() => {
     /* content script가 없는 탭(비 YouTube)은 무시 */
   });
+});
+
+/**
+ * 호스트 권한이 허용·철회되면 열려 있는 유튜브 탭들에 알린다.
+ *
+ * 허용은 **다른 탭**(옵션 페이지)이나 chrome://extensions에서 일어난다. 가사창의 서버
+ * 상태는 권한을 근거로 판정되므로(everyric-api.request의 가드), 이 알림이 없으면 허용을
+ * 마친 뒤에도 패널에는 "권한이 없어요" 배너가 그대로 남아 사용자가 허용이 실패한 줄 안다.
+ * 폴링 대신 이벤트로 닫는다 — 철회도 같은 경로로 즉시 반영된다.
+ */
+chrome.permissions.onAdded.addListener(() => {
+  void broadcastToYouTubeTabs({ type: 'PERMISSIONS_CHANGED' });
+});
+chrome.permissions.onRemoved.addListener(() => {
+  void broadcastToYouTubeTabs({ type: 'PERMISSIONS_CHANGED' });
 });
 
 async function handleMessage(message: BgRequest): Promise<MessageResponse> {
@@ -165,7 +180,23 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     }
 
     case 'SERVER_HEALTH': {
+      // 권한이 없으면 checkServerStatus 안의 첫 요청이 'permission'으로 실패하고 그대로
+      // ServerStatus.kind === 'permission'이 된다 (everyric-api.request의 가드 →
+      // failureToStatus). 그래서 여기에는 권한 분기가 없다 — 판정 경로를 하나로 두면
+      // 개별 API 호출의 실패와 헬스체크가 같은 사유를 말한다.
       return { data: await checkServerStatus(await getServerConfig()) };
+    }
+
+    // content script는 chrome.permissions를 쓸 수 없고, service worker에서 request()를
+    // 부르면 사용자 제스처가 없어 실패한다 — 허용은 확장 페이지에서만 가능하므로 여기서는
+    // 그 페이지를 여는 것까지가 전부다.
+    case 'OPEN_OPTIONS': {
+      try {
+        await chrome.runtime.openOptionsPage();
+        return { data: true };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : 'open_options_failed' };
+      }
     }
 
     // 최근 서버 요청 몇 건 — 패널·PiP의 접이식 로그가 펼쳐질 때만 가져간다.
@@ -367,13 +398,13 @@ async function searchCandidates(query: { title: string; artist: string; duration
   return candidates;
 }
 
-async function broadcastToYouTubeTabs(payload: { videoId: string }): Promise<void> {
+async function broadcastToYouTubeTabs(message: ContentMessage): Promise<void> {
   const tabs = await chrome.tabs.query({
     url: ['*://www.youtube.com/*', '*://music.youtube.com/*'],
   });
   for (const tab of tabs) {
     if (tab.id !== undefined) {
-      chrome.tabs.sendMessage(tab.id, { type: 'SYNC_GENERATED', payload }).catch(() => {
+      chrome.tabs.sendMessage(tab.id, message).catch(() => {
         /* content script 미주입 탭은 무시 */
       });
     }

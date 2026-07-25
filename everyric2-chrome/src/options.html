@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Everyric 권한 설정</title>
+<!--
+  스타일은 이 문서 안에만 둔다 — public/overlay.css는 shadow DOM 안의 가사 패널 전용이고
+  (`.ey-*`가 패널 골격·레인·PiP까지 전제한다) 옵션 페이지는 독립 문서다. 재사용하면 쓰지
+  않는 규칙 수백 줄을 끌고 오면서도 여기 필요한 문서 레벨 스타일은 없다.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    padding: 2rem 1.25rem 4rem;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    color: #1f2328;
+    background: #fff;
+  }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 1.375rem; margin: 0 0 .25rem; }
+  .sub { color: #57606a; font-size: .875rem; margin: 0 0 1.75rem; }
+  h2 { font-size: 1rem; margin: 2rem 0 .5rem; }
+  p { margin: .625rem 0; }
+  code {
+    background: #f0f0f0;
+    padding: .1em .35em;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: .875em;
+    word-break: break-all;
+  }
+  .card {
+    border: 1px solid #d8dee4;
+    border-radius: 10px;
+    padding: 1rem 1.125rem;
+    margin: 1rem 0;
+    background: #f8f9fa;
+  }
+  .card.wide { background: transparent; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: .625rem;
+    flex-wrap: wrap;
+    padding: .375rem 0;
+  }
+  .row + .row { border-top: 1px solid #e6e9ec; }
+  .row .origin { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8125rem; }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .badge {
+    display: inline-block;
+    padding: .0625rem .5rem;
+    border-radius: 999px;
+    font-size: .75rem;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .badge.on { background: #dafbe1; color: #116329; border-color: #b7ebc4; }
+  .badge.off { background: #eef1f4; color: #57606a; border-color: #dde2e7; }
+  .badge.need { background: #ddf0ff; color: #0a4f8a; border-color: #b6ddff; }
+  .actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 1rem; }
+  button {
+    font: inherit;
+    font-size: .875rem;
+    padding: .4rem .9rem;
+    border-radius: 6px;
+    border: 1px solid #d0d7de;
+    background: #f6f8fa;
+    color: inherit;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #eef1f4; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button.primary:hover:not(:disabled) { background: #1a5fd0; }
+  button:disabled { opacity: .55; cursor: default; }
+  .note { font-size: .8125rem; color: #57606a; }
+  .note.warn { color: #8a4b00; }
+  .note.bad { color: #a40e26; }
+  #message:empty { display: none; }
+  #message {
+    margin-top: .875rem;
+    padding: .625rem .75rem;
+    border-radius: 8px;
+    background: #eef1f4;
+    font-size: .875rem;
+  }
+  #message.bad { color: #a40e26; }
+  ul { padding-left: 1.25rem; margin: .5rem 0; }
+  li { margin: .25rem 0; }
+
+  /* 다크 모드 — 서버의 privacy_page.py와 같은 방식(prefers-color-scheme)을 쓴다 */
+  @media (prefers-color-scheme: dark) {
+    body { color: #e6e6e6; background: #131313; }
+    .sub, .note { color: #9aa4ae; }
+    code { background: #222; }
+    .card { background: #1a1c1e; border-color: #333; }
+    .row + .row { border-top-color: #2a2d30; }
+    .badge.on { background: #12261a; color: #6ee7a0; border-color: #24462f; }
+    .badge.off { background: #1f2225; color: #9aa4ae; border-color: #33383d; }
+    .badge.need { background: #10263c; color: #79c0ff; border-color: #1f4b73; }
+    button { background: #22262a; border-color: #3a4046; }
+    button:hover:not(:disabled) { background: #2b3035; }
+    button.primary { background: #2f7ff0; border-color: #2f7ff0; color: #fff; }
+    button.primary:hover:not(:disabled) { background: #2569cc; }
+    .note.warn { color: #e3b341; }
+    .note.bad { color: #ff8087; }
+    #message { background: #1f2225; }
+    #message.bad { color: #ff8087; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Everyric 권한 설정</h1>
+  <p class="sub">자체 호스팅(로컬) 싱크 서버에 접근할 권한을 여기서 허용하거나 철회합니다.</p>
+
+  <p>
+    Everyric은 기본적으로 <code>https://everyric.moref.co</code> 싱크 서버를 씁니다. 그 서버 접근은
+    설치할 때 이미 허용돼 있어 <strong>여기서 할 일이 없습니다</strong>.
+  </p>
+  <p>
+    이 페이지는 서버를 <strong>직접 돌려서 쓰는 경우</strong>에만 필요합니다. 그런 로컬 서버 주소는
+    자체 호스팅하는 소수만 쓰므로, 설치할 때 모두에게 권한을 요구하지 않고 필요한 사람이 직접
+    허용하도록 <em>선택적 권한</em>으로 두었습니다. 허용하면 확장이 그 주소로 가사·싱크 요청을
+    보낼 수 있게 되고, 철회하면 즉시 보낼 수 없게 됩니다.
+  </p>
+
+  <h2>현재 싱크 서버</h2>
+  <div class="card">
+    <div class="row">
+      <span class="grow"><code id="server-url">불러오는 중…</code></span>
+      <span id="server-kind" class="badge off">확인 중</span>
+    </div>
+    <p class="note" id="server-note">
+      서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다 — 이 페이지에서는 권한만 다룹니다.
+    </p>
+  </div>
+
+  <h2>로컬 서버 접근 권한</h2>
+  <div class="card wide" id="perm-rows"></div>
+  <div class="actions">
+    <button id="grant" class="primary" type="button" hidden>허용</button>
+    <button id="revoke" type="button" hidden>철회</button>
+    <button id="recheck" type="button">상태 다시 확인</button>
+  </div>
+  <div id="message" role="status" aria-live="polite"></div>
+
+  <h2>알아 두면 좋은 것</h2>
+  <ul>
+    <li>허용은 한 번만 하면 유지됩니다. 확장을 지우면 함께 사라집니다.</li>
+    <li>
+      확장 업데이트로 이 권한이 회수돼 자체 호스팅 서버가 갑자기 연결되지 않을 수 있습니다.
+      그때는 여기서 다시 허용하면 됩니다.
+    </li>
+    <li>
+      <code>chrome://extensions</code>의 Everyric 세부정보에서도 사이트 접근 권한을 확인·변경할 수
+      있습니다. 거기서 바꾼 내용도 이 페이지에 그대로 나타납니다.
+    </li>
+    <li>포트가 다른 로컬 서버나 제3의 서버 주소는 확장을 다시 빌드해야 쓸 수 있습니다.</li>
+  </ul>
+</main>
+<script type="module" src="./options.ts"></script>
+</body>
+</html>

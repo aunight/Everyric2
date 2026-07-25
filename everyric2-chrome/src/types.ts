@@ -272,6 +272,10 @@ export interface JobStatusResponse {
 export type ApiFailureKind =
   | 'offline' // 서버에 닿지 못함 (연결 거부·DNS·CORS 등 fetch 자체가 실패)
   | 'timeout' // 제한 시간 안에 응답이 오지 않음
+  // 확장에 이 호스트 권한이 없어 **부르기 전에** 막았다 (로컬 서버는 optional 권한이다).
+  // 실제로 불러 보면 fetch가 실패해 'offline'로 보이는데, 서버는 멀쩡한 경우다 —
+  // 그 오해를 막기 위해 별도 종류로 둔다 (lib/host-permissions.localPermissionBlock).
+  | 'permission'
   | 'auth' // 401/403 — API 키가 없거나 틀림
   | 'notfound' // 404 — 엔드포인트나 리소스 없음 (구버전 서버일 수도)
   | 'client' // 그 밖의 4xx
@@ -303,8 +307,10 @@ export interface ServerLogEntry {
   elapsedMs: number;
 }
 
-/** 서버를 쓸 수 있는가 — 못 쓴다면 왜인지까지 */
-export type ServerStatusKind = 'unknown' | 'ok' | 'offline' | 'auth' | 'error';
+/** 서버를 쓸 수 있는가 — 못 쓴다면 왜인지까지.
+ *  'permission' = 로컬(자체 호스팅) 서버 호스트 권한이 없다. 서버 장애가 아니라 한 번의
+ *  허용으로 풀리는 상태라, 화면은 이 경우에만 '권한 설정 열기'를 내놓는다. */
+export type ServerStatusKind = 'unknown' | 'ok' | 'offline' | 'auth' | 'error' | 'permission';
 
 export interface ServerStatus {
   kind: ServerStatusKind;
@@ -487,6 +493,10 @@ export type BgRequest =
   | { type: 'TRANSLATE'; payload: { text: string; targetLang: string; title?: string; artist?: string } }
   | { type: 'SERVER_HEALTH' }
   | { type: 'SERVER_LOG' }
+  /** 권한 관리 페이지(options_ui) 열기 — `chrome.permissions.request()`는 사용자 제스처가
+   *  있는 **확장 페이지**에서만 되므로 content script는 여기까지만 할 수 있다.
+   *  (service worker에서 request()를 부르면 제스처 컨텍스트가 없어 실패한다.) */
+  | { type: 'OPEN_OPTIONS' }
   | { type: 'VOCARO_LOOKUP'; payload: { title: string } }
   | { type: 'VOCARO_PAGE'; payload: { slug: string } }
   | { type: 'YT_CAPTION_TEXT'; payload: { videoId: string; lang: string; auto: boolean } }
@@ -495,7 +505,11 @@ export type BgRequest =
 export type ContentMessage =
   | { type: 'TOGGLE_OVERLAY' }
   | { type: 'TOGGLE_DEBUG' }
-  | { type: 'SYNC_GENERATED'; payload: { videoId: string } };
+  | { type: 'SYNC_GENERATED'; payload: { videoId: string } }
+  /** 호스트 권한이 허용·철회됐다 (옵션 페이지나 chrome://extensions에서) — 서버 상태를
+   *  다시 판정해야 한다. 허용은 다른 탭에서 일어나므로 이 알림이 없으면 허용한 뒤에도
+   *  가사창에는 "권한이 없어요" 배너가 그대로 남는다. */
+  | { type: 'PERMISSIONS_CHANGED' };
 
 export interface MessageResponse<T = unknown> {
   data?: T;

@@ -44,7 +44,10 @@ export function failureKindFromStatus(status: number): ApiFailureKind {
  * 판정하면 멀쩡한 서버에서 생성 버튼이 잠긴다.
  */
 export function affectsServerStatus(kind: ApiFailureKind): boolean {
-  return kind === 'offline' || kind === 'timeout' || kind === 'auth' || kind === 'server';
+  return kind === 'offline' || kind === 'timeout' || kind === 'auth' || kind === 'server'
+    // 권한이 없으면 이 서버로 가는 **모든** 요청이 같은 이유로 막힌다 — 엔드포인트 국소
+    // 문제가 아니므로 서버 전체 상태로 올린다. 그래야 첫 실패 한 번으로 배너가 뜬다.
+    || kind === 'permission';
 }
 
 // ── 상태 만들기 ──────────────────────────────────────────────────
@@ -61,7 +64,10 @@ export function unknownStatus(at = Date.now()): ServerStatus {
 /** 실패 종류별 원인 코드 한 조각 — 상태 코드가 있으면 그대로 노출한다 */
 export function failureCode(failure: ApiFailure): string {
   if (failure.status !== undefined) return `HTTP ${failure.status}`;
-  return failure.kind === 'timeout' ? '응답 없음(타임아웃)' : '연결 실패';
+  if (failure.kind === 'timeout') return '응답 없음(타임아웃)';
+  // 권한 문제는 연결을 시도조차 하지 않았다 — '연결 실패'라고 쓰면 거짓말이 된다
+  if (failure.kind === 'permission') return '호스트 권한 없음';
+  return '연결 실패';
 }
 
 /** 실패 → 사용자에게 보여줄 한 줄 사유 */
@@ -81,6 +87,8 @@ export function describeFailure(failure: ApiFailure): string {
       return '서버 응답을 해석할 수 없어요';
     case 'client':
       return '서버가 요청을 거절했어요';
+    case 'permission':
+      return '로컬 서버에 접근할 권한이 없어요 — 권한을 허용해 주세요';
   }
 }
 
@@ -91,9 +99,11 @@ export function failureToStatus(failure: ApiFailure | null | undefined, at = Dat
   }
   const kind: ServerStatus['kind'] = failure.kind === 'auth'
     ? 'auth'
-    : failure.kind === 'offline' || failure.kind === 'timeout'
-      ? 'offline'
-      : 'error';
+    : failure.kind === 'permission'
+      ? 'permission'
+      : failure.kind === 'offline' || failure.kind === 'timeout'
+        ? 'offline'
+        : 'error';
   return {
     kind,
     reason: describeFailure(failure),
@@ -130,7 +140,15 @@ export function serverUsable(status: ServerStatus): boolean {
  * 봐야 한다 — 확인 전에 고장을 단정하면 켤 때마다 없는 오류가 깜빡인다.
  */
 export function serverKnownBad(status: ServerStatus): boolean {
-  return status.kind === 'offline' || status.kind === 'auth' || status.kind === 'error';
+  return status.kind === 'offline' || status.kind === 'auth' || status.kind === 'error'
+    // 권한 없음도 "확인된 못 쓰는 상태"다 — 배너를 띄우고 "가사 없음" 대신 사유를 말해야
+    // 한다. 서버가 죽은 것과 달리 한 번의 허용으로 풀리므로 화면이 그 버튼까지 준다.
+    || status.kind === 'permission';
+}
+
+/** 이 상태가 호스트 권한 허용으로 풀리는가 — 화면이 '권한 설정 열기'를 내놓을 조건 */
+export function needsHostPermission(status: ServerStatus): boolean {
+  return status.kind === 'permission';
 }
 
 // ── 로그 표시 ────────────────────────────────────────────────────
@@ -147,9 +165,11 @@ export function formatLogTime(at: number): string {
 
 /** 로그 한 줄 — "18:04:21  GET /api/sync/xxx  401  0.1s  API 키가 필요해요" */
 export function formatLogEntry(entry: ServerLogEntry): string {
+  // 권한 문제는 요청을 보내지도 않았다 — 'no-response'로 적으면 서버가 침묵한 것처럼 읽힌다
   const status = entry.status !== undefined
     ? String(entry.status)
-    : entry.kind === 'timeout' ? 'timeout' : 'no-response';
+    : entry.kind === 'timeout' ? 'timeout'
+      : entry.kind === 'permission' ? 'no-perm' : 'no-response';
   const secs = `${(entry.elapsedMs / 1000).toFixed(entry.elapsedMs < 10000 ? 1 : 0)}s`;
   const detail = entry.detail ? `  ${entry.detail}` : '';
   return `${formatLogTime(entry.at)}  ${entry.method} ${entry.path}  ${status}  ${secs}${detail}`;

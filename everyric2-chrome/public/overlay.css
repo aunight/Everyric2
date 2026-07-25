@@ -156,6 +156,13 @@
   border-color: rgba(255, 176, 46, 0.38);
 }
 
+/* 호스트 권한 없음 — 장애가 아니라 한 번의 허용으로 풀리는 상태라 경고색을 쓰지 않는다 */
+.ey-server-bar.ey-server-permission {
+  background: rgba(106, 159, 224, 0.14);
+  border-color: rgba(106, 159, 224, 0.42);
+}
+.ey-server-bar-actions .ey-primary-btn { padding: 4px 10px; font-size: 11px; }
+
 .ey-server-bar-head { display: flex; align-items: flex-start; gap: 6px; }
 .ey-server-bar-icon { flex-shrink: 0; }
 .ey-server-bar-text { min-width: 0; font-weight: 500; }
@@ -199,6 +206,7 @@
 /* 설정 시트의 서버 사유 한 줄 — 점 색만으로는 이유를 알 수 없다 */
 .ey-settings-server-note.bad { color: var(--ey-danger-text); }
 .ey-dot.auth { background: #e0a052; }
+.ey-dot.perm { background: #6a9fe0; }
 
 /* PiP: 푸터 위 고정 슬롯 — 패널(가사 찾기)이 닫혀 있어도 사유가 보인다 */
 .ey-pip-server-bar { padding-top: 4px; }
@@ -814,6 +822,11 @@
 .ey-settings-note { font-size: 11px; color: var(--ey-text-faint); }
 
 .ey-settings .ey-secondary-btn { align-self: center; margin-top: auto; }
+
+/* 서버 URL 칸 바로 아래에 붙는 '권한 설정 열기' — 위 규칙은 시트 맨 끝의 '닫기'를 아래로
+   밀기 위한 것이라, 중간에 있는 이 버튼에까지 적용되면 URL 칸에서 떨어져 버린다.
+   같은 특이도이므로 반드시 위 규칙 **뒤에** 와야 한다. */
+.ey-settings .ey-settings-perm-btn { align-self: flex-start; margin-top: 0; }
 
 .ey-dot {
   width: 8px;

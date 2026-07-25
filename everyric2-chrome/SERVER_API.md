@@ -7,9 +7,11 @@
 
 - 인증: 확장 설정에 API 키가 입력돼 있으면 모든 요청에 `X-API-Key: <key>` 헤더 첨부.
   빈 값이면 헤더 생략(익명). 401/403 등 비-2xx는 확장에서 "실패"로 처리된다.
-- CORS: 확장(service worker) 호출은 host_permissions로 CORS를 우회하므로 불필요.
-  단, 확장 manifest의 `host_permissions`에 서버 origin이 등록돼 있어야 한다.
-- 서버 URL은 확장 설정에서 변경 가능 (기본 `http://localhost:8000`).
+- CORS: 확장(service worker) 호출은 호스트 권한으로 CORS를 우회하므로 불필요.
+  단, 그 origin에 대한 호스트 권한이 **실제로 부여돼 있어야** 한다 — manifest의
+  `host_permissions`(설치 시 부여)이거나 `optional_host_permissions` + 사용자 허용이어야
+  한다. 로컬 서버는 후자다 (아래 "manifest 준비사항").
+- 서버 URL은 확장 설정에서 변경 가능 (기본값은 `src/lib/settings.ts`의 `DEFAULT_SETTINGS.serverUrl`).
 
 ## 엔드포인트
 
@@ -109,14 +111,25 @@
 "host_permissions": [ "...", "https://your-server.example/*" ]
 ```
 
-현재 `host_permissions`에 등록된 서버 호스트와 근거:
+현재 `host_permissions`(설치 시 전원에게 부여)에 등록된 서버 호스트와 근거:
 - `https://everyric.moref.co/*` — 확장 기본 서버(`src/lib/settings.ts`의 `DEFAULT_SETTINGS.serverUrl`).
   설정을 바꾸지 않은 모든 사용자가 첫 실행부터 이 호스트로 싱크 조회/생성/번역을 호출한다.
-- `http://localhost:8000/*`, `http://127.0.0.1:8000/*` — 사용자가 로컬에서 이 저장소의
-  서버(`everyric2/server`)를 직접 구동해 붙일 수 있게 하는 개발/자체 호스팅용 진입점
-  (패널 설정 ⚙에서 서버 URL을 이 값으로 바꿔 사용). 이 두 호스트가 아닌 제3의 서버로
-  바꾸려면 위 예시처럼 `manifest.json`에 도메인을 추가하고 리빌드해야 한다(런타임 권한
-  요청 흐름은 아직 구현돼 있지 않음).
+
+`optional_host_permissions`(필요한 사용자만 런타임에 허용)에 등록된 호스트:
+- `http://localhost:8000/*`, `http://127.0.0.1:8000/*` — 이 저장소의 서버(`everyric2/server`)를
+  직접 구동해 붙이는 개발/자체 호스팅용 진입점. 자체 호스팅하는 소수만 쓰므로 설치 시
+  전원에게 부여하지 않고, 옵션 페이지(`src/options.html`)에서 사용자가 직접 허용한다.
+  허용 전에 이 주소로 요청하면 `everyric2-chrome/src/lib/host-permissions.ts`의 가드가
+  요청을 막고 `ApiFailureKind: 'permission'`으로 분류한다 — 화면은 "서버가 꺼져 있다"가
+  아니라 권한 안내와 '권한 설정 열기' 버튼을 보여 준다.
+  실제로 요청·허용되는 패턴은 `http://127.0.0.1:8000/*` 하나다(루프백은 `localhost` →
+  `127.0.0.1`로 정규화해 보낸다 — Windows IPv6 선시도 지연 회피).
+
+제3의 서버로 바꾸려면 위 예시처럼 `manifest.json`에 도메인을 추가하고 리빌드해야 한다.
+로컬 서버라도 **포트가 8000이 아니면** 마찬가지다(선언되지 않은 패턴은 런타임에 허용할 수
+없다). 옵션 페이지는 "선언된 패턴 목록의 허용 상태를 보여 주고 허용/철회한다"는 구조라,
+나중에 사용자 지정 서버까지 다루려면 `LOCAL_SERVER_ORIGINS`를 사용자가 추가한 origin
+목록으로 넓히면 된다.
 
 ## 참고 구현
 

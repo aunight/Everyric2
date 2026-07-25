@@ -9,7 +9,10 @@
 
   "host_permissions": [
     "https://everyric.moref.co/*",
-    "http://vocaro.wikidot.com/*",
+    "http://vocaro.wikidot.com/*"
+  ],
+
+  "optional_host_permissions": [
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*"
   ],
@@ -44,6 +47,11 @@
       "48": "icons/icon48.png"
     },
     "default_title": "Everyric 가사 패널 열기/닫기"
+  },
+
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
   },
 
   "commands": {

@@ -1,5 +1,6 @@
 import type { ApiFailure, EveryricSyncResponse, GenerateResponse, JobStatusResponse, LineMeta, LinkCandidatesResponse, LinkJobStatusResponse, ServerLogEntry, ServerStatus, SourceAttribution, SyncListItem, TranslateResult } from '../types';
 import { affectsServerStatus, failureKindFromStatus, failureToStatus, maskPath, maskSecret, okStatus } from './server-status';
+import { localPermissionBlock, normalizeLoopbackUrl } from './host-permissions';
 
 export interface ServerConfig {
   serverUrl: string;
@@ -42,10 +43,10 @@ export function getServerLog(): ServerLogEntry[] {
 
 function baseUrl(server: ServerConfig): string {
   // Windows에서 localhost 해석이 ::1(IPv6)을 먼저 시도해 요청마다 ~2s를 태울 수 있다
-  // (서버는 IPv4 0.0.0.0 바인딩) — 루프백은 127.0.0.1로 정규화해 스톨을 없앤다
-  return server.serverUrl
-    .replace(/^(https?:\/\/)localhost(?=[:/]|$)/i, '$1127.0.0.1')
-    .replace(/\/+$/, '');
+  // (서버는 IPv4 0.0.0.0 바인딩) — 루프백은 127.0.0.1로 정규화해 스톨을 없앤다.
+  // 정규화 규칙 자체는 host-permissions에 있다: 권한 확인이 **실제로 요청이 나가는**
+  // origin을 봐야 하므로, 두 곳이 각자 정규화하면 반드시 어긋난다.
+  return normalizeLoopbackUrl(server.serverUrl).replace(/\/+$/, '');
 }
 
 /**
@@ -129,9 +130,17 @@ async function request<T>(
     return null;
   };
 
+  // 자체 호스팅 서버는 optional 권한이다 — 없이 부르면 fetch가 그냥 실패해 'offline'으로
+  // 분류되고, 화면은 "서버가 꺼져 있거나 주소가 잘못됐어요"라고 말한다. 서버는 멀쩡히 돌고
+  // 있는데 사용자는 서버를 의심하며 로그를 뒤진다. 그래서 **부르기 전에** 막고 권한 문제로
+  // 정확히 분류한다. 원격 주소는 문자열 판정 한 번으로 빠져나가 크롬 API를 부르지 않는다.
+  const url = baseUrl(server);
+  const blocked = await localPermissionBlock(url);
+  if (blocked !== null) return fail('permission', undefined, blocked);
+
   let res: Response;
   try {
-    res = await fetch(`${baseUrl(server)}${path}`, {
+    res = await fetch(`${url}${path}`, {
       ...init,
       headers: buildHeaders(server, init?.headers as Record<string, string> | undefined),
       signal: AbortSignal.timeout(timeoutMs),

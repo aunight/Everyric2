@@ -1,6 +1,6 @@
 import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo } from '../types';
 import { describeRemoved, stripPartMarkers } from '../lib/lyrics-clean';
-import { formatLogEntry, serverBlockedTip, serverKnownBad, serverUsable, statusLine } from '../lib/server-status';
+import { formatLogEntry, needsHostPermission, serverBlockedTip, serverKnownBad, serverUsable, statusLine } from '../lib/server-status';
 import { h, icon, ICONS } from './dom';
 
 /**
@@ -35,6 +35,10 @@ export interface PanelCallbacks {
   onOpenSettings: () => void;
   /** 서버 상태 다시 확인 (배너의 '다시 확인') */
   onRecheckServer: () => void;
+  /** 권한 관리 페이지(options_ui) 열기 — 로컬 서버 호스트 권한을 허용/철회하는 곳.
+   *  여기서 직접 `permissions.request()`를 부를 수 없다: 이 조각은 content script와 PiP
+   *  document에서 그려지고, `chrome.permissions`는 확장 페이지에서만 쓸 수 있다. */
+  onOpenPermissions: () => void;
 }
 
 /** 조각을 만들 때 필요한 호스트 능력 — 콜백 + 서버 상태에 연동되는 생성 버튼 팩토리 */
@@ -74,6 +78,13 @@ export function applyServerGate(
 }
 
 // ── 서버 상태 배너 + 요청 로그 ───────────────────────────────────
+
+/** 상태 종류별 배너·상태 화면 아이콘 — 자물쇠는 "권한", 열쇠는 "인증", 그 밖은 장애 */
+function serverBarIcon(kind: ServerStatus['kind']): string {
+  if (kind === 'auth') return '🔑';
+  if (kind === 'permission') return '🔒';
+  return '⚠️';
+}
 
 /**
  * 최근 서버 요청 로그 (기본 접힘).
@@ -125,16 +136,36 @@ export function buildServerStatusBar(ctx: PanelContext): HTMLDivElement | null {
   const status = ctx.server;
   if (!serverKnownBad(status)) return null;
 
+  const needsPerm = needsHostPermission(status);
   const bar = h('div', { className: `ey-server-bar ey-server-${status.kind}` });
   const head = h('div', { className: 'ey-server-bar-head' },
-    h('span', { className: 'ey-server-bar-icon', text: status.kind === 'auth' ? '🔑' : '⚠️' }),
+    h('span', { className: 'ey-server-bar-icon', text: serverBarIcon(status.kind) }),
     h('span', { className: 'ey-server-bar-text', text: statusLine(status) }),
   );
   bar.append(head);
   // 서버가 준 힌트가 있으면 그대로 — 사용자가 서버 로그를 뒤지지 않아도 되게
   if (status.detail) bar.append(h('div', { className: 'ey-server-bar-detail', text: status.detail }));
+  // 권한은 서버 장애가 아니다 — 왜 갑자기 이 상태가 됐는지까지 말해 준다. 자체 호스팅으로
+  // 쓰던 사람은 확장 업데이트로 권한이 회수돼 여기 왔을 수 있고, 그때 이 한 줄이 없으면
+  // 멀쩡히 쓰던 기능이 이유 없이 깨진 것처럼 보인다.
+  if (needsPerm) {
+    bar.append(h('div', {
+      className: 'ey-server-bar-detail',
+      text: '자체 호스팅 서버 접근은 설치 시 권한을 받지 않아요 (기본 서버에는 필요 없어요). '
+        + '전에 쓰고 있었다면 확장 업데이트로 회수됐을 수 있어요 — 한 번 허용하면 계속 유지돼요.',
+    }));
+  }
 
-  const actions = h('div', { className: 'ey-server-bar-actions' },
+  const actions = h('div', { className: 'ey-server-bar-actions' });
+  if (needsPerm) {
+    actions.append(h('button', {
+      className: 'ey-primary-btn',
+      text: '권한 설정 열기',
+      attrs: { title: '로컬 서버 접근을 허용하는 페이지를 새 탭에서 엽니다' },
+      on: { click: () => ctx.callbacks.onOpenPermissions() },
+    }));
+  }
+  actions.append(
     h('button', {
       className: 'ey-secondary-btn',
       text: '다시 확인',
@@ -327,7 +358,11 @@ export function buildServerDownState(ctx: PanelContext, song: SongInfo | null): 
   // 사유·원인 코드·복구 버튼·로그는 호스트가 그리는 배너(buildServerStatusBar)에 있다.
   // 여기서는 "이 화면이 왜 비었는지"만 말한다.
   const el = h('div', { className: 'ey-state' },
-    h('div', { className: 'ey-state-emoji', text: status.kind === 'auth' ? '🔑' : '🔌' }),
+    // 장애 아이콘만 배너와 다르다 — 여기서는 "이 화면이 비었다"는 맥락이라 플러그가 낫다
+    h('div', {
+      className: 'ey-state-emoji',
+      text: status.kind === 'offline' || status.kind === 'error' ? '🔌' : serverBarIcon(status.kind),
+    }),
     h('div', { className: 'ey-state-text', text: status.reason || '서버를 쓸 수 없어요' }),
   );
   if (status.code) el.append(h('div', { className: 'ey-state-sub', text: status.code }));
@@ -343,7 +378,11 @@ export function buildServerDownState(ctx: PanelContext, song: SongInfo | null): 
     h('button', {
       className: 'ey-secondary-btn',
       text: '가사 다시 검색',
-      attrs: { title: '서버를 고친 뒤 누르면 처음부터 다시 찾아봐요' },
+      attrs: {
+        title: status.kind === 'permission'
+          ? '권한을 허용한 뒤 누르면 처음부터 다시 찾아봐요'
+          : '서버를 고친 뒤 누르면 처음부터 다시 찾아봐요',
+      },
       on: { click: () => ctx.callbacks.onRetrySearch() },
     }),
   );
