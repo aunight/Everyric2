@@ -2222,6 +2222,11 @@ async function handlePipToggle(): Promise<void> {
       else video.pause();
       engine.resync(); // 재생 상태 아이콘 즉시 갱신
     },
+    // PiP 창에 포커스가 있을 때의 Alt+Shift+D — 핫키 경로와 같은 함수를 탄다.
+    // 패널을 여는 부분까지 그대로 재사용하는 것이 맞다: PiP만 보고 있어도 디버그를 켰으면
+    // 메인 패널에서도 보이는 것이 일관적이고, PiP의 디버그 표시는 handleSettingsChange가
+    // pip.setDebug로 함께 맞춘다.
+    onToggleDebug: () => void toggleDebugInfo(),
     onVolumeChange: volume => {
       const video = engine.getVideo() ?? getVideoElement();
       if (!video) return;

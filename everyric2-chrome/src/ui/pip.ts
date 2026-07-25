@@ -59,6 +59,12 @@ export interface PipOptions {
   /** 진행 바 클릭 — 영상 길이 대비 비율(0..1) */
   onSeekRatio: (ratio: number) => void;
   onPlayPause: () => void;
+  /** 디버그 표시 토글 — PiP 창에 포커스가 있을 때의 Alt+Shift+D 진입점.
+   *
+   *  메인 패널에서는 이 키를 브라우저가 `chrome.commands`로 처리하지만, Document PiP는
+   *  별도 최상위 창이라 그 경로가 닿지 않는다(키 이벤트가 이 document에서 발생한다).
+   *  같은 키가 창에 따라 되기도 안 되기도 하면 안 되므로 여기서 직접 받는다. */
+  onToggleDebug: () => void;
   /** 볼륨 슬라이더 (0..1) — 원본 video에 적용 */
   onVolumeChange: (volume: number) => void;
   onMuteToggle: () => void;
@@ -711,6 +717,22 @@ export class PipController {
     // 원본 탭이 아니라 이 document에서 발생한다 — 스페이스바 재생/일시정지,
     // 좌우 화살표로 5초 시크. 입력 요소에 포커스가 있으면 가로채지 않는다.
     win.addEventListener('keydown', (e: KeyboardEvent) => {
+      // 디버그 토글은 **입력 중에도** 받는다. 메인 패널에서는 브라우저가 chrome.commands로
+      // 처리해 포커스와 무관하게 동작하므로, PiP만 입력 필드에서 죽으면 같은 키가 창에 따라
+      // 되기도 안 되기도 한다. Alt+Shift 조합은 타이핑을 방해하지 않으니 앞에서 받는다.
+      //
+      // e.key가 아니라 e.code로 본다 — Alt 조합에서 e.key는 OS·레이아웃에 따라 다른 문자가
+      // 되지만(macOS의 Option+Shift+D 등) code는 물리 키라 안정적이다.
+      //
+      // 한계: 사용자가 chrome://extensions/shortcuts에서 단축키를 재지정하면 메인 패널만
+      // 따라가고 이 조합은 그대로다(여기서는 manifest의 기본값을 하드코딩한다). 실제 단축키를
+      // 읽어 오려면 chrome.commands.getAll()의 문자열을 파싱해 내려보내야 해서, 재지정이 드문
+      // 개발자용 토글에는 과하다고 판단했다.
+      if (e.altKey && e.shiftKey && e.code === 'KeyD') {
+        e.preventDefault();
+        opts.onToggleDebug();
+        return;
+      }
       if (isTypingTarget(e.target)) return;
       if (e.code === 'Space') {
         e.preventDefault();
