@@ -771,6 +771,54 @@ class LineMetaAttachResponse(BaseModel):
     merged_segments: int = 0
 
 
+async def _attach_line_meta_to_job(
+    job_id: str,
+    line_meta: list[LineMeta],
+    attribution: Attribution | None = None,
+    title: str | None = None,
+    artist: str | None = None,
+) -> LineMetaAttachResponse | None:
+    """번역·독음을 잡에 붙이는 실제 동작 — HTTP 엔드포인트와 서버 내부 생성 경로의 공용 몸통.
+
+    잡을 찾지 못하면 None. HTTP 계약(404)으로 바꾸는 것은 엔드포인트의 몫이고, 내부
+    호출자에게는 예외가 아니라 값으로 알려야 한다(백그라운드에서 올린 예외는 아무도 안 본다).
+    """
+    from everyric2.server.worker import stash_attribution, stash_line_meta, stash_title
+
+    async with get_session() as session:
+        job = await JobRepository(session).get_by_id(job_id)
+        if not job:
+            return None
+
+        if job.status == "completed":
+            # 이미 끝난 잡 (캐시 히트로 몇 초 만에 완료된 경우가 대표적) — 정렬은 다시 하지
+            # 않고 완성된 싱크에 발음·번역만 병합한다
+            sync_repo = SyncRepository(session)
+            existing = await sync_repo.get_by_video_and_hash(job.video_id, job.lyrics_hash)
+            if existing is None:
+                return LineMetaAttachResponse(
+                    job_id=job_id, status=job.status, applied="dropped"
+                )
+            merged = _merge_meta_into_sync(existing, line_meta, attribution)
+            await sync_repo.set_title_if_missing(existing, title, artist)
+            return LineMetaAttachResponse(
+                job_id=job_id, status=job.status, applied="merged", merged_segments=merged
+            )
+
+        if job.status == "failed":
+            # 취소·실패한 잡 — 스태시를 남기면 정리 지점 없이 새므로 아무것도 하지 않는다
+            return LineMetaAttachResponse(job_id=job_id, status=job.status, applied="dropped")
+
+        job_status = job.status
+
+    # 빈 배열도 그대로 넣는다 — 스태시 키의 존재 자체가 워커에게 "도착 확정" 신호다
+    stash_line_meta(job_id, [m.model_dump() for m in line_meta])
+    if attribution:
+        stash_attribution(job_id, attribution.model_dump())
+    stash_title(job_id, title, artist)
+    return LineMetaAttachResponse(job_id=job_id, status=job_status, applied="stashed")
+
+
 @router.post("/jobs/{job_id}/line-meta", response_model=LineMetaAttachResponse)
 async def attach_line_meta(job_id: str, request: LineMetaAttachRequest):
     """생성 잡에 번역·독음(line_meta)을 나중에 붙인다 — 번역을 다운로드·분리와 겹치는 경로.
@@ -784,41 +832,14 @@ async def attach_line_meta(job_id: str, request: LineMetaAttachRequest):
     성공하며 applied가 무엇이 일어났는지 알린다 — 클라이언트는 분기할 필요가 없다.
     """
     from everyric2.server.api.job import _validate_job_id
-    from everyric2.server.worker import stash_attribution, stash_line_meta, stash_title
 
     _validate_job_id(job_id)
-    async with get_session() as session:
-        job = await JobRepository(session).get_by_id(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="잡을 찾을 수 없어요")
-
-        if job.status == "completed":
-            # 이미 끝난 잡 (캐시 히트로 몇 초 만에 완료된 경우가 대표적) — 정렬은 다시 하지
-            # 않고 완성된 싱크에 발음·번역만 병합한다
-            sync_repo = SyncRepository(session)
-            existing = await sync_repo.get_by_video_and_hash(job.video_id, job.lyrics_hash)
-            if existing is None:
-                return LineMetaAttachResponse(
-                    job_id=job_id, status=job.status, applied="dropped"
-                )
-            merged = _merge_meta_into_sync(existing, request.line_meta, request.attribution)
-            await sync_repo.set_title_if_missing(existing, request.title, request.artist)
-            return LineMetaAttachResponse(
-                job_id=job_id, status=job.status, applied="merged", merged_segments=merged
-            )
-
-        if job.status == "failed":
-            # 취소·실패한 잡 — 스태시를 남기면 정리 지점 없이 새므로 아무것도 하지 않는다
-            return LineMetaAttachResponse(job_id=job_id, status=job.status, applied="dropped")
-
-        job_status = job.status
-
-    # 빈 배열도 그대로 넣는다 — 스태시 키의 존재 자체가 워커에게 "도착 확정" 신호다
-    stash_line_meta(job_id, [m.model_dump() for m in request.line_meta])
-    if request.attribution:
-        stash_attribution(job_id, request.attribution.model_dump())
-    stash_title(job_id, request.title, request.artist)
-    return LineMetaAttachResponse(job_id=job_id, status=job_status, applied="stashed")
+    applied = await _attach_line_meta_to_job(
+        job_id, request.line_meta, request.attribution, request.title, request.artist
+    )
+    if applied is None:
+        raise HTTPException(status_code=404, detail="잡을 찾을 수 없어요")
+    return applied
 
 
 class GenerateFromCaptionRequest(BaseModel):
@@ -845,6 +866,102 @@ class CaptionGenerateResponse(GenerateResponse):
     line_count: int
 
 
+# 가나(U+3040–U+30FF)와 CJK 한자(U+3400–U+9FFF) — 한글은 포함되지 않는다
+_CJK_RE = re.compile(r"[぀-ヿ㐀-鿿]")
+
+
+def _expects_pronunciation(lines: list[str]) -> bool:
+    """이 원문에 발음표기(한글 독음)가 의미가 있는가.
+
+    확장의 expectsPronunciation(content.ts)과 같은 규칙·같은 임계(5자)를 쓴다 — 한국어 곡에
+    한글 독음을 붙이는 건 무의미하고 LLM 시간만 늘리며, 임계를 두면 제목의 한자 한두 자
+    같은 잡음으로는 켜지지 않는다. 두 경로가 다른 규칙을 쓰면 같은 곡이 어디서 생성됐는지에
+    따라 독음이 있다가 없어진다.
+    """
+    return len(_CJK_RE.findall("".join(lines))) >= 5
+
+
+async def _translate_and_attach_line_meta(
+    job_id: str,
+    lines: list[str],
+    source_lang: str | None,
+    video_id: str,
+    title: str | None,
+    artist: str | None,
+) -> None:
+    """자막 가사의 번역·독음을 만들어 잡에 붙인다 (서버가 가사를 조달한 경로 전용).
+
+    **어떤 이유로 실패해도 반드시 한 번은 붙인다** — 빈 리스트가 "붙일 것 없음" 확정 신호라
+    (worker._PENDING_LINE_META 규약) 아무것도 안 붙이면 워커가 정렬 진입 직전에 대기 상한
+    (LINE_META_WAIT_SEC)을 통째로 헛되게 태운다. 그래서 예외는 여기서 끝내고 로그로만 남긴다.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from everyric2.server.api.translate import TranslateRequest, translate_lyrics
+
+    meta: list[LineMeta] = []
+    try:
+        # 엔진 선택(EVERYRIC_TRANSLATE_ENGINE)·톤·가나 오염 재시도까지 /api/translate와 완전히
+        # 같은 경로를 쓴다 — 별도 호출을 만들면 두 경로의 번역 품질이 조용히 갈린다.
+        # 동기 LLM 호출(수십 초)이라 이벤트 루프 밖으로 내보낸다: 같은 루프에서 이 잡의
+        # 다운로드·보컬 분리가 돌고 있다.
+        result = await run_in_threadpool(
+            translate_lyrics,
+            TranslateRequest(
+                text="\n".join(lines),
+                source_lang=source_lang or "auto",
+                include_pronunciation=_expects_pronunciation(lines),
+                title=title,
+                artist=artist,
+                video_id=video_id,
+            ),
+        )
+        # LLM이 echo한 original이 아니라 넘긴 원문으로 text를 채운다 — 병합(merge_line_meta)은
+        # 정규화 텍스트 매칭이라 한 글자만 달라도 그 줄은 붙지 않는다. 줄 수가 같아 인덱스로
+        # 대응시킬 수 있고, 짧은 응답이 와도 zip이 남는 줄을 조용히 버린다.
+        for src, line in zip(lines, result.lines):
+            pron = (line.pronunciation or "").strip() or None
+            trans = (line.translation or "").strip() or None
+            if pron or trans:
+                meta.append(LineMeta(text=src, pronunciation=pron, translation=trans))
+    except Exception:
+        logger.exception("Job %s: caption line_meta translation failed", job_id)
+
+    applied = await _attach_line_meta_to_job(job_id, meta)
+    if applied is None:
+        logger.warning("Job %s: vanished before caption line_meta could be attached", job_id)
+    else:
+        logger.info(
+            "Job %s: caption line_meta attached (%d/%d lines, applied=%s)",
+            job_id,
+            len(meta),
+            len(lines),
+            applied.applied,
+        )
+
+
+async def _process_caption_job(
+    job_id: str,
+    lines: list[str],
+    source_lang: str | None,
+    video_id: str,
+    title: str | None,
+    artist: str | None,
+    pipeline: BackgroundTasks,
+) -> None:
+    """번역·독음 생성과 잡 처리(인프로세스 파이프라인 또는 원격 큐 진입)를 **동시에** 돌린다.
+
+    둘을 각각 add_task로 걸면 안 된다: Starlette의 BackgroundTasks는 등록 순서대로 하나씩
+    await하므로 먼저 걸린 잡 처리가 아직 시작조차 안 한 번역을 대기 상한까지 기다리고
+    (원격 경로에선 그사이 큐에 올라가 번역을 통째로 놓친다), line_meta_pending이 노리는
+    "다운로드·보컬 분리와 번역이 겹친다"가 성립하지 않는다.
+    """
+    await asyncio.gather(
+        _translate_and_attach_line_meta(job_id, lines, source_lang, video_id, title, artist),
+        pipeline(),
+    )
+
+
 @router.post("/generate-from-caption", response_model=CaptionGenerateResponse)
 async def generate_sync_from_caption(
     request: GenerateFromCaptionRequest, background_tasks: BackgroundTasks
@@ -857,6 +974,11 @@ async def generate_sync_from_caption(
 
     자막 타임스탬프는 버린다. 자막 타이밍은 가사 표시용이라 발성 시점과 어긋나고,
     정렬은 어차피 CTC가 오디오에서 새로 잡는다.
+
+    **번역·독음도 이 경로에서는 서버가 만든다.** 클라이언트는 자기가 본 자막 라인 분할만
+    알지, 정렬에 실제로 쓰이는 분할(clean_caption_lines·merge_rolling)은 서버 쪽이다.
+    line_meta 병합은 정규화 텍스트 매칭이라 분할이 어긋나면 한 줄도 붙지 않는다 — 가사를
+    조달한 쪽이 메타도 소유해야 번역·독음이 실제로 싱크에 남는다.
 
     실패는 detail={code, message}로 나간다. 4xx는 이 영상이 자막으로는 불가능하다는
     확정 판정이므로 클라이언트는 가사 직접 붙여넣기로 안내하면 된다. 5xx는 조달 실패라
@@ -881,6 +1003,9 @@ async def generate_sync_from_caption(
         ) from e
 
     track = found.track
+    # /generate가 등록하는 잡 처리 작업을 별도 컨테이너로 받는다 — background_tasks에 그대로
+    # 얹으면 번역 작업과 순차 실행돼 겹치지 않는다 (_process_caption_job 참고)
+    pipeline = BackgroundTasks()
     base = await generate_sync(
         GenerateRequest(
             video_id=request.video_id,
@@ -895,9 +1020,26 @@ async def generate_sync_from_caption(
             ),
             title=request.title,
             artist=request.artist,
+            # 번역·독음은 아래 백그라운드 작업이 만들어 붙인다 — 정렬 진입 직전까지 기다려
+            # 주므로 다운로드·보컬 분리와 겹치고, 독음이 붙으면 독음 정렬 경로를 탄다
+            line_meta_pending=True,
         ),
-        background_tasks,
+        pipeline,
     )
+    if base.status != "completed":
+        # completed는 같은 자막 가사의 싱크를 그대로 재사용한 경우다 — job_id가 잡이 아니라
+        # 싱크 id라 붙일 잡이 없고, generate_sync도 처리 작업을 등록하지 않는다(pipeline 비어
+        # 있음). line_meta_pending도 그 경로에서 이미 무시된다(응답의 wait_sec=0).
+        background_tasks.add_task(
+            _process_caption_job,
+            base.job_id,
+            found.lines,
+            track.language,
+            request.video_id,
+            request.title,
+            request.artist,
+            pipeline,
+        )
     return CaptionGenerateResponse(
         **base.model_dump(),
         lang=track.lang,

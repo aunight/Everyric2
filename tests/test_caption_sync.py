@@ -328,8 +328,11 @@ def test_generate_from_caption_creates_job_through_generate_path():
                 assert job.lyrics == CAPTION_LYRICS
                 assert job.lyrics_hash == hash_lyrics(CAPTION_LYRICS)
                 assert job.language == "ja"
-                # local_worker=False면 원격 워커가 클레임하도록 queued로만 남는다
-                assert job.status == "queued"
+                # 자막 경로는 line_meta_pending으로 잡을 만든다(번역·독음을 서버가 뒤이어
+                # 붙인다) — 그래서 응답 시점엔 아직 pending이고, 번역이 붙거나 대기 상한이
+                # 지난 뒤에 queued로 넘어가 원격 워커가 클레임한다. 그 전이 자체는
+                # test_caption_line_meta.py가 백그라운드 작업을 실제로 돌려 검증한다.
+                assert job.status == "pending"
 
             # 출처는 실제로 쓴 트랙을 밝힌다
             attribution = worker_core._PENDING_ATTRIBUTION[resp.job_id]

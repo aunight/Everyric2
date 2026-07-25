@@ -74,6 +74,10 @@ export interface LyricsData {
   debugMeta?: SyncDebugMeta;
   /** 가사 원출처 (서버 저장분 또는 vocaro 직접 조회) — 푸터에 병기 */
   attribution?: SourceAttribution;
+  /** 자동 생성(ASR) 자막인가 — source가 'caption'일 때만 의미가 있다.
+   *  노래를 ASR로 받아 적으면 원문과 딴 텍스트가 나오므로(실측) 화면 표시까지만
+   *  허용하고 싱크 생성의 원문으로는 승격하지 않는다 (content.handleGenerate). */
+  captionAuto?: boolean;
   /** 곡 템포 (everyric 소스만) — 레인 마디 창/비트 격자 */
   tempo?: SongTempo;
   /** 곡 키 (everyric 소스만) — 레인 좌상단 표시 */

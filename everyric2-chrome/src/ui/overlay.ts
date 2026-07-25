@@ -316,7 +316,13 @@ export class LyricsOverlay {
     this.body.append(buildLoadingState(this.panelContext(), message));
   }
 
-  showSyncedLyrics(lines: LyricLine[], source: LyricsSource, plainText?: string): void {
+  /**
+   * @param generateBlocked 이 가사로는 싱크를 만들 수 없는 사유. 주면 배너에 버튼 없이
+   *   그 사유만 띄운다 — 누르면 늘 거절하는 버튼을 내주지 않기 위해서다.
+   */
+  showSyncedLyrics(
+    lines: LyricLine[], source: LyricsSource, plainText?: string, generateBlocked?: string,
+  ): void {
     this.stateKind = 'synced';
     this.resetBody();
     this.lines = lines;
@@ -327,8 +333,11 @@ export class LyricsOverlay {
     // LRCLIB 등 외부 싱크 가사도 서버 전사를 만들면 음정 노트·발음 정렬·가라오케를 쓸 수 있다
     if (source !== 'everyric') {
       const text = plainText ?? lines.map(l => l.text).join('\n');
-      this.showBanner('AI 전사로 가라오케(음정·발음)를 만들 수 있어요',
-        this.makeGenerateButton('AI 전사 생성', () => this.callbacks.onGenerate(text)));
+      if (generateBlocked) this.showBanner(generateBlocked);
+      else {
+        this.showBanner('AI 전사로 가라오케(음정·발음)를 만들 수 있어요',
+          this.makeGenerateButton('AI 전사 생성', () => this.callbacks.onGenerate(text)));
+      }
     }
 
     const list = h('div', { className: 'ey-lines' });

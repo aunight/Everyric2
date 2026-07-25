@@ -55,6 +55,15 @@ let currentSong: SongInfo | null = null;
 let currentData: LyricsData | null = null;
 let currentSourceUrl: string | null = null; // 보카로 위키 출처 페이지 (CC BY 출처 표기용)
 let lastVocaro: { videoId: string; lines: VocaroLine[] } | null = null; // 싱크 생성 후 발음/번역 재병합용
+/**
+ * 싱크 초기화 직전의 가사 — 초기화는 **타이밍을 버리는 것**이고 원문을 버리는 것이 아니다.
+ *
+ * 남기지 않으면 초기화 직후 재조회가 서버 미스로 떨어져 자막 폴백이 화면을 채운다. 실제로
+ * 그 자막(자동 생성)이 정상 가사를 대체하고, 거기서 생성을 누르니 ASR 전사가 영구 싱크로
+ * 저장됐다(aDnGs2i_qqo). 초기화한 사용자의 의도는 "이 가사로 다시 만들자"이므로, 방금
+ * 지운 가사를 화면에 남겨 그대로 재생성할 수 있게 한다.
+ */
+let keptLyrics: { videoId: string; data: LyricsData } | null = null;
 /** 진행 중인 전사 잡 — videoId 키. 영상을 이동해도 백그라운드로 계속 추적한다 */
 const generatingJobs = new Map<string, {
   jobId: string; progress: number; queueLabel?: string;
@@ -213,8 +222,7 @@ function watchVideoBinding(): void {
   if (video && video !== engine.getVideo()) {
     engine.start(video, currentData.lines, makeEngineHandlers());
     engine.setOffset(videoOffset);
-    // 미러 스트림도 새 video 기준으로 갱신
-    if (pip.isOpen() && settings.pipShowVideo) pip.attachVideo(video);
+    refreshPipMirror(video); // 미러 스트림도 새 video 기준으로 갱신
   }
 }
 
@@ -399,6 +407,8 @@ async function tryCaptionFallback(
     synced: true,
     lines,
     plainText: lines.map(l => l.text).join('\n'),
+    // 자동 생성인지 남긴다 — 이 표시를 잃으면 ASR 전사가 싱크의 원문으로 승격된다
+    captionAuto: track.auto,
     // 출처 배지는 source가 'caption'이면 앞에 "유튜브 자막"을 이미 붙인다 —
     // 여기서 또 붙이면 "유튜브 자막 · 유튜브 자막 · 일본어…"로 겹친다
     attribution: { name: captionSourceLabel(track) },
@@ -973,6 +983,9 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   }
   currentSong = song;
   panel.setSong(song);
+  // PiP 제목도 함께 갱신한다 — 지금까지 PiP는 **창을 열 때 한 번만** 제목을 받아서, 곡을
+  // 넘겨도 이전 제목이 남았다(열던 순간 광고가 돌고 있었다면 광고 제목이 계속 남는다)
+  if (pip.isOpen()) pip.setSong(song.title, song.artist ?? '');
 
   // 소스 우선순위: 서버 싱크는 항상 최우선, 그 다음은 설정에 따라
   // 보카로 위키(발음·사람 번역) → LRCLIB 순서 또는 그 반대
@@ -996,6 +1009,7 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   }
 
   let data = res.data ?? null;
+  if (data?.synced) keptLyrics = null; // 새 싱크가 생겼으니 초기화 보관본은 낡았다
   currentSourceUrl = null;
   if (!data) {
     const vocaro = await sendToBackground<VocaroResult | null>({
@@ -1018,6 +1032,9 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
     await enrichFromVocaro(videoId, data);
     if (seq !== searchSeq || videoId !== currentVideoId) return;
   }
+  // 초기화 직후라면 방금 지운 가사를 자막보다 **먼저** 되돌린다 — 정확한 원문이 이미
+  // 손에 있는데 자동 생성 자막으로 갈아타는 것은 어떤 경우에도 개선이 아니다
+  if (!data && keptLyrics?.videoId === videoId) data = keptLyrics.data;
   // 어디에도 가사가 없으면 마지막으로 영상 자체 자막을 띄워 본다
   if (!data) {
     data = await tryCaptionFallback(videoId, song);
@@ -1149,11 +1166,22 @@ function applyLyricsData(data: LyricsData | null): void {
     // 창이 증발해 매번 브라우저 창으로 돌아가야 했다. 같은 패널 조각을 PiP 안에
     // 띄워 거기서 바로 검색·붙여넣기·생성 요청을 할 수 있게 한다.
     if (pip.isOpen()) pip.showPanelEmpty(currentSong);
+    refreshPipMirror(); // 가사가 없어도 창은 살아 있다 — 영상만 이전 곡에 멈춰 있으면 안 된다
     panel.showEmpty(currentSong);
     return;
   }
+  // 자동 생성 자막은 싱크 생성의 원문으로 쓸 수 없다(handleGenerate가 막는다) — 배너에
+  // 버튼 대신 사유를 띄워, 눌러 보고 거절당하는 경험을 만들지 않는다
+  const generateBlocked = data.source === 'caption' && data.captionAuto
+    ? '자동 생성 자막이라 전사가 부정확해요 — 정확한 가사를 붙여넣으면 싱크를 만들 수 있어요'
+    : undefined;
+
   if (data.synced) {
     if (pip.isOpen()) {
+      // 검색을 시작할 때 띄운 패널(pip.showPanelLoading)을 반드시 접는다 — 레인 표시
+      // 조건에 !panelActive가 들어 있어, 안 접으면 싱크가 도착해도 가라오케가 닫힌
+      // 채로 남는다(영상을 넘길 때마다 가라오케가 풀리는 증상의 원인이었다).
+      pip.clearPanel();
       pip.setTempo(data.tempo ?? null);
       pip.setKey(data.key ?? null);
       pip.setDebugMeta(data.debugMeta ?? null);
@@ -1162,20 +1190,21 @@ function applyLyricsData(data: LyricsData | null): void {
       karaokeAudio.setNotes(collectMelodyNotes(data.lines));
       karaokeAudio.setTempo(data.tempo ?? null);
       if (settings.pipKeepPanel) {
-        panel.showSyncedLyrics(data.lines, data.source, data.plainText);
+        panel.showSyncedLyrics(data.lines, data.source, data.plainText, generateBlocked);
         panel.setPipEnabled(PipController.isSupported());
       } else {
         panel.showPipPlaceholder();
       }
       panel.setPipActive(true);
     } else {
-      panel.showSyncedLyrics(data.lines, data.source, data.plainText);
+      panel.showSyncedLyrics(data.lines, data.source, data.plainText, generateBlocked);
       panel.setPipEnabled(PipController.isSupported());
     }
     void startEngine(data.lines);
   } else {
     // 싱크 없는 플레인 가사도 PiP를 유지한 채 창 안에 보여준다
     if (pip.isOpen()) pip.showPanelPlain(data.lines, data.plainText);
+    refreshPipMirror();
     panel.showPlainLyrics(data.lines, data.source, data.plainText);
   }
   if (settings.showTranslation) void loadTranslations();
@@ -1214,7 +1243,38 @@ async function startEngine(lines: LyricLine[]): Promise<void> {
   // PiP 영상은 captureStream() 미러라 곡이 바뀌면 재부착해야 새 프레임이 흐른다.
   // engine이 바인딩하는 video가 바뀔 때마다 PiP도 따라간다는 불변식을 여기서 보장한다
   // (watchVideoBinding은 engine.start가 이미 갱신해버려 이 전환을 못 잡는다).
-  if (pip.isOpen() && settings.pipShowVideo) pip.attachVideo(video);
+  refreshPipMirror(video);
+}
+
+/**
+ * PiP 영상 미러를 지금 페이지의 video에 다시 붙인다.
+ *
+ * 미러는 captureStream()이라 영상이 바뀌면 이전 트랙이 끝나 마지막 프레임에서 멈춘다.
+ * 싱크가 있는 곡은 startEngine이 재부착하지만, 싱크가 없는 곡·조회 실패는 engine을
+ * 시작하지 않아 아무도 재부착하지 않았다 — PiP에 이전 곡의 정지 화면이 남는다.
+ */
+function refreshPipMirror(video?: HTMLVideoElement): void {
+  const target = video ?? getVideoElement();
+  if (!target) return;
+  bindMirrorRefresh(target); // PiP가 닫혀 있어도 걸어 둔다 — 리스너가 발화 시점에 다시 확인한다
+  if (pip.isOpen() && settings.pipShowVideo) pip.attachVideo(target);
+}
+
+/**
+ * 이 video에 미러 재부착 리스너를 한 번만 건다.
+ *
+ * 광고↔본편처럼 **엘리먼트는 그대로인데 소스만 바뀌는** 전환에서는 watchVideoBinding이
+ * 아무것도 못 잡는다(엘리먼트 동일성만 본다). 그때 captureStream 트랙이 끝나 PiP에는
+ * 정지 프레임이 남는다. loadeddata만 듣는다 — playing까지 듣으면 일시정지 후 재생마다
+ * 미러가 다시 붙어 화면이 깜빡인다.
+ */
+const mirrorBound = new WeakSet<HTMLVideoElement>();
+function bindMirrorRefresh(video: HTMLVideoElement): void {
+  if (mirrorBound.has(video)) return;
+  mirrorBound.add(video);
+  video.addEventListener('loadeddata', () => {
+    if (pip.isOpen() && settings.pipShowVideo) pip.attachVideo(video);
+  });
 }
 
 async function waitForVideo(maxRetries = 10, delayMs = 500): Promise<HTMLVideoElement | null> {
@@ -1261,6 +1321,26 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
   }
   const text = srcLines.join('\n');
 
+  // 화면의 자막으로 생성하는 것인지, 다른 가사(붙여넣기·검색 결과)로 생성하는 것인지를
+  // **넘어온 텍스트로** 가른다. source만 보고 판단하면, 자막이 떠 있는 상태에서 정확한
+  // 원문을 붙여넣어도 붙여넣은 가사가 조용히 버려지고 자막이 대신 쓰인다.
+  const captionText = currentData?.source === 'caption'
+    ? currentData.lines.map(l => l.text).join('\n')
+    : null;
+  const fromCaption = captionText !== null && text === captionText;
+
+  // 자동 생성(ASR) 자막은 화면 표시까지만 허용한다 — 노래를 ASR로 받아 적으면
+  // 「縋って いつも縋って」가 「すがっていつもすがって おち読も」로 나온다(실측).
+  // 그 텍스트로 만든 싱크는 서버에 저장돼 모든 사용자의 원문이 되고, 원문이 틀렸으니
+  // 발음·번역도 의미가 없어진다. 화면을 지우지 않고 사유만 알린다.
+  if (fromCaption && currentData?.captionAuto) {
+    ensureOverlay().setNoticeChip(
+      '자동 생성 자막은 전사가 부정확해 싱크를 만들 수 없어요 — 가사를 검색하거나 붙여넣어 주세요',
+      15000,
+    );
+    return;
+  }
+
   // 이미 전사 중이거나 요청 준비 중(LLM 번역·독음 대기) — 연타를 서버로 내보내지 않는다.
   // 같은 영상의 중복 잡은 임시 오디오 파일을 두고 경합해 다운로드 실패(WinError 32)까지 냈다.
   if (generatingJobs.has(videoId) || preparingGenerate.has(videoId)) return;
@@ -1271,10 +1351,11 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
   if (removedNote) ensureOverlay().setNoticeChip(removedNote, 12000);
 
   try {
-    // 유튜브 자막을 보다가 생성을 누른 경우엔 가사 텍스트를 보내지 않는다 — video_id만
-    // 넘기면 서버가 원어 트랙을 스스로 골라 조달한다(자막 본문은 어차피 서버 yt-dlp로만
-    // 받을 수 있다). 번역·독음도 서버가 만들므로 여기서 LLM을 부를 필요가 없다.
-    const fromCaption = currentData?.source === 'caption';
+    // 자막으로 생성할 때는 가사 텍스트를 보내지 않는다 — video_id만 넘기면 서버가 원어
+    // 트랙을 스스로 골라 조달한다(자막 본문은 어차피 서버 yt-dlp로만 받을 수 있다).
+    // 번역·독음도 **서버가** 만든다(generate-from-caption이 line_meta를 붙인다): 서버가
+    // 정렬에 쓰는 라인 분할은 클라이언트가 본 자막 분할과 다를 수 있고, 병합은 텍스트
+    // 매칭이라 여기서 만들어 보내면 아무것도 안 붙는다.
 
     // 보카로 위키 가사로 생성할 때는 발음/사람 번역도 서버에 함께 저장한다
     // (서버 싱크에 병합돼 다른 프로필·사용자에게도 그대로 표시됨)
@@ -1431,6 +1512,11 @@ async function handleResetSync(): Promise<void> {
     ensureOverlay().showError('싱크 초기화에 실패했어요.', failureNote(noteFailure(res.failure)));
     return;
   }
+  // 지운 것은 **타이밍**이다 — 원문·발음·번역은 남겨 두었다가 재조회가 빈손이면
+  // 화면에 되돌린다. 그러면 그 가사로 바로 다시 생성할 수 있다.
+  keptLyrics = currentData && currentData.lines.length > 0
+    ? { videoId, data: withoutTiming(currentData) }
+    : null;
   // 세션 캐시(언어별 번역·발음)와 진행 중 잡 추적도 함께 비워 완전히 처음부터
   for (const key of [...translationCache.keys()]) {
     if (key.startsWith(`${videoId}:`)) translationCache.delete(key);
@@ -1438,6 +1524,26 @@ async function handleResetSync(): Promise<void> {
   removeJob(videoId);
   updateGenChip();
   void searchLyrics();
+}
+
+/** 타임싱크를 벗긴 사본 — 초기화 뒤에 남기는 가사는 타이밍이 없는 가사여야 한다.
+ *  서버 전사에 딸려 있던 진단·템포·키·링크·품질은 방금 지운 싱크의 것이라 남기면 거짓이 된다. */
+function withoutTiming(data: LyricsData): LyricsData {
+  return {
+    source: data.source,
+    synced: false,
+    plainText: data.plainText,
+    humanTranslated: data.humanTranslated,
+    attribution: data.attribution,
+    captionAuto: data.captionAuto,
+    lines: data.lines.map(l => ({
+      time: null,
+      endTime: null,
+      text: l.text,
+      pronunciation: l.pronunciation,
+      translation: l.translation,
+    })),
+  };
 }
 
 /** 진행 칩 ✕ — 현재 영상의 전사 잡 취소. 서버는 즉시 또는 다음 단계 경계에서 멈춘다 */
@@ -1484,8 +1590,19 @@ async function pollJobs(): Promise<void> {
 
     if (status.status === 'completed') {
       removeJob(videoId);
-      notifyJobDone(job.jobId, '전사 완료', `${job.title ?? videoId} — 가사 싱크가 준비됐어요`);
-      if (videoId === currentVideoId) void searchLyrics();
+      const label = job.title ?? videoId;
+      if (videoId === currentVideoId) {
+        // 결과를 불러온 **뒤에** 알린다 — 잡 성공만 보고 "준비됐어요"라고 하면 발음·번역이
+        // 한 줄도 안 붙은 싱크까지 성공으로 보고된다(실측: 자막 경로 0/35줄)
+        void searchLyrics().then(() => {
+          if (videoId !== currentVideoId) return;
+          const verdict = completionVerdict(label);
+          notifyJobDone(job.jobId, '전사 완료', verdict.message);
+          if (verdict.warning) ensureOverlay().setNoticeChip(verdict.warning, 20000);
+        });
+      } else {
+        notifyJobDone(job.jobId, '전사 완료', `${label} — 가사 싱크가 준비됐어요`);
+      }
     } else if (status.status === 'failed') {
       removeJob(videoId);
       // gone = 서버에 잡 기록이 없음(재시작 등) — 무한 폴링 대신 명시적으로 마감
@@ -1516,6 +1633,36 @@ async function pollJobs(): Promise<void> {
   }
   await pollLinkJobs();
   updateGenChip();
+}
+
+/**
+ * 전사 완료 판정 — **결과를 실제로 보고** 만든다 (currentData가 이미 갱신된 뒤 호출).
+ *
+ * 잡 성공은 "쓸 수 있는 싱크"를 뜻하지 않는다. 발음이 기대되는 원문인데 발음·번역이 한 줄도
+ * 붙지 않은 싱크가 실제로 만들어졌고(자막 경로), 그걸 "준비됐어요"로 알리니 사용자는 화면을
+ * 열어 보고서야 알았다. 무엇이 빠졌는지는 알림과 화면 칩 양쪽에서 말한다.
+ */
+function completionVerdict(label: string): { message: string; warning: string | null } {
+  const data = currentData;
+  if (!data?.synced) {
+    return { message: `${label} — 싱크를 불러오지 못했어요`, warning: '싱크를 불러오지 못했어요' };
+  }
+  // 발음·번역 부재 판정은 CJK 원문에서만 의미가 있다 — 한국어 가사에 독음·번역이
+  // 없는 것은 정상이므로 경고하지 않는다
+  if (!expectsPronunciation(data.lines.map(l => l.text))) {
+    return { message: `${label} — 가사 싱크가 준비됐어요`, warning: null };
+  }
+  const missing: string[] = [];
+  if (!data.lines.some(l => l.pronunciation)) missing.push('발음');
+  if (!data.lines.some(l => l.translation)) missing.push('번역');
+  if (missing.length === 0) {
+    return { message: `${label} — 가사 싱크·발음·번역이 준비됐어요`, warning: null };
+  }
+  const what = missing.join('·');
+  return {
+    message: `${label} — 싱크는 만들어졌지만 ${what}이 없어요`,
+    warning: `싱크는 만들어졌지만 ${what}이 붙지 않았어요 — 재생성하면 다시 시도해요`,
+  };
 }
 
 /** 전사 잡 종료 OS 알림 — 다른 탭/창에 있어도 결과를 알 수 있다.
