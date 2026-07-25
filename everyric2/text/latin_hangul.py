@@ -277,6 +277,7 @@ _VOWEL_LETTERS = frozenset("aeiouy")
 # 모음 자소 → 중성 열(2개면 2음절로 퍼진다: take → 테 + 익). 긴 것부터 맞춘다.
 _VOWEL_GRAPHS: tuple[tuple[str, str], ...] = (
     ("eigh", "ㅔㅣ"), ("igh", "ㅏㅣ"),
+    # ``aw``는 law 로·saw 소지만 **어두에서는 활음일 수 있다** — ``_initial_aw``가 먼저 가른다.
     ("ai", "ㅔㅣ"), ("ay", "ㅔㅣ"), ("au", "ㅗ"), ("aw", "ㅗ"),
     # ``ear`` + 자음은 /ɜːr/다 (earth 엇, learn 런, heard 헏, search 서치). ``ea``가 먼저
     # 먹으면 히/린이 되어 모음이 틀린다. 어말 ``ear``(hear·near·dear·year)는 /ɪər/이라
@@ -369,6 +370,13 @@ def _prepare(w: str) -> tuple[set[int], int | None]:
     vi = ei - clen - 1
     if vi < 0 or w[vi] not in "aeiou" or (vi > 0 and w[vi - 1] in _VOWEL_LETTERS):
         return silent, None
+    if w[vi] == "a" and w[vi + 1] == "w":
+        # 「자음 1개」 자리에 온 이 w는 자음이 아니라 ``aw`` 자소의 일부다. 늘리면 ㅔㅣ가 되어
+        # **늘** 틀린다: sawed 세읻 · clawed 클레읻 · flawed 플레읻 · gnawed 그네읻.
+        # e는 묵음으로 두고 늘리지만 않으면 aw 자소가 그대로 ㅗ를 준다(솓·클롣·플롣·그놋).
+        # ``ow``는 같은 꼴이지만 건드리지 않는다 — 장모음 o가 마침 ㅗ여서 지금 값이 이미
+        # 맞고(showed 숃 · bowed 볻 · allowed 올롣), 자소 ow(ㅏㅜ)로 읽으면 오히려 틀린다.
+        return silent, None
     # ``-ive``를 예외로 빼지 않는다: give·live는 짧지만 drive·five·alive·survive는 길고,
     # 가사에 나오는 빈도가 비슷하다. give는 실측값(깁)으로 표에 못박혀 있고, live는 영어
     # 자체가 갈리는 낱말이라(형용사 /laɪv/ · 동사 /lɪv/) 표에 넣지 않고 규칙에 맡긴다.
@@ -387,6 +395,14 @@ def _graphemes(w: str, silent: set[int], magic: int | None) -> list[tuple[str, s
 
         # --- 모음 ---
         if ch in _VOWEL_LETTERS and not (ch == "y" and _starts_syllable(w, i)):
+            if i == 0 and w[:2] == "aw":
+                # 아래 magic e 검사보다 먼저 본다 — awe·awed·awes에서는 magic이 이 a를
+                # 잡아 ㅔㅣ로 늘려 버린다(에이·에읻).
+                aw = _initial_aw(w)
+                if aw is not None:
+                    units.append(("V", aw[0]))
+                    i += aw[1]
+                    continue
             if i == magic:
                 units.append(("V", _LONG_VOWELS[ch]))
                 i += 1
@@ -444,6 +460,43 @@ def _graphemes(w: str, silent: set[int], magic: int | None) -> list[tuple[str, s
 def _starts_syllable(w: str, i: int) -> bool:
     """이 위치의 y가 활음(자음)인가 — 어두이거나 뒤에 모음이 온다 (yes, yeah)."""
     return i == 0 or w[i + 1 : i + 2] in ("a", "e", "i", "o", "u")
+
+
+# 어두 ``aw``에서 ``w``는 자소의 일부가 아니라 **다음 음절의 활음**일 수 있다. 그때 ``a``는
+# 접두사 ``a-``이고, ``aw``를 한 자소로 먹으면 w가 사라져 음절이 하나 준다(away 오에이).
+# 갈림은 뒤따르는 글자가 정한다 — ``w``(또는 /w/를 적는 ``wh``) 뒤에 모음이 오면 자음이다.
+#
+#   away 어웨이 · awake 어웨익 · aware 어웨이 · award 어왇 · await 어웨잇 · awash 어와시
+#   awoke 어웍 · awoken 어워켄 · aweigh 어웨이 · awhile 어와일   ← 접두사 a- + 활음 w
+#   awe 오 · awed 옫 · awesome 오솜 · awestruck 옷트럭            ← /ɔː/ (awe가 어근)
+#   awful 오펄 · awkward 옥왇 · awning 오닝 · awl 올              ← 자음이 뒤따름, 규칙 무관
+#
+# ``e``만 예외인 이유: ``awe``(경외) 자체가 /ɔː/의 표기라 어두 ``awe`` + 자음은 그 어근이다
+# (awe·awed·awes·awesome·awestruck). 반대로 ``awe`` 뒤에 모음이 오면 어근 ``awe``일 수
+# 없어 다시 활음이다 — aweigh(a- + weigh, /əˈweɪ/)가 그 낱말이고, 이 갈림이 있어야 어근
+# 쪽과 함께 맞는다. 발음은 Wiktionary로 확인했다. **오디오로 측정한 값은 없다.**
+#
+# 이 규칙이 고치는 것은 **w가 사라지는 것**뿐이다. 모음이 더 틀리는 것은 남는다 — award는
+# /əˈwɔːrd/라 어웓이어야 하는데 어왇이 나온다(``ar``→ㅏ. war 와도 같은 값이니 w 뒤 ar의
+# 별개 결함이다). aware(/əˈwɛər/ 어웨어 → 어웨이)는 어말 -are를 ㅔㅣ로 읽는 결함이 원인이고
+# care 케이도 같다. 둘 다 음절 수는 맞으므로 이 파일의 목표(음절 수)에는 어긋나지 않는다.
+#
+# 어두로 제한한 이유는 반례가 어두 밖에만 있기 때문이다: **줄기가 aw로 끝나고 모음 접미사가
+# 붙은** 낱말은 모두 /ɔː/다(drawing 드로잉 · sawed 솓 · clawed 클롣 · drawer 드로어 ·
+# lawyer 로여). 대가는 접두사가 더 앞에 붙은 낱말(unaware 어노에이)과 로마자(kawaii
+# 코에이이)를 놓치는 것인데, 둘 다 지금도 틀린 값이라 회귀는 아니다.
+# 규칙이 못 잡는 것도 적어 둔다: awry(a- + wry)는 ``wr``의 묵음 w 규칙이 어두에서만 돌아
+# 오리로 남는다. awing은 사전이 /əˈwɪŋ/(a- + wing)과 /ˈɔː.ɪŋ/(awe + -ing) 둘로 갈리는
+# 낱말이라 규칙이 주는 어윙은 그중 하나다 — 갈리는 낱말은 표에 넣지 않는 이 파일의 방침대로 둔다.
+def _initial_aw(w: str) -> tuple[str, int] | None:
+    """어두 ``aw`` → (중성열, 소비 글자 수). None이면 ``aw`` 자소를 그대로 쓴다."""
+    rest = w[2:]
+    if rest[:1] == "e" and rest[1:2] not in _VOWEL_LETTERS:
+        return "ㅗ", 3  # awe·awesome — aw가 /ɔː/이고 그 e는 묵음이다
+    tail = rest[1:] if rest[:1] == "h" else rest  # ``wh``는 /w/ 한 소리다 (awhile)
+    if tail[:1] in _VOWEL_LETTERS:
+        return "ㅓ", 1  # 무강세 접두사 a-는 슈와다 (관사 a 어 · approved 어프룹과 같다)
+    return None
 
 
 def _read_consonant(w: str, i: int, n: int, silent: set[int]) -> tuple[str | None, int]:

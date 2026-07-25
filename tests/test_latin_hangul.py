@@ -373,6 +373,154 @@ def test_the_au_diphthong_words_are_not_touched_by_the_ou_fix(word, expected):
     assert latin_word_to_hangul(word) == expected
 
 
+# ---------------------------------------------------------------------------
+# 어두 aw — 한 자소 /ɔː/인가, 접두사 a- + 활음 w인가 (또 다른 자소 갈림 버그)
+# ---------------------------------------------------------------------------
+#
+# 규칙(_VOWEL_GRAPHS)은 aw를 늘 한 자소 /ɔː/로 먹어 **w를 지웠다**: away 오에이 ·
+# awake 오에익 · award 오앋 · awoke 오옥. 뒤에 모음이 오면 그 w는 자소의 일부가 아니라
+# 다음 음절의 활음이고, 앞의 a는 무강세 접두사 a-(슈와)다. 갈림은 뒤따르는 글자가
+# 정한다(_initial_aw). 발음은 Wiktionary로 확인했다 — **오디오로 측정한 값은 없고**
+# 코퍼스(everyric2.db의 라틴 155종)에는 aw 낱말이 0회라 실측 근거도 없다.
+#
+# 세 무리를 모두 못박는다. (2)가 없으면 다음 사람이 「모음이 뒤따르면 활음」으로
+# 규칙을 넓혀 awe 계열을 깨뜨린다.
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # w(또는 /w/를 적는 wh) 뒤에 모음 → 접두사 a- + 활음. 모두 a- + w로 시작하는
+        # 줄기다: a-way · a-wake · a-ware · a-ward · a-wait · a-woke · a-wash ·
+        # a-while(/əˈwaɪl/) · a-weigh(/əˈweɪ/, 앵커 "anchors aweigh").
+        ("away", "어웨이"),
+        ("awake", "어웨익"),
+        ("awakes", "어웨익스"),
+        ("aware", "어웨이"),  # /əˈwɛər/의 어말 -are는 별개 결함이다(care 케이도 같다)
+        ("award", "어왇"),
+        ("awarded", "어와덷"),
+        ("await", "어웨잇"),
+        ("awaiting", "어웨이팅"),
+        ("awoke", "어웍"),
+        ("awoken", "어워켄"),
+        ("awash", "어와시"),
+        ("awhile", "어와일"),
+        ("aweigh", "어웨이"),
+    ],
+)
+def test_initial_aw_before_a_vowel_is_the_prefix_a_plus_a_glide(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # **반례.** aw 뒤가 모음이어도 그 모음이 e고 뒤에 모음이 없으면 어근 awe(경외,
+        # /ɔː/)라 활음이 아니다. e는 묵음이다 — Wiktionary의 awesome는 /ˈɔːsəm/,
+        # 음절 나눔이 awe‧some(2음절)이다. 「모음이 뒤따르면 활음」을 그대로 적용하면
+        # 이 무리가 어웨·어웨솜이 되어 깨진다.
+        ("awe", "오"),
+        ("awed", "옫"),
+        ("awes", "옷"),
+        ("awesome", "오솜"),  # 2음절 ✓. 둘째 모음은 -some 접미사의 별개 결함이다(관습형 오섬)
+        ("awesomely", "오소멜리"),
+        ("awestruck", "옷트럭"),
+    ],
+)
+def test_the_awe_root_stays_the_long_o_and_swallows_its_e(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # aw 뒤가 자음이면 이 규칙과 무관하다 — 예전 값 그대로여야 한다.
+        ("aw", "오"),
+        ("awful", "오펄"),
+        ("awfully", "오펄리"),
+        ("awkward", "옥왇"),
+        ("awkwardly", "옥와들리"),
+        ("awning", "오닝"),
+        ("awl", "올"),
+        # awry는 a- + wry(/əˈraɪ/)지만 묵음 w 규칙(wr)이 어두에서만 돌아 잡지 못한다.
+        # 지금 값을 그대로 못박아 둔다 — Wiktionary가 비표준 철자 발음으로 싣는
+        # /ˈɔː.ɹi/와 같은 값이다. 규칙이 넓어졌는지 감시하는 자리이기도 하다.
+        ("awry", "오리"),
+    ],
+)
+def test_a_consonant_after_initial_aw_is_untouched(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # **어두로 제한한 근거.** 줄기가 aw로 끝나고 모음 접미사가 붙은 낱말은 뒤에
+        # 모음이 와도 늘 /ɔː/다. 활음 규칙이 어두를 벗어나면 여기가 먼저 깨진다
+        # (drawing 드라윙 · lawyer 러위어).
+        ("law", "로"),
+        ("saw", "소"),
+        ("draw", "드로"),
+        ("drawn", "드론"),
+        ("drawing", "드로잉"),
+        ("drawings", "드로잉스"),
+        ("drawer", "드로어"),
+        ("lawyer", "로여"),
+        ("straw", "스트로"),
+        ("dawn", "돈"),
+        ("crawl", "크롤"),
+        ("hawk", "혹"),
+        ("flawless", "플롤렛"),
+        ("sawdust", "소덧"),
+        # rawhide는 aw + h인데도 /ɔː/다 — awhile을 잡으려고 aw+h를 어두 밖까지
+        # 넓히면 이 낱말이 깨진다(라화읻).
+        ("rawhide", "로하읻"),
+    ],
+)
+def test_aw_outside_the_word_start_is_never_a_glide(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # aw + 묵음 e — magic e의 「자음 1개」 자리에 온 w는 자음이 아니라 aw 자소의
+        # 일부다. 늘리면 ㅔㅣ가 되어 늘 틀렸다(sawed 세읻 · flawed 플레읻 · awed 에읻).
+        ("sawed", "솓"),
+        ("clawed", "클롣"),
+        ("flawed", "플롣"),
+        ("thawed", "솓"),
+        ("gnawed", "그녿"),
+        ("pawed", "폳"),
+        ("jawed", "졷"),
+    ],
+)
+def test_the_aw_grapheme_survives_a_silent_e_suffix(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # ow는 꼴이 같지만 **일부러 건드리지 않았다** — 장모음 o가 마침 ㅗ여서 magic e
+        # 경로가 이미 맞는 값을 준다. 자소 ow(ㅏㅜ)로 읽으면 오히려 틀린다(showed 샤웃).
+        ("owe", "오"),
+        ("owed", "옫"),
+        ("showed", "숃"),
+        ("bowed", "볻"),
+        ("allowed", "올롣"),
+    ],
+)
+def test_the_ow_silent_e_path_is_left_alone(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+def test_aw_lines_render_end_to_end():
+    assert transliterate_latin("Fade away") == "페읻 어웨이"
+    assert transliterate_latin("I'm awake now") == "아임 어웨익 나우"
+    assert transliterate_latin("an awesome day") == "앤 오솜 데이"
+
+
 def test_single_letters_and_vowelless_initialisms_are_spelled_out():
     # 실측: H7PR6K7xff0의 L-O-P-P-I'm이 사람 자막에서 「엘-오-피-피-아임」, NG!가 「엔지이」다
     assert [latin_word_to_hangul(c) for c in "LOPPI"] == ["엘", "오", "피", "피", "아이"]
