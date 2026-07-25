@@ -228,3 +228,47 @@ def test_long_vowel_and_sokuon_in_one_line():
     kanas = [m.kana for m in moras]
     assert kanas.count("ー") == 2
     assert kanas.count("っ") == 1
+
+
+# ---------------------------------------------------------------------------
+# 가타카나 표층 읽기 / 홀로 선 접두사 — 위키 사람 발음 288줄 실측으로 찾은 오독 2종
+# ---------------------------------------------------------------------------
+
+
+def test_katakana_surface_beats_the_dictionary():
+    """가타카나는 표음 문자라 사전을 조회하면 오히려 틀린다.
+
+    실측(위키 사람 발음 288줄): UniDic이 エグい를 えぎい로 읽어 「에기이요」가 나왔고
+    (정답 「에구이요」), レイニー의 pron이 れーにー로 장음을 뭉개 「레에니이」가 됐다
+    (정답 「레이니이」). 두 오독이 독음오류 48줄 중 9줄이었다.
+    """
+    from everyric2.text.pron_style import wiki_pronunciation
+
+    assert wiki_pronunciation("エグいよ") == "에구이요"
+    assert wiki_pronunciation("レイニーブーツ") == "레이니이 부우츠"
+    # 진짜 장음(표층에 ー가 그대로 있는 것)은 그대로 남아야 한다 — 이 규칙이
+    # 장음을 이중모음으로 바꿔 버리면 반대 방향 회귀가 된다
+    assert wiki_pronunciation("ゲーム") == "게에무"
+    assert wiki_pronunciation("コーヒー") == "코오히이"
+
+
+def test_orphan_prefix_does_not_use_the_prefix_reading():
+    """붙을 내용어가 없는 접두사는 접두사 읽기를 쓰면 안 된다.
+
+    실측: 「さり気ない愛 盛りすぎる愛」의 첫 愛가 接頭辞/まな로 읽혀 「마나」가 됐다
+    (정답 「아이」). 같은 줄 끝의 愛는 名詞/あい로 제대로 읽혔다 — 사전이 아니라 자리가
+    문제이므로, 뒤가 공백·문장부호·줄끝이면 접두사 읽기를 버린다.
+    """
+    from everyric2.text.pron_style import wiki_pronunciation
+
+    got = wiki_pronunciation("さり気ない愛 盛りすぎる愛")
+    assert "마나" not in got, got
+    assert got.count("아이") == 2, got
+
+
+def test_katakana_particle_keeps_its_phonetic_reading():
+    # 조사·조동사는 표기와 음가가 갈리는 유일한 부류라 표층 규칙에서 제외한다.
+    # 가타카나로 적힌 조사까지 표층대로 읽으면 は→ワ 대립이 사라진다.
+    from everyric2.text.ja_reading import _PARTICLE_POS
+
+    assert "助詞" in _PARTICLE_POS and "助動詞" in _PARTICLE_POS

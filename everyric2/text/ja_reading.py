@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import unicodedata
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,41 @@ _KANJI_RE = re.compile(r"[㐀-鿿]")
 # 히라가나 기준이라 여기서 내려준다. 장음부 ー(0x30FC)는 ァ~ヶ 범위 밖이라 그대로 남고
 # 촉음 ッ은 っ로 내려간다 — 둘 다 1박을 차지하므로 읽기에 남겨야 모라 수가 맞는다.
 _KATAKANA_START, _KATAKANA_END = "ァ", "ヶ"
+
+# 표층에서 읽기를 직접 뽑을 때 제외하는 품사. 조사·조동사는 표기와 음가가 갈리는 유일한
+# 부류다(は→ワ, へ→エ) — 가타카나로 적힌 조사(ハ)까지 표층대로 읽으면 그 대립이 사라진다.
+_PARTICLE_POS = frozenset({"助詞", "助動詞"})
+
+# 가타카나 표층에서 읽기를 뽑을 때 통과시키는 글자. 가나·장음부·촉음만 허용하고
+# 라틴·숫자·기호가 섞이면 규칙을 쓰지 않는다(그건 사전/폴백이 다룰 몫이다).
+_KANA_ONLY_RE = re.compile(r"^[ぁ-ゖァ-ヺー゛゜ｦ-ﾟ]+$")
+_HAS_KATAKANA_RE = re.compile(r"[ァ-ヺｦ-ﾟ]")
+
+# 접두사 뒤에 이것이 오면 붙을 내용어가 없다 — 공백·문장부호·줄끝 (_is_orphan_prefix 참조)
+_ORPHAN_TAIL_RE = re.compile(r"^[\s、。，．,\.！？!?…‥・「」『』（）\(\)\[\]〜~ー\-—/／]")
+
+
+def _katakana_as_hiragana(surface: str) -> str | None:
+    """가타카나 표층을 히라가나 읽기로 바꾼다. 규칙을 쓸 수 없으면 ``None``.
+
+    가타카나는 표음 문자라 표층이 곧 읽기다. 사전 조회는 이 경우 이득이 없고 손해만 있다 —
+    실측 오독 2종(エグい→えぎい, レイニー→れーにー)이 그 예다. 반각 가나도 함께 받아
+    전각으로 정규화한다(``ｱｲｳ``류가 옛 자막에 남아 있다).
+
+    한자가 섞이면 쓰지 않는다 — 그건 사전이 필요한 진짜 조회 대상이다.
+    """
+    if not surface or _KANJI_RE.search(surface):
+        return None
+    norm = unicodedata.normalize("NFKC", surface)
+    if not _HAS_KATAKANA_RE.search(norm) or not _KANA_ONLY_RE.match(norm):
+        return None
+    out: list[str] = []
+    for ch in norm:
+        # ァ~ヶ만 내린다. ー(장음)·ヷ~ヺ는 대응 히라가나가 없거나 범위 밖이라 그대로 둔다.
+        out.append(
+            chr(ord(ch) - 0x60) if _KATAKANA_START <= ch <= _KATAKANA_END else ch
+        )
+    return "".join(out)
 
 
 @dataclass
@@ -136,7 +172,29 @@ def _feature_reading(feature, attrs: tuple[str, ...]) -> str | None:
     return None
 
 
-def _token_readings(word, *, phonetic: bool = False) -> tuple[str, str]:
+def _is_orphan_prefix(words, i: int, text: str, idx: int) -> bool:
+    """이 토큰이 **붙을 말이 없는 접두사**인가.
+
+    접두사 읽기는 뒤에 오는 내용어와 한 낱말을 이룰 때만 성립한다. UniDic은 홀로 선 한자를
+    접두사로 잡을 때가 있고, 그러면 접두사 전용 읽기가 나와 틀린다 — 실측(위키 사람 발음):
+    「さり気ない愛 盛りすぎる愛」의 첫 愛가 接頭辞/まな로 읽혀 「마나」가 됐다(정답 「아이」).
+    같은 줄의 두 번째 愛는 名詞/あい로 제대로 읽혔다. 즉 사전이 아니라 **자리**가 문제다.
+
+    "붙을 말이 없다"의 판정: 다음 토큰이 없거나, 원문에서 이 토큰 바로 뒤가 공백·문장부호다
+    (그 경우 접두사가 될 수 없다). 참이면 접두사 읽기를 버리고 폴백 사다리로 내려보낸다.
+    """
+    word = words[i]
+    if (getattr(word.feature, "pos1", "") or "") != "接頭辞":
+        return False
+    tail = text[idx + len(word.surface) :]
+    if not tail:
+        return True
+    return bool(_ORPHAN_TAIL_RE.match(tail))
+
+
+def _token_readings(
+    word, *, phonetic: bool = False, orphan_prefix: bool = False
+) -> tuple[str, str]:
     """토큰 1개의 (읽기, 표층 읽기). 폴백 사다리(위에서부터):
 
     1. ``feature.kana`` — UniDic의 표층 읽기(활용형 그대로). 1순위.
@@ -157,8 +215,15 @@ def _token_readings(word, *, phonetic: bool = False) -> tuple[str, str]:
     호출부가 두 읽기를 나란히 비교할 수 있게 함께 내려보낸다(``ReadingToken`` 참조).
     """
     feature = word.feature
+    # 0단: 가타카나 표기는 **이미 표음 문자**라 사전을 조회할 이유가 없다. 조회하면 오히려
+    # 틀린다 — 실측(위키 사람 발음): エグい를 UniDic이 えぎい로 읽고(에기이요, 정답 에구이요),
+    # レイニー의 pron이 れーにー로 장음을 뭉개 레에니이가 된다(정답 레이니이). 두 사례가
+    # 독음오류 48줄 중 9줄이었다. 표층을 그대로 가나로 바꾸면 둘 다 사라진다.
+    surface_kana = _katakana_as_hiragana(word.surface)
+    if surface_kana is not None and (getattr(feature, "pos1", "") or "") not in _PARTICLE_POS:
+        return surface_kana, surface_kana
     order = ("pron", "kana") if phonetic else ("kana", "pron")
-    reading = _feature_reading(feature, order)
+    reading = None if orphan_prefix else _feature_reading(feature, order)
     if reading is None:
         # 사다리 3·4단: UniDic에 읽기가 없는 토큰 — 이 경우 표층/음가 구분 자체가 없다
         fallback = (
@@ -167,7 +232,7 @@ def _token_readings(word, *, phonetic: bool = False) -> tuple[str, str]:
             else word.surface
         )
         return fallback, fallback
-    surface_reading = _feature_reading(feature, ("kana", "pron"))
+    surface_reading = None if orphan_prefix else _feature_reading(feature, ("kana", "pron"))
     return reading, surface_reading or reading
 
 
@@ -185,7 +250,7 @@ def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[Read
     """
     tokens: list[ReadingToken] = []
     pos = 0
-    for word in words:
+    for i, word in enumerate(words):
         surface = word.surface
         if not surface:
             continue
@@ -196,7 +261,9 @@ def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[Read
             continue
         if idx > pos:
             tokens.append(ReadingToken(text[pos:idx], text[pos:idx], pos, idx))
-        reading, surface_reading = _token_readings(word, phonetic=phonetic)
+        reading, surface_reading = _token_readings(
+            word, phonetic=phonetic, orphan_prefix=_is_orphan_prefix(words, i, text, idx)
+        )
         tokens.append(
             ReadingToken(
                 surface,
