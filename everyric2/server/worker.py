@@ -2583,13 +2583,23 @@ def _align_with_pronunciation(
     from everyric2.inference.prompt import LyricLine, SyncResult, WordSegment
     from everyric2.text.reading import map_pron_alignment_to_line
 
+    # **표시용 독음**과 **정렬 텍스트**를 갈라 둔다. 한때 같은 값을 썼는데, 독음이 없는 줄이
+    # 빈 텍스트로 정렬 엔진에 들어가 그 줄이 정렬에서 통째로 빠졌다 — 타이밍은 앞뒤 사이로
+    # 보간되어 줄 시작은 그럭저럭 맞지만 **줄 내부 음절 스팬(word_segments)을 잃어** 그 줄에서
+    # 가라오케 채움이 죽는다.
+    #
+    # 실측(ba7YbGO2aq4, 일·영·한이 실제 발성에 섞인 곡): 한국어 가창 줄 5개(「희미한」×2,
+    # 「미묘한」×2, 「좋아해」)가 그렇게 빠져 align_coverage 0.9359였고 그 5줄만 words가 없었다.
+    # 독음이 없는 줄은 사실상 **한글 전용 줄**이다(일어는 가나/한자에서, 라틴은 음차에서 항상
+    # 독음이 나온다). 한글은 kor 어댑터 vocab이 덮으므로(1261자) 원문을 그대로 정렬하면 된다.
     pron_for_line = [
         (by_text.get(_normalize_line(ln.text)) or {}).get("pronunciation") or ""
         for ln in lyric_lines
     ]
+    align_for_line = [pron or ln.text for pron, ln in zip(pron_for_line, lyric_lines)]
     pron_lines = [
-        LyricLine(text=pron, line_number=ln.line_number)
-        for pron, ln in zip(pron_for_line, lyric_lines)
+        LyricLine(text=text, line_number=ln.line_number)
+        for text, ln in zip(align_for_line, lyric_lines)
     ]
     referee_cands: dict[int, list[str]] = {}
     referee_margins: dict[int, float] = {}
@@ -2615,15 +2625,25 @@ def _align_with_pronunciation(
     pron_data: dict[int, dict[str, Any]] = {}
     for i, (ln, kr) in enumerate(zip(lyric_lines, ko_results)):
         # 심판이 이 라인의 독음을 바꿨으면 SyncResult.text가 이긴 후보다 — 역매핑·표시가
-        # 모두 **실제로 정렬된** 독음을 써야 음절 스팬과 발음 표기가 어긋나지 않는다.
-        pron = kr.text or pron_for_line[i]
+        # 모두 **실제로 정렬된** 텍스트를 써야 음절 스팬과 발음 표기가 어긋나지 않는다.
+        aligned = kr.text or align_for_line[i]
         ko_words = kr.word_segments or []
         # 음절별 confidence까지 함께 넘겨 글자별 conf 역매핑을 살린다 (라인 균일 부여 회귀 수정)
         spans = [(w.word, w.start, w.end, w.confidence) for w in ko_words]
 
         words = pron_segments = None
-        if pron and spans:
-            words, pron_segments = map_pron_alignment_to_line(ln.text, pron, spans)
+        if aligned and spans:
+            if pron_for_line[i]:
+                words, pron_segments = map_pron_alignment_to_line(ln.text, aligned, spans)
+            else:
+                # 독음이 없어 **원문을 그대로** 정렬한 줄이다 — 역매핑할 것이 없다.
+                # map_pron_alignment_to_line은 「한글 음절 → 모라 → 원문 글자」 3단
+                # 역매핑이라 원문이 이미 한글인 이 경우에는 아무 것도 내지 못한다(실측:
+                # words=None). 정렬된 음절 스팬이 곧 원문 글자 스팬이므로 그대로 쓴다.
+                # pron_segments는 **표시 독음의** 음절 스팬이라 여기서는 없는 것이 맞다.
+                words = [
+                    {"word": w, "start": s, "end": e, "confidence": c} for w, s, e, c in spans
+                ]
 
         word_segments = (
             [WordSegment(word=w["word"], start=w["start"], end=w["end"]) for w in words]
@@ -2652,7 +2672,11 @@ def _align_with_pronunciation(
         meta = by_text.get(_normalize_line(ln.text)) or {}
         decision = by_line_decision.get(i)
         pron_data[i] = {
-            "pronunciation": pron or None,
+            # 원래 독음이 없던 줄은 **표시할 독음이 없다** — 정렬에만 원문을 썼을 뿐이다.
+            # 여기에 원문을 넣으면 한글 줄 아래에 같은 한글이 한 번 더 찍힌다. 심판은 독음이
+            # 있는 줄에만 후보를 만들므로(`pronunciation_candidates`가 일본어를 요구한다)
+            # 이 갈래에서 심판 결과를 잃을 일은 없다.
+            "pronunciation": (aligned or None) if pron_for_line[i] else None,
             "translation": meta.get("translation"),
             "pron_segments": pron_segments,
             # 진단용: 모델이 이 라인 구간에서 실제로 「들은」 텍스트와 심판의 판정 근거.

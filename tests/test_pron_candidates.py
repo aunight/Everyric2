@@ -407,6 +407,7 @@ class _FakeEngine:
         from everyric2.inference.prompt import SyncResult, WordSegment
 
         self.kwargs = kwargs
+        self.aligned_texts = [ln.text for ln in lyrics]  # 정렬에 실제로 들어간 텍스트
         results = []
         for i, ln in enumerate(lyrics):
             text = self.winner if (i == 0 and self.winner) else ln.text
@@ -478,6 +479,52 @@ def test_worker_carries_heard_text_and_referee_reasoning_into_debug_meta():
     assert ref["default"] == _DEFAULT and ref["chosen"] == _WINNER
     assert ref["scores"] == [[_DEFAULT, -3.1], [_WINNER, -2.68]]
     assert "line" not in ref  # 라인 번호는 세그먼트 자체가 들고 있다
+
+
+def _mixed_align():
+    """일어 줄 + **독음이 없는 한글 가창 줄**을 함께 정렬한다.
+
+    실측(ba7YbGO2aq4): 한때 독음이 없는 줄은 빈 텍스트로 정렬 엔진에 들어가 그 줄이 정렬에서
+    통째로 빠졌다. 타이밍은 앞뒤 사이로 보간돼 줄 시작은 그럭저럭 맞았지만 word_segments가
+    없어 그 줄에서 가라오케 채움이 죽었다(align_coverage 0.9359, 빠진 5줄이 전부 한글 줄).
+    """
+    from everyric2.inference.prompt import LyricLine
+    from everyric2.server.worker import _align_with_pronunciation, _pron_by_text
+
+    engine = _FakeEngine(None)
+    lines = [LyricLine(text=_JA, line_number=1), LyricLine(text="희미한", line_number=2)]
+    # 한글 줄에는 독음이 없다 — wiki_pronunciation이 빈 문자열을 내는 것이 정상이다
+    by_text = _pron_by_text([{"text": _JA, "pronunciation": _DEFAULT}])
+    results, pron_data = _align_with_pronunciation(engine, object(), lines, by_text, _settings())
+    return engine, results, pron_data
+
+
+def test_a_line_without_a_reading_is_aligned_by_its_own_text():
+    engine, _, _ = _mixed_align()
+    # 일어 줄은 독음으로, 한글 줄은 **원문 그대로** 정렬에 들어간다 (빈 문자열이 아니다)
+    assert engine.aligned_texts == [_DEFAULT, "희미한"]
+    assert "" not in engine.aligned_texts
+
+
+def test_a_line_without_a_reading_still_gets_syllable_spans():
+    _, results, pron_data = _mixed_align()
+    # 이것이 이 수정의 목적이다 — 그 줄에서도 글자별 스팬이 나와야 채움이 동작한다
+    assert results[1].word_segments
+    assert [w.word for w in results[1].word_segments] == list("희미한")
+    assert all(w.confidence is not None for w in results[1].word_segments)
+    # 스팬이 단조 증가하고 서로 겹치지 않는다
+    for a, b in zip(results[1].word_segments, results[1].word_segments[1:]):
+        assert a.end <= b.start
+    # pron_segments는 **표시 독음의** 음절 스팬이다 — 표시할 독음이 없으니 없는 것이 맞다
+    assert pron_data[1]["pron_segments"] is None
+    assert pron_data[0]["pron_segments"]  # 일어 줄은 그대로 있다
+
+
+def test_a_line_without_a_reading_shows_no_pronunciation():
+    _, _, pron_data = _mixed_align()
+    # 정렬에만 원문을 썼을 뿐이다 — 표시 독음에 원문을 넣으면 한글 아래 같은 한글이 또 찍힌다
+    assert pron_data[1]["pronunciation"] is None
+    assert pron_data[0]["pronunciation"] == _DEFAULT  # 일어 줄은 그대로
 
 
 def test_line_meta_remerge_does_not_revert_a_referee_decision():
