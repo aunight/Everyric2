@@ -190,9 +190,34 @@ _CONVENTIONAL_WORDS = {
     "come": "컴", "some": "섬", "done": "던", "gone": "곤",
     "are": "아", "our": "아워", "were": "워",
     "eye": "아이", "eyes": "아이즈",
+    "i'd": "아읻", "i've": "아입",  # 실측 I'm 아임 · I'll 아일과 같은 꼴(아이 + 조밀 종성)
+    # heart·hearth만 ear를 /ɑːr/로 읽는다(닫힌 예외 2개). 관습형 하트를 조밀화한 값이다.
+    "heart": "핫", "hearts": "핫츠",
+    # 일본어 가사에 섞인 라틴이 **영어가 아니라 가타카나로 불리는** 부류. VOCALOID는
+    # ボーカロイド(보오카로이도)로 부르며 규칙의 영어 읽기(보캘로읻)와 음절 수가 4:6으로
+    # 어긋난다. 로컬 코퍼스에서 33회/4곡으로 가장 흔한 대문자 토큰이라 표에 넣었다.
+    # 이 부류를 일반 규칙으로 가릴 방법은 없다(같은 철자가 곡에 따라 영어로도 불린다) —
+    # 사람 표기를 확인한 것만 넣는다. 값은 kana_hangul.kana_to_hangul('ボーカロイド')다.
+    "vocaloid": "보오카로이도",
 }
 
 _WORDS = {**_CONVENTIONAL_WORDS, **_MEASURED_WORDS}
+
+# 모음이 있어서 자모 구성만으로는 낱말과 구별되지 않는 두문자어. 이 표가 필요한 이유와
+# 다른 판별 축을 쓰지 않은 이유:
+#
+# · **길이 축을 쓰지 않았다**(2~3자 대문자 → 글자 이름). 로컬 코퍼스 4662줄의 전부 대문자
+#   토큰을 세어 보면 낱말이 압도적이다: ``VOCALOID`` 33회(4곡) · ``BOY`` 4회 · ``VOX`` 2회
+#   대 두문자어 ``NG`` 2회 · ``AC`` 2회. ``BOY``(3자)와 ``AT``(2자)가 직접 반례다 —
+#   길이로 자르면 「逃げる気か BOY」가 「비오와이」가 된다. 지금 고치는 오류(ATM→앳)를
+#   반대 방향으로 다시 만드는 것이다.
+# · **음운 가능성 축도 쓰지 않았다.** ``ATM``은 /tm/ 종성이 영어에 불법이라 잡히지만
+#   ``VIP``는 CVC로 완벽히 합법적인 낱말 꼴이다(rip·tip과 같다). 즉 어떤 자모 검사로도
+#   VIP를 낱말과 가를 수 없어 결국 목록이 필요하고, 그러면 음운 표의 비용을 회수하지 못한다.
+# · 그래서 **명시 목록**이다. 대가는 분명하다: **목록 밖의 두문자어는 여전히 낱말로 읽힌다.**
+#   대문자 원문일 때만 적용된다(소문자 id·am은 낱말이다). 발음이 갈리는 것은 넣지 않았다 —
+#   ``AI``는 기술(에이아이)일 수도 「愛」의 로마자(아이)일 수도 있어 규칙에 맡겼다.
+_ACRONYMS = frozenset({"atm", "vip", "id", "usb", "dvd", "dna", "iq"})
 
 # 알파벳 이름. 낱글자 나열은 낱말이 아니라 글자로 읽는다 — 실측(H7PR6K7xff0)의
 # ``L-O-P-P-I'm``이 사람 자막에서 「엘-오-피-피-아임」이고, ``NG!``가 「엔지이」다.
@@ -213,6 +238,11 @@ _VOWEL_LETTERS = frozenset("aeiouy")
 _VOWEL_GRAPHS: tuple[tuple[str, str], ...] = (
     ("eigh", "ㅔㅣ"), ("igh", "ㅏㅣ"),
     ("ai", "ㅔㅣ"), ("ay", "ㅔㅣ"), ("au", "ㅗ"), ("aw", "ㅗ"),
+    # ``ear`` + 자음은 /ɜːr/다 (earth 엇, learn 런, heard 헏, search 서치). ``ea``가 먼저
+    # 먹으면 히/린이 되어 모음이 틀린다. 어말 ``ear``(hear·near·dear·year)는 /ɪər/이라
+    # 아래 _FINAL_VOWEL_GRAPHS가 따로 본다. /ɑːr/로 읽는 heart·hearth는 **낱말이 2개뿐인
+    # 닫힌 예외**라 규칙이 아니라 표에서 잡는다.
+    ("ear", "ㅓ"),
     ("ea", "ㅣ"), ("ee", "ㅣ"), ("ei", "ㅔㅣ"), ("ey", "ㅔㅣ"), ("ew", "ㅠ"),
     ("ie", "ㅣ"),  # 어말이 아니면 /iː/ (believe 벨립, field 필드) — 어말은 아래 표가 본다
     ("oa", "ㅗ"), ("oo", "ㅜ"), ("ou", "ㅏㅜ"), ("ow", "ㅏㅜ"),
@@ -222,7 +252,10 @@ _VOWEL_GRAPHS: tuple[tuple[str, str], ...] = (
 
 # 어말에서만 다르게 읽는 자소 → (단음절일 때, 다음절일 때). 어말 ow는 대개 /oʊ/다
 # (know·show·low·slow·snow·grow·blow) — /aʊ/인 now·how는 표에 못박아 뒀다.
-_FINAL_VOWEL_GRAPHS = {"y": ("ㅏㅣ", "ㅣ"), "ey": ("ㅔㅣ", "ㅣ"), "ie": ("ㅏㅣ", "ㅣ"), "ow": ("ㅗ", "ㅗ")}
+_FINAL_VOWEL_GRAPHS = {
+    "y": ("ㅏㅣ", "ㅣ"), "ey": ("ㅔㅣ", "ㅣ"), "ie": ("ㅏㅣ", "ㅣ"), "ow": ("ㅗ", "ㅗ"),
+    "ear": ("ㅣ", "ㅣ"),  # 어말 ear는 /ɪər/ (hear 히, year 이) — 자음이 뒤따르면 /ɜːr/다
+}
 
 # 후치 r은 모음에 흡수된다 (car 카, her 허, for 포) — 뒤에 모음이 없을 때만 적용한다.
 _R_VOWELS: tuple[tuple[str, str], ...] = (
@@ -318,7 +351,16 @@ def _graphemes(w: str, silent: set[int], magic: int | None) -> list[tuple[str, s
                 units.append(("V", _LONG_VOWELS[ch]))
                 i += 1
                 continue
-            final = next((g for g in _FINAL_VOWEL_GRAPHS if w.startswith(g, i) and i + len(g) == n), None)
+            final = next(
+                (
+                    g
+                    for g in _FINAL_VOWEL_GRAPHS
+                    # 복수·3인칭의 s는 어말 판정을 막지 않는다 (years·cries·knows)
+                    if w.startswith(g, i)
+                    and (i + len(g) == n or (i + len(g) + 1 == n and w.endswith("s")))
+                ),
+                None,
+            )
             if final:
                 # 어말 y·ey·ie는 낱말이 단음절일 때만 길다 — my 마이·hey 헤이·die 다이 대
                 # baby 배비·honey 호니·movie 모비. 영어에서 이 갈림은 음절 수를 따라간다.
@@ -547,8 +589,11 @@ def latin_word_to_hangul(word: str) -> str:
     pinned = _WORDS.get(core)
     if pinned is not None:
         return pinned
-    if len(letters) == 1 or (word.isupper() and not (_VOWEL_LETTERS & set(letters))):
-        # 낱글자거나 모음 없는 대문자 약어(NG, DJ, TV) → 글자 이름으로 읽는다
+    if len(letters) == 1 or (
+        word.isupper() and (core in _ACRONYMS or not (_VOWEL_LETTERS & set(letters)))
+    ):
+        # 낱글자 · 모음 없는 대문자 약어(NG·DJ·TV) · 목록에 있는 두문자어(ATM·VIP)
+        # → 글자 이름으로 읽는다. 그 밖의 대문자는 낱말이다(BOY·VOCALOID·LOVE·STOP).
         return "".join(_LETTER_NAMES.get(c, c) for c in letters)
     out = _rules(letters)
     return tighten(out) if out else word
