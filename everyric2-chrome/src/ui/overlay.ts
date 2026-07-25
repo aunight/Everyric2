@@ -72,6 +72,9 @@ const DEFAULT_WIDTH = 340;
 const DEFAULT_HEIGHT = 480;
 const EDGE_MARGIN = 8;
 const USER_SCROLL_HOLD_MS = 4000;
+/** 줄을 클릭했을 때 그 줄 안쪽으로 밀어 넣는 양 — 브라우저 시크가 요청 지점 이하로
+ *  스냅해 한 줄 위가 활성화되는 것을 막는다. 사람이 못 느낄 만큼 작아야 한다. */
+const SEEK_INTO_LINE_SEC = 0.05;
 
 export class LyricsOverlay {
   private host: HTMLDivElement;
@@ -114,6 +117,8 @@ export class LyricsOverlay {
   private trStatusEl: HTMLSpanElement;
   private activeWordEls: { start: number; el: HTMLElement }[] = [];
   private currentIndex = -1;
+  /** 앞선 이 개수만큼의 줄이 '전부 채워진' 상태다 — fillUpTo가 유지하는 경계 */
+  private filledUpTo = 0;
   private userScrollUntil = 0;
   private offsetSec: number;
   private visible = true;
@@ -316,6 +321,7 @@ export class LyricsOverlay {
     this.resetBody();
     this.lines = lines;
     this.lineEls = [];
+    this.filledUpTo = 0;
     this.currentIndex = -1;
 
     // LRCLIB 등 외부 싱크 가사도 서버 전사를 만들면 음정 노트·발음 정렬·가라오케를 쓸 수 있다
@@ -334,7 +340,11 @@ export class LyricsOverlay {
         attrs: { dir: 'auto' },
         on: {
           click: () => {
-            if (line.time !== null) this.callbacks.onSeek(line.time);
+            // 줄 시작 시각으로 정확히 시크하면 브라우저가 그 지점 **이하**의 디코딩
+            // 가능한 위치로 스냅해서, 곡 시간이 줄 시작보다 살짝 앞에 떨어진다.
+            // 그러면 활성 줄 판정이 한 줄 위로 가서 "누른 줄의 윗칸이 눌린" 것처럼
+            // 보인다. 줄 안쪽으로 아주 조금 밀어 넣어 의도한 줄에서 시작하게 한다.
+            if (line.time !== null) this.callbacks.onSeek(line.time + SEEK_INTO_LINE_SEC);
           },
         },
       });
@@ -647,16 +657,15 @@ export class LyricsOverlay {
       el.classList.toggle('active', i === index);
       el.classList.toggle('past', index >= 0 && i < index);
     });
-    // 되감기: sung은 활성 라인에만 토글되므로 앞으로 되돌아가면 미래가 된 줄들에
-    // 이미 부른 표시가 남는다. 활성 라인보다 뒤쪽 줄의 sung을 걷어낸다
-    // (활성 라인 자신은 곧 updateTime이 재계산한다).
-    if (index < prevIndex) {
-      for (let i = Math.max(index, -1) + 1; i < this.lineEls.length; i++) {
-        for (const el of this.lineEls[i].querySelectorAll('.ey-word.sung, .ey-pron-syl.sung')) {
-          el.classList.remove('sung');
-        }
-      }
-    }
+    // 채움(sung) 상태는 **현재 위치의 함수**다 — 활성 줄 앞은 전부 채우고 뒤는 전부
+    // 비운다. 재생으로 지나왔는지 클릭으로 건너뛰었는지와 무관하게 같은 화면이 나와야
+    // 한다. 예전에는 updateTime이 활성 줄에만 sung을 붙여서, 앞으로 건너뛰면 지나친
+    // 줄들이 안 채워지고 되감으면 미래 줄에 채움이 남았다.
+    //
+    // 직전 활성 줄은 부분적으로만 채워져 있을 수 있으니 먼저 비우고, 아래 fillUpTo가
+    // 규칙대로 다시 칠한다.
+    if (prevIndex >= 0 && prevIndex !== index) this.setLineFilled(prevIndex, false);
+    this.fillUpTo(Math.max(0, index));
     const active = index >= 0 ? this.lineEls[index] : undefined;
     if (active) {
       // 발음 음절(.ey-pron-syl)도 단어와 같은 sung 토글 메커니즘에 합류
@@ -674,6 +683,33 @@ export class LyricsOverlay {
   updateTime(time: number): void {
     for (const { start, el } of this.activeWordEls) {
       el.classList.toggle('sung', start <= time);
+    }
+  }
+
+  /** 한 줄의 글자·음절을 전부 채우거나 전부 비운다 */
+  private setLineFilled(i: number, filled: boolean): void {
+    const el = this.lineEls[i];
+    if (!el) return;
+    for (const w of el.querySelectorAll<HTMLElement>('.ey-word, .ey-pron-syl')) {
+      w.classList.toggle('sung', filled);
+    }
+  }
+
+  /**
+   * 앞선 `target`개 줄이 전부 채워진 상태로 맞춘다 (그 뒤는 비운다).
+   *
+   * `filledUpTo`로 현재 경계를 들고 있어 매번 전 줄을 훑지 않는다 — 위치가 한 줄
+   * 움직이면 한 줄만 칠하거나 지운다. 되감기·건너뛰기처럼 여러 줄을 뛰면 그 구간만
+   * 처리한다.
+   */
+  private fillUpTo(target: number): void {
+    while (this.filledUpTo < target) {
+      this.setLineFilled(this.filledUpTo, true);
+      this.filledUpTo++;
+    }
+    while (this.filledUpTo > target) {
+      this.filledUpTo--;
+      this.setLineFilled(this.filledUpTo, false);
     }
   }
 
@@ -943,6 +979,7 @@ export class LyricsOverlay {
     this.regenBtn.style.display = 'none';
     this.lines = [];
     this.lineEls = [];
+    this.filledUpTo = 0;
     this.activeWordEls = [];
     this.currentIndex = -1;
     this.userScrollUntil = 0;
