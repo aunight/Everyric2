@@ -52,9 +52,12 @@ _ARABIC_DIGITS_RE = re.compile(r"^[0-9]+$")
 # tests/fixtures/wiki_pron_sample.json 115줄)에서 아라비아 숫자 뒤에 조수사가 온 사례는
 # "1秒"(→ 이치뵤오) 단 1건이었다. 秒는 앞자리 숫자와 무관하게 촉음화·반탁음화가 없는
 # 규칙 조수사라(いちびょう/にびょう/さんびょう/…) 자릿수 읽기를 그대로 이어 붙이면 된다.
-# 分・回・人처럼 음변화가 있는 조수사는 이 표본에 없어 넣지 않는다 — 잘못된 음변화를
+# 分・回처럼 음변화가 있는 조수사는 이 표본에 없어 넣지 않는다 — 잘못된 음변화를
 # 새로 만드는 것이 기존의 "숫자 그대로" 동작보다 나쁘다(_numeral_override 참조).
-_MEASURED_ARABIC_COUNTERS = frozenset({"秒"})
+# 人은 실사용자 확인 오류(たった1人 → 정답 「탓타 히토리」, 우리 「탓타 1닌」)로 추가했다
+# — 음변화(1/2가 딴 낱말이 되고 4가 よん→よ로 줄어드는 것)는 그 사다리로 못 메우므로
+# ``_adopt_person_counter_readings``가 자릿수 읽기 위에 따로 얹는다.
+_MEASURED_ARABIC_COUNTERS = frozenset({"秒", "人"})
 
 
 def _katakana_as_hiragana(surface: str) -> str | None:
@@ -234,6 +237,90 @@ def _numeral_override(words, i: int, text: str, idx: int) -> str | None:
     return digits_to_reading(surface)
 
 
+# 人(にん) 조수사의 불규칙 읽기. 1・2는 자릿수 읽기(いち・に)가 아니라 아예 다른 낱말
+# (히토리/후타리)이 되고, 끝자리가 4면 よん이 아니라 よ로 줄어든다(실측: 十四人→
+# 주우요닌, 4人→요닌 — 사용자가 노래를 듣고 확인). 3・5~9・10 이상(끝자리 4 제외)은
+# 자릿수 읽기 + にん을 그대로 이으면 맞다(실측: 3人→さんにん).
+#
+# 一人・二人은 UniDic 사전에 이미 통짜 표제어로 올라 있어(ひとり/ふたり, pos2=普通名詞)
+# 별개 토큰 一+人으로 쪼개지지 않는다 — 아래 함수는 그 표제어를 건드리지 않는다(surface가
+# "一人" 전체라 "1"/"2" 매칭에도, pos2=数詞 조건에도 안 걸린다). 十四人처럼 十 뒤에
+# 붙어 따로 토큰이 되는 한자 四(pos2=数詞, 읽기 よん)는 이 함수가 다룬다.
+_PERSON_COUNTER = "人"
+_PERSON_WHOLE_WORD: dict[str, str] = {"1": "ひとり", "2": "ふたり"}
+
+
+def _adopt_person_counter_readings(tokens: list[ReadingToken]) -> None:
+    """人 앞의 숫자 토큰 읽기를 조수사 관례에 맞게 고친다(제자리 수정).
+
+    대상은 品詞가 名詞-数詞인 토큰(아라비아 숫자는 ``_numeral_override``가 이미 자릿수
+    읽기를 매겨 둔 상태, 한자 숫자는 사전 읽기 그대로)뿐이다 — 何人의 何도 人 앞에서
+    名詞-数詞로 태깅되지만(``なん``, よん으로 안 끝남) 아래 조건에 걸리지 않아 그대로
+    남는다(실측 확인).
+    """
+    for i, token in enumerate(tokens):
+        if i + 1 >= len(tokens) or tokens[i + 1].surface != _PERSON_COUNTER:
+            continue
+        if token.pos != "名詞" or token.pos2 != "数詞":
+            continue
+        whole = _PERSON_WHOLE_WORD.get(token.surface)
+        if whole is not None:
+            # 1人・2人 — 읽기가 통째로 딴 낱말이 된다. 人 토큰의 읽기(にん)는 지운다:
+            # 안 지우면 "히토리니" + "응" 처럼 두 번 읽힌다.
+            token.reading = token.surface_reading = whole
+            tokens[i + 1].reading = tokens[i + 1].surface_reading = ""
+        elif token.reading.endswith("よん"):
+            # 4人・14人・24人… — 끝자리 4만 よ로 줄이고 나머지 자리는 그대로 둔다.
+            token.reading = token.surface_reading = token.reading[:-2] + "よ"
+
+
+# 何(なに/なん) — UniDic 사전 표제어(代名詞)의 kana는 문맥과 무관하게 항상 なん으로
+# 고정돼 있다(何を・何で 어느 쪽이든 동일). 그런데 실제 발음은 갈린다: 격조사(が・を・に)가
+# 바로 뒤에 오면 표준 발음은 なに다(실측: 何を含んでたって → 정답 「나니오 후쿤데탓테」,
+# 기존 출력 「난오 후쿤데탓테」).
+#
+# で・と・の・て・か는 일부러 뺐다 — UniDic 품사만으로는 관용구(なん 고정)와 진짜 격조사
+# 용법(なに)을 가를 수 없다(실측: 何とか・何となく・何と言った가 何と戦う・何と一緒に와
+# 品詞・pos2 태그가 완전히 같다 — 全部 代名詞/ナン + 助詞/格助詞). 何の도 뺐다: 何の花・
+# 何のため・何の意味もない 전부 UniDic kana가 なん이고, 실제 표준 발음도 なんの다(何が
+# 만큼 확고한 なに가 아니다 — 넣으면 새 오류가 된다). 何か는 표기가 이미 なに·なん
+# 어느 쪽으로도 걸리지 않는 고정 낱말이라(か가 격조사가 아니라 副助詞) 이 표에 없어도
+# 자동으로 제외된다.
+_NANI_CASE_PARTICLES = frozenset({"が", "を", "に"})
+
+
+def _nani_override(words, i: int, text: str, idx: int) -> str | None:
+    """뒤에 격조사(が・を・に)가 바로 붙는 何를 なに로 읽을지 판정. 아니면 None(なん 유지)."""
+    word = words[i]
+    if word.surface != "何" or (getattr(word.feature, "pos1", "") or "") != "代名詞":
+        return None
+    if i + 1 >= len(words):
+        return None
+    nxt = words[i + 1]
+    nxt_surface = nxt.surface
+    if nxt_surface not in _NANI_CASE_PARTICLES:
+        return None
+    if (getattr(nxt.feature, "pos2", "") or "") != "格助詞":
+        return None
+    tail_start = idx + len(word.surface)
+    if text[tail_start : tail_start + len(nxt_surface)] != nxt_surface:
+        return None
+    return "なに"
+
+
+# 私(わたし/わたくし) — UniDic 사전은 わたくし(격식체)를 1순위로 준다. 가사에서는
+# わたし가 압도적으로 우세하다(실측: 私は → 정답 「와타시와」, 우리 기존 출력
+# 「와타쿠시와」 — 같은 곡의 私たちは・私の願いは도 마찬가지로 틀렸다). 私事・私見・
+# 私立・私鉄・私大・私利私欲・私語처럼 し로 읽는 복합어는 UniDic이 통째로 한 표제어로
+# 묶어 내려주므로(surface가 애초에 "私" 한 글자가 아니다) 이 함수가 건드릴 일이 없다
+# (실측 확인 — 私自身만 私+自身으로 쪼개지고 私 자체는 여전히 대명사다).
+def _watashi_override(word) -> str | None:
+    """대명사 私의 기본 읽기를 わたくし에서 わたし로 낮출지 판정. 아니면 None."""
+    if word.surface != "私" or (getattr(word.feature, "pos1", "") or "") != "代名詞":
+        return None
+    return "わたし"
+
+
 def _token_readings(
     word, *, phonetic: bool = False, orphan_prefix: bool = False
 ) -> tuple[str, str]:
@@ -309,6 +396,14 @@ def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[Read
         numeral = _numeral_override(words, i, text, idx)
         if numeral is not None:
             reading = surface_reading = numeral
+        else:
+            nani = _nani_override(words, i, text, idx)
+            if nani is not None:
+                reading = surface_reading = nani
+            else:
+                watashi = _watashi_override(word)
+                if watashi is not None:
+                    reading = surface_reading = watashi
         tokens.append(
             ReadingToken(
                 surface,
@@ -323,6 +418,7 @@ def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[Read
         pos = idx + len(surface)
     if pos < len(text):
         tokens.append(ReadingToken(text[pos:], text[pos:], pos, len(text)))
+    _adopt_person_counter_readings(tokens)
     return tokens
 
 

@@ -277,8 +277,9 @@ def test_katakana_particle_keeps_its_phonetic_reading():
 # ---------------------------------------------------------------------------
 # 아라비아 숫자 + 조수사 읽기 — 실측 근거: tests/fixtures/wiki_pron_sample.json
 # 115줄 중 아라비아 숫자 뒤에 조수사가 온 사례는 "1秒"(사람 발음 「이치뵤오」) 단 1건.
-# 다른 조수사(分・回・人 등)는 표본에 없어 ``_MEASURED_ARABIC_COUNTERS``에 넣지 않았고,
-# 아래 미적용 케이스가 그 경계를 지킨다.
+# 分・回는 표본에 없어 ``_MEASURED_ARABIC_COUNTERS``에 넣지 않았고, 아래 미적용
+# 케이스가 그 경계를 지킨다. 人은 사용자가 실제 곡(たった1人 君に)을 듣고 확인한
+# 오류라 표본과 무관하게 추가했다 — 아래 "人(にん) 조수사" 절 참조.
 # ---------------------------------------------------------------------------
 
 
@@ -313,3 +314,115 @@ def test_arabic_digit_needs_the_counter_immediately_adjacent():
 def test_standalone_arabic_digit_without_a_counter_is_unaffected():
     # 뒤에 조수사가 없으면(줄 끝, 다른 낱말) 숫자 읽기를 시도하지 않는다 — 실측 밖이다.
     assert kana_reading("2024年") == "2024ねん"
+
+
+# ---------------------------------------------------------------------------
+# 人(にん) 조수사 — 사용자가 실제 곡을 듣고 확인한 오류: たった1人 君に →
+# 정답 「탓타 히토리 키미니」, 우리 기존 출력 「탓타 1닌 키미니」. 1・2는 자릿수
+# 읽기가 아니라 딴 낱말(히토리/후타리)이 되고, 4는 よん이 아니라 よ로 줄어든다
+# (十四人 → じゅうよにん). 3・5~10(끝자리 4 제외)은 자릿수 읽기 + にん을 그대로
+# 이으면 맞다.
+# ---------------------------------------------------------------------------
+
+
+def test_one_person_and_two_people_are_irregular_words():
+    assert kana_reading("たった1人　君に") == "たったひとり　きみに"
+    assert kana_reading("1人") == "ひとり"
+    assert kana_reading("2人") == "ふたり"
+
+
+def test_three_and_up_person_counter_uses_regular_digit_plus_nin():
+    assert kana_reading("3人") == "さんにん"
+    assert kana_reading("5人") == "ごにん"
+    assert kana_reading("10人") == "じゅうにん"
+
+
+def test_four_people_uses_yo_not_yon_for_both_arabic_and_kanji_digits():
+    # 四人 자체(실측 근거 데이터에는 없지만 표준 문법 — 4日・4時와 같은 불규칙)
+    assert kana_reading("4人") == "よにん"
+    assert kana_reading("四人") == "よにん"
+    # 끝자리만 4인 복합수도 마찬가지다(十四人 → じゅうよにん, よんにん이 아니다)
+    assert kana_reading("14人") == "じゅうよにん"
+    assert kana_reading("十四人") == "じゅうよにん"
+    assert kana_reading("二十四人") == "にじゅうよにん"
+
+
+def test_kanji_one_and_two_person_were_already_correct_and_stay_untouched():
+    # UniDic 사전에 一人・二人이 이미 통짜 표제어(ひとり/ふたり)로 올라 있다 —
+    # 손대지 않아도 맞았다는 기존 실측을 회귀로 고정한다.
+    assert kana_reading("一人") == "ひとり"
+    assert kana_reading("二人") == "ふたり"
+    assert kana_reading("三人") == "さんにん"
+
+
+def test_person_counter_does_not_leak_into_nan_no_hito():
+    # 何人(なんにん)의 何도 人 앞에서 名詞-数詞로 태깅되지만 よん으로 끝나지 않으므로
+    # 손대지 않는다 — 何 관련 규칙과 겹치지 않는지 확인하는 회귀다.
+    assert kana_reading("何人") == "なんにん"
+
+
+# ---------------------------------------------------------------------------
+# 何(なに/なん) — 사용자가 실제 곡을 듣고 확인한 오류: 何を含んでたって →
+# 정답 「나니오 후쿤데탓테」, 우리 기존 출력 「난오 후쿤데탓테」. 뒤에 격조사
+# (が・を・に)가 바로 오면 なに, 그 외(관용구·조수사 앞)는 UniDic 기본값 なん을
+# 그대로 둔다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("何を含んでたって", "なにをふくんでたって"),
+        ("何が", "なにが"),
+        ("何を", "なにを"),
+        ("何に", "なにに"),
+    ],
+)
+def test_nani_before_a_case_particle(text, expected):
+    assert kana_reading(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("何で", "なんで"),
+        ("何て", "なんて"),
+        ("何人", "なんにん"),
+        ("何度", "なんど"),
+        ("何回", "なんかい"),
+        ("何時", "なんじ"),
+        ("何とか", "なんとか"),
+        ("何の", "なんの"),  # 何が만큼 확고한 なに 대립이 없다 — なんの가 표준이다
+        ("何と", "なんと"),  # 何とか・何と言った와 태그가 같아 なに/なん을 못 가른다
+    ],
+)
+def test_nan_stays_before_fixed_idioms_and_counters(text, expected):
+    assert kana_reading(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# 私(わたし/わたくし) — 사용자가 실제 곡을 듣고 확인한 오류: 私は → 정답
+# 「와타시와」, 우리 기존 출력 「와타쿠시와」. UniDic 사전은 わたくし를 1순위로
+# 주지만 가사에서는 わたし가 압도적이다.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("私は", "わたしは"),
+        ("私たちは", "わたしたちは"),
+        ("私の願いは", "わたしのねがいは"),
+    ],
+)
+def test_watashi_is_the_default_reading_of_shi(text, expected):
+    assert kana_reading(text) == expected
+
+
+def test_shi_reading_compounds_are_not_affected_by_the_watashi_override():
+    # 私事・私見・私立・私鉄처럼 し로 읽는 복합어는 UniDic이 통째로 한 표제어로
+    # 묶어 내려주므로(surface가 "私" 한 글자가 아니다) わたし로 잘못 바뀌지 않는다.
+    assert kana_reading("私鉄") == "してつ"
+    assert kana_reading("私立") == "しりつ"
+    assert "わたし" not in kana_reading("私鉄")
+    assert "わたし" not in kana_reading("私立")

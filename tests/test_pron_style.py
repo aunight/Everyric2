@@ -195,6 +195,29 @@ def test_ruby_reading_wins_over_the_kanji_reading():
     assert wiki_pronunciation("帰る動画（トコ）は既に廃墟") == "카에루 (토코)와 스데니 하이쿄"
 
 
+# ---------------------------------------------------------------------------
+# 사용자가 실제 곡을 듣고 확인한 오류 3건 (everyric2.text.ja_reading의 人・何・私
+# 낱말 기본값 수정 회귀) — 원문 그대로 위키 표기 출력을 검증한다.
+# ---------------------------------------------------------------------------
+
+
+def test_person_counter_word_reading_matches_the_song():
+    # たった1人 君に → 「탓타 히토리 키미니」(기존 오류: 「탓타 1닌 키미니」)
+    assert wiki_pronunciation("たった1人　君に") == "탓타 히토리 키미니"
+
+
+def test_nani_before_case_particle_matches_the_song():
+    # 何を含んでたって → 「나니오 후쿤데탓테」(기존 오류: 「난오 후쿤데탓테」)
+    assert wiki_pronunciation("何を含んでたって") == "나니오 후쿤데탓테"
+
+
+def test_watashi_default_matches_the_song():
+    # 私は → 「와타시와」(기존 오류: 「와타쿠시와」). 같은 곡의 私たちは・私の願いは도.
+    assert wiki_pronunciation("私は") == "와타시와"
+    assert wiki_pronunciation("私たちは") == "와타시타치와"
+    assert wiki_pronunciation("私の願いは") == "와타시노 네가이와"
+
+
 def test_phrase_spacing_follows_bunsetsu():
     # 조사·조동사는 앞 내용어에 붙고, 내용어에서 새 문절이 시작한다
     assert (

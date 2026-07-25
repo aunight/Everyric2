@@ -231,6 +231,47 @@ def test_magic_e_is_not_blocked_for_ive(word, expected):
     assert latin_word_to_hangul(word) == expected
 
 
+def test_into_is_the_to_family_not_the_photo_family():
+    # 사용자가 실제 곡에서 "fade into blue"를 듣고 인토가 아니라 인투라고 확인했다.
+    # 규칙 엔진은 어말 -o를 항상 장모음 오로 읽는데(photo 포토·auto 오토·zero 제로처럼
+    # 대개 옳다) into는 "in" + 함수어 "to"라 그 to처럼 /uː/다 — 철자만으로는 photo류와
+    # 구별할 길이 없는 닫힌 예외라서 표에서 잡는다. fade의 페읻(어말 파열음을 종성으로
+    # 닫는 조밀 규칙)은 이 수정과 무관하며 바뀌지 않는다.
+    assert latin_word_to_hangul("into") == "인투"
+    assert transliterate_latin("fade into blue") == "페읻 인투 블루"
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # into와 같은 원인(to·do가 접두사에 그대로 붙은 함수어 복합어)이라 함께 고쳤지만,
+        # into와 달리 실제 곡에서 사람이 듣고 확인하지는 못했다 — 사전 발음(옥스포드: onto
+        # /ˈɒntuː/, undo /ʌnˈduː/, redo /riːˈduː/, outdo /aʊtˈduː/)에 근거한 추정이다.
+        ("onto", "온투"),
+        ("undo", "언두"),
+        ("redo", "리두"),
+        ("outdo", "아웃두"),
+    ],
+)
+def test_to_do_compounds_keep_the_long_u(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # 어말 -o 기본 규칙(장모음 오)은 옳다 — into류만 예외지 이 낱말들은 예외가 아니다.
+        # 규칙을 고치는 대신 into류를 표에 넣기로 한 근거가 이 대조다.
+        ("photo", "포토"),
+        ("auto", "오토"),
+        ("zero", "제로"),
+        ("motto", "모토"),
+    ],
+)
+def test_the_bare_final_o_rule_is_not_touched(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
 def test_single_letters_and_vowelless_initialisms_are_spelled_out():
     # 실측: H7PR6K7xff0의 L-O-P-P-I'm이 사람 자막에서 「엘-오-피-피-아임」, NG!가 「엔지이」다
     assert [latin_word_to_hangul(c) for c in "LOPPI"] == ["엘", "오", "피", "피", "아이"]

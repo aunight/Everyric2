@@ -183,6 +183,14 @@ _CONVENTIONAL_WORDS = {
     "now": "나우", "how": "하우",  # 어말 ow의 예외 — 규칙은 /oʊ/(노·쇼)로 읽는다
     "young": "영",
     "to": "투", "do": "두", "who": "후", "too": "투",
+    # to·do 복합어. 규칙 엔진은 어말 -o를 항상 장모음 오로 읽는다(그게 맞다 —
+    # photo 포토, auto 오토, zero 제로, piano 피애노, potato 포태토는 모두 실제로 /oʊ/다).
+    # 그런데 into·onto·undo·redo·outdo는 "in/on/un/re/out"에 함수어 to·do가 그대로
+    # 붙은 낱말이라 그 to·do처럼 /uː/로 읽는다 — 철자로는 photo류와 구별할 수 없는
+    # 닫힌 예외라서 규칙이 아니라 표에서 잡는다(사용자가 실제 곡에서 "fade into blue"의
+    # into가 인토가 아니라 인투로 들린다고 확인했다). undo·redo·outdo는 같은 원인이라
+    # 함께 넣지만 실제 곡에서 청취 확인은 하지 못했다.
+    "into": "인투", "onto": "온투", "undo": "언두", "redo": "리두", "outdo": "아웃두",
     "one": "원", "two": "투", "once": "원스",
     "love": "럽",  # 러브 → 조밀
     "yes": "예스",

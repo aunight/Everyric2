@@ -242,7 +242,63 @@ _TABLE_EXAMPLES = {
     # 지켜야 한다 — 어간+접두 매칭이라 사전형과 다른 경로를 타므로 따로 넣는다.
     "弾く(활용)": "あなたの言葉を弾いてみせるよ",
     "行く(활용)": "ああ、どこへ行けばいいの",
+    "溢れる(활용)": "溢れた記憶も",
 }
+
+
+def test_afureru_and_koboreru_are_both_offered():
+    """溢れる의 두 읽기(あふれる/こぼれる)가 후보로 나온다.
+
+    사용자가 실제 곡을 듣고 찾은 것이다(04L-NZAObiE 「溢れた記憶も」: 기본값 「아후레타」,
+    실제 가창 「코보레타」). 서버 재채점에서 오디오가 후보를 **+0.1859**로 골랐고 그리디
+    전사에도 「고보래」가 들렸다 — 지금까지 측정한 것 중 가장 큰 차이다.
+    """
+    cands = pronunciation_candidates("溢れた記憶も")
+    assert cands[0] == "아후레타 키오쿠모"  # 형태소 분석기 1순위가 기본값
+    assert "코보레타 키오쿠모" in cands
+
+
+def test_afureru_stem_does_not_match_a_noun_that_merely_contains_it():
+    # 溢血(잇케츠)은 名詞이고 읽기가 あふ/こぼ로 시작하지 않는다 — 品詞·읽기 접두 두 조건이
+    # 각각 막는다. 어간 표를 넓힐 때마다 이런 이웃을 확인해야 한다.
+    assert len(pronunciation_candidates("溢血が起きた")) == 1
+
+
+def test_ittan_offers_the_human_reading_from_the_corpus():
+    """一端 — 사람 발음 코퍼스가 우리와 다르게 읽은 것을 후보로 낸다.
+
+    실측: 「一端の何者かに」를 사람은 「잇파시」(いっぱし, 제법 한몫하는)로 썼고 우리 기본값은
+    「잇탄」(いったん, 한쪽 끝)이었다. 둘 다 사전에 있고 뜻이 다르다 — 문맥으로 갈려야 한다.
+    """
+    cands = pronunciation_candidates("一端の何者かに")
+    assert cands[0].startswith("잇탄")  # 형태소 분석기 1순위
+    assert any(c.startswith("잇파시") for c in cands)
+
+
+def test_ear_reported_readings_are_offered_even_though_the_audio_rejects_them():
+    """観て→みえて, 端っこ→すみっこ — **사전에 없는 읽기**를 후보로 낸다.
+
+    근거는 사용자 청취뿐이고 오디오는 아직 지지하지 않는다(観て -0.0518/-0.0314,
+    端っこ +0.0186/-0.0091 — 마진 0.03 미달). 넣는 이유는 "오디오가 판정할 기회를 준다,
+    틀리면 거부된다"이고 지금은 거부되므로 **표시 동작이 바뀌지 않는다.**
+
+    이 테스트가 지키는 것은 "후보가 생성된다"까지다 — 채택 여부는 오디오가 정한다.
+    """
+    assert "즛토 미에테" in pronunciation_candidates("ずっと観て")
+    assert "미에테테" in pronunciation_candidates("観てて")  # 활용형도 앞 두 토큰이 잡힌다
+    assert "요루노 스밋코노" in pronunciation_candidates("夜の端っこの")
+
+
+def test_the_ear_reported_entries_do_not_leak_to_their_neighbours():
+    """새로 넣은 낱말 항목이 이웃 낱말로 새지 않는다.
+
+    観て는 見て로 새면 안 된다(見은 훨씬 흔해 오탐 영향이 크고, 見て→みえて는 근거가 없다).
+    端っこ는 末端·極端으로 새면 안 된다 — 낱말 전체 일치라 자동으로 막히지만, 표를 넓힐 때
+    이 검사가 없으면 조용히 뚫린다.
+    """
+    for text in ("見つけたよ", "見せて", "ずっと見てて", "観客が見ている",
+                 "末端に書いた", "極端な話"):
+        assert len(pronunciation_candidates(text)) == 1, text
 
 
 def test_no_word_disappears_between_default_and_a_candidate():
@@ -348,12 +404,18 @@ def test_worker_puts_the_line_meta_pronunciation_first():
 def test_worker_requires_a_larger_margin_for_a_human_written_pronunciation():
     # 사람이 쓴 발음은 결정론 출력과 다르다는 사실만으로 식별된다 (별도 플래그 없음).
     # 심판 대상에서 빼지 않고 마진만 크게 요구한다 — 사람도 후리가나를 놓치는 줄이 있다.
-    lines = [_Line("私は歩く")]
-    human = "와타시와 아루쿠"
-    assert human != wiki_pronunciation("私は歩く")
+    #
+    # 예시는 **아테지 후리가나**로 든다(涙를 シル로 읽는 류) — 사전에 없어 결정론 경로가
+    # 영원히 못 맞히고 사람만 아는 읽기이므로, "사람 발음"의 표본으로 정확하다. 한때 私를
+    # 예시로 썼는데 私의 기본값이 わたくし→わたし로 고쳐지면서 사람 발음과 같아져 전제가
+    # 무너졌다 — 결정론이 맞히게 된 낱말은 이 테스트의 표본이 될 수 없다.
+    text = "涙が落ちる"
+    lines = [_Line(text)]
+    human = "시루가 오치루"
+    assert human != wiki_pronunciation(text)
     cands, margins = _referee_candidates(lines, [human], _settings())
     assert cands[0][0] == human, "사람 발음이 기본값이어야 한다"
-    assert wiki_pronunciation("私は歩く") in cands[0], "결정론 독음도 후보로 남아야 한다"
+    assert wiki_pronunciation(text) in cands[0], "결정론 독음도 후보로 남아야 한다"
     s = _settings()
     assert margins[0] == s.pron_referee_human_margin > s.pron_referee_margin
 
