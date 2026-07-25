@@ -207,8 +207,17 @@ def test_margin_not_met_keeps_the_default():
 def test_human_margin_is_larger_than_the_deterministic_margin():
     # 사람이 쓴 발음은 기본값으로 두되 더 큰 마진을 요구한다 (근거는 worker 주석 참조)
     s = AlignmentSettings()
-    assert s.pron_referee is True
     assert s.pron_referee_human_margin > s.pron_referee_margin > 0
+
+
+def test_referee_is_off_by_default_until_it_is_re_measured():
+    """실오디오에서 해로웠으므로 기본값은 꺼짐이다 — 켜는 건 재측정 후의 결정이다.
+
+    s5Rkv_5Sbbo 134줄 실측: 53줄 교체, 그중 21줄은 오디오가 구분할 수 없는 장음 표기
+    변종(오오→오우)이고 11줄은 글자가 사라진 것(私 와타쿠시오→시오)이었다. 판정 근거를
+    고치기 전에 이 값이 True로 돌아가면 그 회귀가 조용히 재발한다 — 그래서 테스트로 못박는다.
+    """
+    assert AlignmentSettings().pron_referee is False
 
 
 # --------------------------------------------------------------------------

@@ -129,6 +129,9 @@ def test_pykakasi_fallback_tokens_keep_the_offset_contract():
 
 
 def _settings(**kw):
+    # 심판은 실오디오 실측에서 해로웠으므로 기본값이 False다(근거는 AlignmentSettings 참조).
+    # 이 파일은 기전 자체를 검증하므로 명시적으로 켠다 — 기본값에 기대면 안 된다.
+    kw.setdefault("pron_referee", True)
     return AlignmentSettings(**kw)
 
 

@@ -302,8 +302,9 @@ class AlignmentSettings(BaseSettings):
     )
 
     pron_referee: bool = Field(
-        default=True,
-        description="Let the AUDIO decide which reading a line is actually sung with. The "
+        default=False,
+        description="OFF BY DEFAULT — measured harmful on real audio, see the verdict below. "
+        "Let the AUDIO decide which reading a line is actually sung with. The "
         "deterministic pronunciation path (text/pron_style.py) reaches 82.1% exact agreement with "
         "the 2,207 human-written wiki pronunciation lines, and virtually all of the remaining "
         "mismatch collapses onto a single question — WHICH READING (私 와타시 vs 와타쿠시, 三日月 "
@@ -317,7 +318,23 @@ class AlignmentSettings(BaseSettings):
         "reading by pron_referee_margin in per-token average log-probability. Lines with a single "
         "candidate are never scored (cost 0), so songs whose readings are unambiguous pay nothing. "
         "Set false to keep the pre-referee behaviour exactly (the candidate argument to "
-        "CTCEngine.align is optional and the code path is identical when unused).",
+        "CTCEngine.align is optional and the code path is identical when unused). "
+        "REAL-AUDIO VERDICT (s5Rkv_5Sbbo, 134 lines, 2026-07-25): the mechanism works but its "
+        "judgement does not. 53 of 134 lines switched, and the switches are wrong three ways. "
+        "(a) DELETION IS FREE: 11 switches simply dropped characters (私 와타쿠시오 → 시오, "
+        "彼らを 카레라오 → 카라오, 苦しみ 쿠루시미 → 쿠 시미) because scoring the merged token "
+        "spans lets a shorter candidate hand its unwanted frames to blank at no cost. The score "
+        "must be normalised over the WHOLE window (blank frames included), not over tokens. "
+        "(b) THE KOR ADAPTER CANNOT RESOLVE THESE AXES: 21 of 53 switches only changed 오오→오우, "
+        "i.e. Korean long-vowel ORTHOGRAPHY for the same Japanese [oː] — a convention we already "
+        "settled at 82.1%, silently undone. Worse, unmotivated 連濁 won repeatedly (호시가→보시가, "
+        "카네가→가네가, 후네와→부네와): the adapter is not separating h from b in sung audio. "
+        "(c) NO AUDIO-CONFIDENCE GATE: this song's greedy transcript reads '9집민', '6와', 'k' and "
+        "heard/reading length ratio is 0.57 — there was no signal to arbitrate on, yet every line "
+        "was scored. Direct proof the audio did not drive the outcome: of 52 switches with a "
+        "greedy transcript, 40 left the distance to what was heard UNCHANGED. Do not turn this on "
+        "again without (a) window normalisation, (b) dropping candidate axes the adapter cannot "
+        "hear, (c) a per-song/per-line confidence gate, and a re-measurement that shows a net win.",
     )
 
     pron_referee_margin: float = Field(
