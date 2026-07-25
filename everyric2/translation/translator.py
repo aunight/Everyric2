@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from everyric2.config.settings import TranslationSettings, get_settings
 from everyric2.inference.prompt import LyricLine
 from everyric2.text.ja_reading import kana_reading, reading_source
+from everyric2.text.kana_hangul import has_kana
+from everyric2.text.pron_style import wiki_pronunciation
 
 load_dotenv()
 
@@ -57,6 +59,9 @@ _ALIGN_STRIP_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 # 문맥으로 판별 가능한 것만 담는다 — 行く(いく/ゆく)나 明日(あした/あす)처럼 텍스트만으로
 # 정할 수 없는 것은 오히려 사전값보다 나빠질 수 있어 넣지 않는다.
 # 표는 남겨 두지만 적용은 pykakasi 폴백 경로로 좁혔다(_build_prompt 참조).
+# 일본어 곡의 한글 독음은 이제 LLM에 묻지 않으므로(_use_deterministic_pron) 이 표가 실제로
+# 쓰이는 곳은 **발음을 LLM에 묻는 경로**뿐이다 — 형태소 분석기를 못 쓰는 환경(폴백)과
+# 비일본어(중국어 등) 원문. 그 경로에서는 여전히 유효하다.
 _AMBIGUOUS_READINGS: tuple[tuple[str, str], ...] = (
     ("君", "きみ (you) / くん (name suffix)"),
     ("止め", "とめ (stop something) / やめ (quit, give up)"),
@@ -406,6 +411,11 @@ LYRICS:
         if not text:
             # 빈 응답을 '빈 줄 하나'로 읽어 성공 처리하면 안 된다 (잘림/필터링과 동일 취급)
             return [None] * len(lines)
+        if text.startswith(("[", "{")):
+            # 모델은 JSON을 시도했고 그 파싱이 실패해서 여기까지 온 것이다(잘림 등) —
+            # 깨진 JSON 조각을 평문 번역으로 받아들이면 안 된다. 실측: 1줄 배치에서
+            # 잘린 '[{"original":"ダメ","transl'이 줄 수가 맞아 번역으로 저장됐다.
+            return [None] * len(lines)
 
         raw = [ln.strip() for ln in text.split("\n")]
         nonempty = [ln for ln in raw if ln]
@@ -489,6 +499,36 @@ LYRICS:
         if lang == "auto":
             lang = self._detect_lang_heuristic(text)
         return lang in ("en", "ko")
+
+    def _use_deterministic_pron(self, text: str, source_lang: str, target_lang: str) -> bool:
+        """이 곡의 한글 독음을 LLM 대신 결정론 규칙(``text.pron_style``)으로 만드는가.
+
+        실측(보카로 위키 사람 발음): 결정론 82.4% vs LLM 82.2%로 정확도는 동등한데,
+        LLM은 같은 줄을 실행마다 다르게 읽고(「縋って」를 3회 중 2회 오독) 조사 は를 표층
+        그대로 "하"로 쓰는 실수를 반복한다. 발음을 프롬프트에서 빼면 출력이 절반 이하로
+        줄어 번역 배치(_TEXT_BATCH_*)를 크게 잡을 수 있다는 이득도 있다.
+
+        세 조건 모두 만족할 때만 쓴다:
+        - 대상 언어가 한국어 — pron_style은 한글을 낸다(비ko 타깃의 계약은 로마자다).
+        - 원문이 일본어 — 판정은 **곡 전체** 텍스트로 한다. 라인 단위로 보면 한자만 있는
+          줄이 중국어로 오판된다. UniDic은 중국어에 틀리므로 중국어는 LLM 경로로 남긴다.
+        - 형태소 분석기를 쓸 수 있다 — pykakasi 폴백 독음은 신뢰도가 낮다(縋って→ついって).
+        """
+        if self._norm_lang(target_lang) != "ko":
+            return False
+        if reading_source() != "fugashi":
+            return False
+        return has_kana(text) or self._norm_lang(source_lang) == "ja"
+
+    @staticmethod
+    def _apply_deterministic_pron(lines: list[TranslationLine]) -> None:
+        """LLM이 돌려준 발음을 버리고 결정론 값으로 덮는다 (원문에서만 만든다).
+
+        번역이 실패한 라인(failed)도 채운다 — 발음은 더 이상 LLM 응답에 의존하지 않으므로
+        번역이 비었다고 독음까지 비울 이유가 없다.
+        """
+        for line in lines:
+            line.pronunciation = wiki_pronunciation(line.original) or None
 
     def _detect_lang_confident(self, text: str) -> str | None:
         """번역 스킵 게이트 전용 언어 판정 — 확신할 때만 "ko"/"en", 아니면 None.
@@ -594,11 +634,16 @@ class GeminiTranslator(BaseTranslator):
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
             text, source_lang
         )
+        # 일본어 곡의 독음은 서버가 결정론적으로 만든다 — 모델에는 번역만 요청한다
+        deterministic_pron = include_pron and self._use_deterministic_pron(
+            text, source_lang, target_lang
+        )
+        llm_pron = include_pron and not deterministic_pron
         if not include_pron and self._should_skip_translation(text, source_lang, target_lang):
             return self._skipped_translation_result(
                 original_lines, source_lang, target_lang, "gemini"
             )
-        prompt = self._build_prompt(text, source_lang, target_lang, include_pron, context)
+        prompt = self._build_prompt(text, source_lang, target_lang, llm_pron, context)
 
         try:
             response = requests.post(
@@ -621,7 +666,9 @@ class GeminiTranslator(BaseTranslator):
             result = response.json()
             content = result["candidates"][0]["content"]["parts"][0]["text"]
 
-            lines = self._parse_aligned(content, original_lines, include_pron)
+            lines = self._parse_aligned(content, original_lines, llm_pron)
+            if deterministic_pron:
+                self._apply_deterministic_pron(lines)
 
             return TranslationResult(lines, source_lang, target_lang, "gemini", self.settings.tone)
 
@@ -691,6 +738,12 @@ class OpenAICompatibleTranslator(BaseTranslator):
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
             text, source_lang
         )
+        # 일본어 곡의 독음은 서버가 결정론적으로 만든다 — 모델에는 번역만 요청하므로
+        # 라인당 출력이 절반 이하로 줄고 _TEXT_BATCH_*의 큰 배치를 쓸 수 있다
+        deterministic_pron = include_pron and self._use_deterministic_pron(
+            text, source_lang, target_lang
+        )
+        llm_pron = include_pron and not deterministic_pron
         skip_translation = self._should_skip_translation(text, source_lang, target_lang)
         if skip_translation and not include_pron:
             return self._skipped_translation_result(
@@ -702,8 +755,10 @@ class OpenAICompatibleTranslator(BaseTranslator):
             # 프롬프트/요청/정렬/복구를 _translate_lines에 위임해 잘림·누락·저품질을 감지하고,
             # 최악의 경우에도 원문만 담아 부분 성공으로 마감한다.
             lines = self._translate_lines(
-                original_lines, source_lang, target_lang, context, include_pron=include_pron
+                original_lines, source_lang, target_lang, context, include_pron=llm_pron
             )
+            if deterministic_pron:
+                self._apply_deterministic_pron(lines)
             if skip_translation:
                 # 원문 == 대상 언어인데 발음은 필요한 경우(ja→ja 등) — 발음만 남기고
                 # 무의미한 '재번역' 결과는 버린다

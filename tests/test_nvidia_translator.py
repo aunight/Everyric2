@@ -244,10 +244,15 @@ class TestTranslateAppliesGate:
             "romanized" not in captured["json"]["messages"][0]["content"].lower()
         )
 
-    def test_japanese_source_keeps_pronunciation_and_parses_json(self, monkeypatch, tmp_path):
+    def test_japanese_source_gets_deterministic_pronunciation(self, monkeypatch, tmp_path):
+        # 새 계약: 일본어 곡의 한글 독음은 서버가 규칙으로 만든다(text.pron_style) —
+        # LLM이 발음을 돌려줘도 무시하고, 프롬프트에도 발음을 요구하지 않는다
         translator = self._make_translator(monkeypatch, tmp_path, include_pronunciation=True)
 
+        captured = {}
+
         def fake_post(url, json, headers, timeout):
+            captured["json"] = json
             content = (
                 '[{"original": "おはよう", '
                 '"translation": "안녕", '
@@ -262,9 +267,13 @@ class TestTranslateAppliesGate:
         result = translator.translate("おはよう", source_lang="ja", target_lang="ko")
 
         assert len(result.lines) == 1
-        assert result.lines[0].pronunciation == "Ohayou"
+        assert result.lines[0].pronunciation == "오하요오"
         assert result.lines[0].translation == "안녕"
         assert result.engine == "nvidia"
+        # 발음을 묻지 않으므로 프롬프트는 번역 전용(참조 읽기 블록도 없다)
+        prompt = captured["json"]["messages"][0]["content"]
+        assert "pronunciation" not in prompt
+        assert "REFERENCE READINGS" not in prompt
 
 
 class TestTruncatedJsonRecovery:
@@ -324,7 +333,8 @@ class TestTruncatedJsonRecovery:
 
         assert len(result.lines) == 3
         assert [l.translation for l in result.lines] == ["번역1", "번역2", "번역3"]
-        assert [l.pronunciation for l in result.lines] == ["ぷろんいち", "ぷろんに", "ぷろんさん"]
+        # 발음은 응답이 아니라 원문에서 결정론적으로 만든다 — 응답의 가나는 버려진다
+        assert [l.pronunciation for l in result.lines] == ["라인 1", "라인 2", "라인 3"]
         assert all(not l.failed for l in result.lines)
         # 나머지 재요청은 3번째 라인만 담았어야 한다(전체 재요청 아님)
         assert len(calls) == 2
@@ -379,10 +389,11 @@ class TestTruncatedJsonRecovery:
         assert len(result.lines) == 2
         assert result.lines[0].translation == "성공1"
         assert result.lines[0].failed is False
-        # 복구 불가 라인: 원문만, translation/pron 비움, failed 표시
+        # 복구 불가 라인: 번역은 비고 failed 표시. 발음은 LLM 응답과 무관하게 만들므로
+        # 번역이 실패해도 남는다(사용자에겐 독음이라도 보이는 쪽이 낫다)
         assert result.lines[1].original == "ダメ"
         assert result.lines[1].translation == ""
-        assert result.lines[1].pronunciation is None
+        assert result.lines[1].pronunciation == "다메"
         assert result.lines[1].failed is True
 
     def test_empty_completion_does_not_500_and_marks_failed(self, monkeypatch, tmp_path):
@@ -401,11 +412,15 @@ class TestTruncatedJsonRecovery:
         assert result.lines[0].failed is True
 
     def test_long_input_is_batched_up_front(self, monkeypatch, tmp_path):
-        # 라인 수가 임계를 넘으면 처음부터 배치로 나눠 요청(잘림 예방)
+        # 라인 수가 임계를 넘으면 처음부터 배치로 나눠 요청(잘림 예방).
+        # 일본어 곡은 발음을 묻지 않으므로 실제로 쓰이는 임계는 _TEXT_BATCH_* 쪽이다 —
+        # 배치 분할 자체가 검증 대상이므로 두 경로의 임계를 함께 내린다.
         import everyric2.translation.translator as tr
 
         monkeypatch.setattr(tr, "_PRON_BATCH_THRESHOLD", 2)
         monkeypatch.setattr(tr, "_PRON_BATCH_SIZE", 2)
+        monkeypatch.setattr(tr, "_TEXT_BATCH_THRESHOLD", 2)
+        monkeypatch.setattr(tr, "_TEXT_BATCH_SIZE", 2)
         translator = self._make_translator(monkeypatch, tmp_path)
 
         def fake_post(url, json, headers, timeout):
@@ -816,8 +831,10 @@ class TestLowQualityBatchRetry:
         assert "line 3" in retry_prompt and "line 0" not in retry_prompt
 
     def test_blank_pronunciation_counts_as_low_quality(self, monkeypatch, tmp_path):
+        # 발음을 LLM에 묻는 경로(비일본어 원문)에서만 성립하는 규칙이다 — 일본어 곡은
+        # 발음을 서버가 만들므로 응답의 빈 발음이 품질 판정에 들어가지 않는다
         translator = self._make(monkeypatch, tmp_path, include_pronunciation=True)
-        lines = [f"ライン{i}" for i in range(6)]
+        lines = [f"第{i}行的歌词" for i in range(6)]
 
         def obj(orig, trans, pron):
             return '{"original":%s,"translation":%s,"pronunciation":%s}' % (
@@ -826,9 +843,9 @@ class TestLowQualityBatchRetry:
 
         # 번역은 다 있는데 절반의 발음이 빈 값
         first = "[" + ",".join(
-            obj(ln, f"T{i}", "" if i < 3 else f"ぷろん{i}") for i, ln in enumerate(lines)
+            obj(ln, f"T{i}", "" if i < 3 else f"pron{i}") for i, ln in enumerate(lines)
         ) + "]"
-        retry = "[" + ",".join(obj(f"ライン{i}", f"T{i}", f"なおし{i}") for i in range(3)) + "]"
+        retry = "[" + ",".join(obj(lines[i], f"T{i}", f"fixed{i}") for i in range(3)) + "]"
 
         calls = []
         responses = iter([chat_response(first, "stop"), chat_response(retry, "stop")])
@@ -839,11 +856,11 @@ class TestLowQualityBatchRetry:
 
         monkeypatch.setattr("everyric2.translation.translator.requests.post", fake_post)
 
-        result = translator.translate("\n".join(lines), source_lang="ja", target_lang="ko")
+        result = translator.translate("\n".join(lines), source_lang="zh", target_lang="ko")
 
         assert len(calls) == 2
         assert [line.pronunciation for line in result.lines[:3]] == [
-            "なおし0", "なおし1", "なおし2",
+            "fixed0", "fixed1", "fixed2",
         ]
 
     def test_few_blank_lines_do_not_trigger_a_retry(self, monkeypatch, tmp_path):

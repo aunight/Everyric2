@@ -33,12 +33,29 @@ _KATAKANA_START, _KATAKANA_END = "ァ", "ヶ"
 
 @dataclass
 class ReadingToken:
-    """형태소 토큰 1개: 원문 표면 + 히라가나 읽기 + 원문 글자 구간 [start, end)."""
+    """형태소 토큰 1개: 원문 표면 + 히라가나 읽기 + 원문 글자 구간 [start, end).
+
+    ``pos``/``pos2``는 UniDic ``feature.pos1``/``pos2``(名詞-普通名詞, 動詞-非自立可能…).
+    위키식 발음 표기의 문절(文節) 띄어쓰기가 품사 경계를 봐야 해서 실어 보낸다
+    (``text.pron_style``). pos2까지 필요한 이유는 補助動詞다 — ``〜ている``/``〜てしまう``의
+    いる·しまう는 pos1이 動詞라 그대로 두면 문절이 갈라지는데(``맛테 이루``), 위키는
+    앞 문절에 붙여 쓴다(``맛테이루``). 그 판정이 pos2=非自立可能에만 걸려 있다.
+    폴백(pykakasi) 경로와 공백 등 리터럴 토큰은 품사가 없어 빈 문자열이다.
+
+    ``surface_reading``은 같은 토큰의 **표층 읽기**(``feature.kana``)다. ``phonetic=True``로
+    받은 ``reading``(음가)과 나란히 두고 비교하는 용도로만 있다 — 음가는 エイ를 장음 ー로
+    뭉개므로(鮮明 kana=センメイ / pron=センメー) 두 읽기를 맞춰 보면 "여기가 원래 い였다"를
+    알 수 있다(``pron_style._restore_ei``). 표층 읽기를 따로 알 수 없는 토큰(리터럴·폴백)은
+    빈 문자열이며, 그 경우 비교하는 쪽이 아무것도 하지 않는다.
+    """
 
     surface: str
     reading: str
     start: int
     end: int
+    pos: str = ""
+    pos2: str = ""
+    surface_reading: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +127,17 @@ def _pykakasi_reading(surface: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _token_reading(word) -> str:
-    """토큰 1개의 히라가나 읽기. 폴백 사다리(위에서부터):
+def _feature_reading(feature, attrs: tuple[str, ...]) -> str | None:
+    """``attrs`` 순서로 UniDic 읽기 필드를 훑어 첫 유효값을 히라가나로 내린다."""
+    for attr in attrs:
+        value = getattr(feature, attr, None)
+        if value and value != "*":
+            return _katakana_to_hiragana(value)
+    return None
+
+
+def _token_readings(word, *, phonetic: bool = False) -> tuple[str, str]:
+    """토큰 1개의 (읽기, 표층 읽기). 폴백 사다리(위에서부터):
 
     1. ``feature.kana`` — UniDic의 표층 읽기(활용형 그대로). 1순위.
     2. ``feature.pron`` — 발음형. kana가 비고 pron만 채워진 항목이 있다. 순서가 중요한데,
@@ -120,18 +146,32 @@ def _token_reading(word) -> str:
     3. 표면에 한자가 있으면 **그 토큰만** pykakasi로 읽는다 — UniDic 미등록 한자어
        (가사에 흔한 조어·이체자)를 표면 그대로 흘리면 모라가 통째로 비어 타이밍이 무너진다.
     4. 그 외(라틴·숫자·기호)는 표면 그대로 — reading.py가 ASCII 유닛으로 따로 센다.
+
+    위 "kana를 먼저 보는 이유"는 **모라 정렬용 기본값**에만 해당한다. ``phonetic=True``면
+    1·2의 순서를 뒤집어 ``pron``(음가)을 먼저 본다 — 사람이 쓴 발음 표기는 표층이 아니라
+    음가를 적기 때문이다(조사 は→ワ, 王女→オージョ). 실측(보카로 위키 사람 발음 2,207줄
+    완전일치): kana 우선 72.0% vs pron 우선 75.5%. 반대로 모라 열은 표층 읽기를 기대하므로
+    ``text_to_moras``는 기본값(kana 우선)을 계속 쓴다.
+
+    두 번째 반환값은 항상 **표층 읽기(kana 우선)** 다 — 음가가 뭉갠 자리를 되살리려는
+    호출부가 두 읽기를 나란히 비교할 수 있게 함께 내려보낸다(``ReadingToken`` 참조).
     """
     feature = word.feature
-    for attr in ("kana", "pron"):
-        value = getattr(feature, attr, None)
-        if value and value != "*":
-            return _katakana_to_hiragana(value)
-    if _KANJI_RE.search(word.surface):
-        return _pykakasi_reading(word.surface)
-    return word.surface
+    order = ("pron", "kana") if phonetic else ("kana", "pron")
+    reading = _feature_reading(feature, order)
+    if reading is None:
+        # 사다리 3·4단: UniDic에 읽기가 없는 토큰 — 이 경우 표층/음가 구분 자체가 없다
+        fallback = (
+            _pykakasi_reading(word.surface)
+            if _KANJI_RE.search(word.surface)
+            else word.surface
+        )
+        return fallback, fallback
+    surface_reading = _feature_reading(feature, ("kana", "pron"))
+    return reading, surface_reading or reading
 
 
-def _tokenize_with_tagger(tagger, text: str) -> list[ReadingToken]:
+def _tokenize_with_tagger(tagger, text: str, *, phonetic: bool = False) -> list[ReadingToken]:
     """형태소 토큰을 원문 오프셋에 다시 앉힌다.
 
     MeCab은 공백을 토큰으로 내주지 않는다 — 표면을 그냥 이어 붙이면 원문보다 짧아져
@@ -152,7 +192,18 @@ def _tokenize_with_tagger(tagger, text: str) -> list[ReadingToken]:
             continue
         if idx > pos:
             tokens.append(ReadingToken(text[pos:idx], text[pos:idx], pos, idx))
-        tokens.append(ReadingToken(surface, _token_reading(word), idx, idx + len(surface)))
+        reading, surface_reading = _token_readings(word, phonetic=phonetic)
+        tokens.append(
+            ReadingToken(
+                surface,
+                reading,
+                idx,
+                idx + len(surface),
+                pos=getattr(word.feature, "pos1", "") or "",
+                pos2=getattr(word.feature, "pos2", "") or "",
+                surface_reading=surface_reading,
+            )
+        )
         pos = idx + len(surface)
     if pos < len(text):
         tokens.append(ReadingToken(text[pos:], text[pos:], pos, len(text)))
@@ -182,30 +233,80 @@ def _tokenize_with_kakasi(text: str) -> list[ReadingToken]:
     return tokens
 
 
-def tokenize_reading(text: str) -> list[ReadingToken]:
+# 루비(후리가나) 표기: 한자 뭉치 바로 뒤에 괄호로 읽기를 적어 둔 가사 관례.
+# 실측 예: 涙（シル）, 動画（トコ）, 時間（トキ）, 誕生日(バースデー) — 반자 괄호도 쓰인다.
+_RUBY_RE = re.compile(r"[㐀-鿿々]+[（(]([぀-ヿ]+)[）)]")
+
+
+def _adopt_ruby_readings(text: str, tokens: list[ReadingToken]) -> None:
+    """``한자런（가나）`` 패턴에서 괄호 안 가나만 읽고 한자·괄호의 읽기는 비운다(제자리 수정).
+
+    가사가 루비를 달아 둔 곳은 작사가가 지정한 독음이므로 사전 독음보다 정확하다
+    (涙（シル）는 "나미다"가 아니라 "시루"로 불린다). 실측 순이득 +0.7p(개선 14줄,
+    악화 6줄) — 위키가 한자 독음과 루비를 **둘 다** 적는 경우가 있어 손실이 섞인다.
+    그래서 기본값이 아니라 옵션으로 둔다.
+
+    괄호 자체는 읽기에서 사라지지만(읽기는 가나 열이다) 표면·오프셋 계약은 건드리지
+    않으므로, 괄호를 표기에 남기고 싶은 호출부는 ``token.surface``를 보면 된다
+    (``pron_style``이 그렇게 한다 — 위키도 ``(토코)``처럼 괄호를 남긴다).
+    """
+    for match in _RUBY_RE.finditer(text):
+        kana_start, kana_end = match.start(1), match.end(1)
+        for token in tokens:
+            if token.end <= match.start() or token.start >= match.end():
+                continue
+            if kana_start <= token.start and token.end <= kana_end:
+                continue  # 괄호 안 가나 — 읽기 유지
+            if token.start <= kana_start and kana_end <= token.end:
+                # 형태소 분석기가 루비 전체를 한 토큰으로 삼킨 경우 — 가나만 남긴다
+                token.reading = _katakana_to_hiragana(text[kana_start:kana_end])
+            else:
+                token.reading = ""
+
+
+def tokenize_reading(
+    text: str, *, phonetic: bool = False, adopt_ruby: bool = False
+) -> list[ReadingToken]:
     """일본어 텍스트를 (표면, 히라가나 읽기, 원문 오프셋) 토큰 열로 쪼갠다.
 
     표면을 순서대로 이어 붙이면 항상 원문이 복원되고, 각 토큰은
-    ``text[token.start:token.end] == token.surface``를 만족한다.
+    ``text[token.start:token.end] == token.surface``를 만족한다. 두 옵션은 **읽기만**
+    바꾸며 이 계약에는 손대지 않는다.
+
+    Args:
+        phonetic: 읽기 사다리를 ``feature.pron``(음가) 우선으로 바꾼다 — 사람이 쓴 발음
+            표기를 재현할 때 쓴다(``_token_readings`` 참조). 기본값은 표층 읽기(kana)
+            우선이며 모라 정렬(``reading.py``)이 그 값을 전제한다.
+        adopt_ruby: ``한자런（가나）``의 괄호 안 가나만 읽는다(``_adopt_ruby_readings``).
     """
     if not text:
         return []
     with _lock:
         tagger = _get_tagger()
         if tagger is None:
-            return _tokenize_with_kakasi(text)
-        try:
-            return _tokenize_with_tagger(tagger, text)
-        except Exception:
-            logger.warning(
-                "morphological tokenization failed; falling back to pykakasi", exc_info=True
-            )
-            return _tokenize_with_kakasi(text)
+            tokens = _tokenize_with_kakasi(text)
+        else:
+            try:
+                tokens = _tokenize_with_tagger(tagger, text, phonetic=phonetic)
+            except Exception:
+                logger.warning(
+                    "morphological tokenization failed; falling back to pykakasi", exc_info=True
+                )
+                tokens = _tokenize_with_kakasi(text)
+    if adopt_ruby:
+        _adopt_ruby_readings(text, tokens)
+    return tokens
 
 
-def kana_reading(text: str) -> str:
-    """텍스트 전체의 히라가나 읽기 (비일본어 구간은 원문 그대로 통과)."""
-    return "".join(token.reading for token in tokenize_reading(text))
+def kana_reading(text: str, *, phonetic: bool = False, adopt_ruby: bool = False) -> str:
+    """텍스트 전체의 히라가나 읽기 (비일본어 구간은 원문 그대로 통과).
+
+    옵션 의미는 ``tokenize_reading``과 같다.
+    """
+    return "".join(
+        token.reading
+        for token in tokenize_reading(text, phonetic=phonetic, adopt_ruby=adopt_ruby)
+    )
 
 
 def reading_source() -> str:
