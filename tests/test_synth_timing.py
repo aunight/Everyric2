@@ -256,3 +256,75 @@ def test_synthesized_words_still_full_cover_body():
     out = _full_coverage_words(r.text, r.word_segments)
     assert "".join(o["word"] for o in out) == r.text          # join==본문
     assert [o["start"] for o in out] == sorted(o["start"] for o in out)  # 단조
+
+
+# ---------------------------------------------------------------------------
+# ④ 낱말이 프레임에 눌린 라인 — XKZIQlqVjjk `Approved`×4 실측에서 나온 게이트
+# ---------------------------------------------------------------------------
+
+
+def _word_line(words, per_word_span):
+    """낱말별 (글자열, [start, end])로 word_segments를 만든다. 공백도 토큰으로 넣는다."""
+    ws = []
+    for i, (w, (st, en)) in enumerate(zip(words, per_word_span)):
+        if i:
+            ws.append(WordSegment(word=" ", start=st, end=st, confidence=0.5))
+        step = (en - st) / max(1, len(w))
+        for k, ch in enumerate(w):
+            ws.append(WordSegment(word=ch, start=st + k * step,
+                                  end=st + (k + 1) * step, confidence=0.5))
+    return ws
+
+
+def test_repeats_pressed_into_single_frames_are_resynthesised():
+    """실측 사례: `Approved`×4의 구간이 [3.3, 0.02, 0.02, 0.02]초 — 8글자 낱말이 프레임 1개.
+
+    ①(라인 전체 폭)은 글자가 라인 폭을 다 덮어서 통과하고, ③(선두 고립)은 임계 미달로
+    통과했다(실측 0.22s vs 임계 1.63s). 그래서 이 형태가 어디에서도 안 잡혔다.
+    """
+    from everyric2.server.worker import _impossible_word_distribution
+
+    spans = [(51.7, 55.0), (55.0, 55.02), (55.02, 55.04), (55.04, 55.06)]
+    ws = _word_line(["Approved"] * 4, spans)
+    assert _impossible_word_distribution(ws, 51.65, 55.72, 11.0) is True
+
+
+def test_one_swallowed_function_word_does_not_resynthesise_the_line():
+    """기능어 하나가 1프레임을 받는 것은 흔하고, 그것 때문에 라인 전체를 버리면 손해다.
+
+    실측 사례: `All in my heart その期待感`에서 `in`이 0.02초. 나머지 글자들의 CTC 분포는
+    맞으므로 균등 재합성으로 갈아치우면 오히려 나빠진다. 눌린 글자 비중이 1/3 미만이면
+    건드리지 않는다.
+    """
+    from everyric2.server.worker import _impossible_word_distribution
+
+    words = ["All", "in", "my", "heart", "その期待感"]
+    spans = [(0.0, 0.4), (0.4, 0.42), (0.5, 0.9), (0.9, 1.6), (1.6, 3.0)]
+    ws = _word_line(words, spans)
+    assert _impossible_word_distribution(ws, 0.0, 3.0, 11.0) is False
+
+
+def test_fast_but_real_singing_is_left_alone():
+    """비율(글자/초)로 판정하면 정상 가창을 잡는다 — 그래서 프레임 수로 판정한다.
+
+    실측 오탐: `消去しても` 5글자 / 0.44s = 11.4글자/초로 max_char_rate(11)를 넘지만
+    22프레임이라 눌린 것이 아니다. 조밀 음차 후의 `어프룹`×4([0.62, 0.83, 0.41, 0.38])도
+    같은 이유로 걸리지 않아야 한다.
+    """
+    from everyric2.server.worker import _impossible_word_distribution
+
+    ws = _word_line(["消去しても"], [(0.0, 0.44)])
+    assert _impossible_word_distribution(ws, 0.0, 0.5, 11.0) is False
+
+    spans = [(0.0, 0.62), (0.62, 1.45), (1.45, 1.86), (1.86, 2.24)]
+    ws2 = _word_line(["어프룹"] * 4, spans)
+    assert _impossible_word_distribution(ws2, 0.0, 2.24, 11.0) is False
+
+
+def test_pressed_gate_is_off_when_the_char_rate_gate_is_off():
+    # max_char_rate<=0은 이 게이트 전체의 비활성 스위치다 — ④도 함께 꺼져야 한다
+    from everyric2.server.worker import _impossible_word_distribution
+
+    spans = [(51.7, 55.0), (55.0, 55.02), (55.02, 55.04), (55.04, 55.06)]
+    ws = _word_line(["Approved"] * 4, spans)
+    assert _impossible_word_distribution(ws, 51.65, 55.72, 0.0) is False

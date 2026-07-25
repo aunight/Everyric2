@@ -1776,11 +1776,69 @@ def _impossible_word_distribution(word_segments, start: float, end: float, max_c
         return False
     if toks[1].start - toks[0].start > span * 0.4:
         return True  # ③ 선두 글자만 앞에 고립 — 나머지가 뒤로 몰린 잔해
+    # ④ 낱말이 프레임 한두 개에 눌린 것 — ①은 라인 전체 폭만 보므로, 글자가 라인 폭을 다
+    #    덮으면서 그 **안에서** 뭉친 경우를 통과시킨다. 실측(XKZIQlqVjjk `Approved`×4):
+    #    구간이 [3.3, 0.02, 0.02, 0.02]초 — 8글자 낱말이 0.02초, 즉 **프레임 1개**에 소진된다.
+    #    코퍼스의 반복 구절 편차 분포가 p95 103배·p100 165배로 꼬리가 긴데 그 꼬리가 전부
+    #    이 형태다.
+    #
+    #    판정을 **비율이 아니라 프레임 수**로 하는 이유: max_char_rate(11글자/초)를 낱말
+    #    단위로 적용해 봤더니 정상 가창을 잡았다(실측 오탐: `消去しても` 5글자/0.44s =
+    #    11.4글자/초, 일본어 빠른 줄 11~15글자/초 다수). 그 기준값은 *라인 전체*가 0에 가까운
+    #    슬롯에 뭉친 것을 재려고 정해진 값이라 낱말 단위에서는 정상 범위와 겹친다.
+    #    반면 "여러 글자가 프레임 1~2개 안에 있다"는 것은 조정할 여지가 없는 물리적 불가능이다
+    #    — 모델은 한 프레임에서 그 글자들을 볼 수 없다. 오탐들은 21~114프레임이라 분리가 크다.
+    if _word_pressed_into_a_frame(toks):
+        return True
     width = last - first
     if width >= span * 0.5:
         return False
     n_chars = sum(len(w.word) for w in toks)
     return width <= 0 or n_chars / width > max_char_rate
+
+
+# CTC 프레임은 20ms다 — 두 프레임(40ms)까지를 "한 순간"으로 보고 여유 5ms를 둔다.
+# 조정용 손잡이가 아니다: 이 값을 키우면 정상 가창을 잡기 시작한다(호출부 ④ 주석 참조).
+_MIN_WORD_FRAMES_SEC = 0.045
+
+# 눌린 낱말이 라인 글자의 이만큼을 차지할 때만 재합성한다.
+# 존재 여부로 판정하면 안 되는 이유(실측): `All in my heart その期待感`에서 기능어 `in`
+# 하나가 1프레임을 받는데, 그것 때문에 라인 전체를 균등 재합성하면 나머지 글자들의
+# **맞는** CTC 분포를 버린다. 기능어가 삼켜지는 것은 흔하고 그 자체로 해롭지 않다.
+# 반면 원래 문제(`Approved`×4 중 3회가 각 1프레임)는 라인의 75%가 시각을 못 받은 것이라
+# 성질이 다르다. 1/3은 그 둘 사이를 가르는 값이고, 코퍼스 실측으로 확인한다.
+_PRESSED_SHARE_MIN = 1.0 / 3.0
+
+
+def _word_pressed_into_a_frame(toks) -> bool:
+    """공백으로 갈린 낱말 중 **여러 글자가 프레임 한두 개에 눌린** 것이 있는가.
+
+    글자 토큰을 공백에서 끊어 낱말로 묶고, 낱말이 차지한 구간이 프레임 두 개(약 45ms)
+    이하인지 본다. 한 글자 낱말은 세지 않는다 — 짧은 조사·감탄사가 순간적으로 지나가는 것은
+    정상이고 그것까지 잡으면 정상 라인을 재합성하게 된다.
+
+    임계가 프레임 수인 근거는 호출부 ④ 주석에 있다: 비율(글자/초) 기준은 낱말 단위에서
+    정상 가창과 겹쳤고(실측 오탐 다수), 프레임 기준은 실측 잔해(1프레임)와 정상(21~114
+    프레임) 사이가 한 자릿수 배가 아니라 열 배 이상 벌어져 있다.
+    """
+    groups: list[list] = [[]]
+    for w in toks:
+        if not w.word.strip():
+            if groups[-1]:
+                groups.append([])
+            continue
+        groups[-1].append(w)
+    total = pressed = 0
+    for g in groups:
+        n = sum(len(w.word) for w in g)
+        if not n:
+            continue
+        total += n
+        if n < 2:
+            continue  # 한 글자 낱말은 세지 않는다 (위 독스트링)
+        if max(w.end for w in g) - min(w.start for w in g) <= _MIN_WORD_FRAMES_SEC:
+            pressed += n
+    return total > 0 and pressed / total >= _PRESSED_SHARE_MIN
 
 
 def _measured_vocal_window(
