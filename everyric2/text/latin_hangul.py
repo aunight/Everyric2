@@ -191,6 +191,38 @@ _CONVENTIONAL_WORDS = {
     # into가 인토가 아니라 인투로 들린다고 확인했다). undo·redo·outdo는 같은 원인이라
     # 함께 넣지만 실제 곡에서 청취 확인은 하지 못했다.
     "into": "인투", "onto": "온투", "undo": "언두", "redo": "리두", "outdo": "아웃두",
+    # ou 자소가 낱말마다 다른 홑모음/이중모음으로 갈린다(사전 근거 + 스크래치패드의
+    # JP-mixed 라인·LRCLIB 가사에서 실제 등장을 확인). 철자만으로는 구별 불가능해
+    # 표에서 잡는다 — 규칙(_VOWEL_GRAPHS의 ou→ㅏㅜ)은 now·how·out·found·ground·
+    # around·sound·about·without·loud·thousand·our처럼 실제 /aʊ/인 낱말에는 이미
+    # 맞으므로 그쪽은 손대지 않는다.
+    #
+    # /ʊər/·/ɔːr/ — tour·your(·you're는 동음이의). 규칙은 ou를 ㅏㅜ로 먼저 먹어버려
+    # 후치 r 흡수(_R_VOWELS)까지 가지 못한다(타우가 나온다). 실측: JP-mixed
+    # 코퍼스의 "Enjoy tour and travel"·"make your smile". 음절 수는 there(데어)·
+    # our(아워)와 같은 관습(어말 er/or 계열을 두 음절로 적는다)을 따랐다 — 이 음절
+    # 수는 오디오로 측정하지 않았고 기존 표기와의 일관성에만 근거한다.
+    "tour": "투어", "your": "유어", "you're": "유어",
+    "you'll": "율", "you've": "윱",
+    # /oʊ/ — soul. 규칙은 ㅏㅜ(사울)로 읽는데 실제로는 노·고와 같은 장모음 오다.
+    # LRCLIB 가사("Reggae, Rap, Pop and Soul")에서 확인.
+    "soul": "솔",
+    # /ʌ/ — country·touching·enough·tough. 이미 표에 있는 young과 같은 부류다.
+    # LRCLIB 가사("tractor pulls, country fairs" / "we'll be touching" /
+    # "This is not enough" / "Standing tough under stars")에서 확인. touch(원형)는
+    # touching만 코퍼스에 있고 원형 자체는 0회라 넣지 않았다 — 나오면 그때 넣는다.
+    "country": "컨트리", "touching": "터칭",
+    "enough": "이넙", "tough": "텁",
+    # /ʊ/(book과 같은 단모음) — should·could와 그 축약형. 규칙은 ㅏㅜ로 읽는데
+    # 실제로는 good(굿, 이미 표에 있음)의 모음과 같다. LRCLIB 가사("we should back
+    # it up" / "could only bring the rain" / "I couldn't find a day" / "I wouldn't
+    # let you haunt")에서 확인.
+    "should": "슏", "could": "쿧", "couldn't": "쿠든", "wouldn't": "우든",
+    # 여기부터는 다른 원인이다 — -ous/-ious 접미사(nervous·ambitious·glorious)는
+    # ou가 모음이 아니라 무강세 접미사 /əs/의 일부라 위의 ou 규칙과는 무관하다. ou
+    # 버그를 찾다가 함께 발견했다. nervous는 JP-mixed 코퍼스("止まぬNervousに")에서,
+    # ambitious·glorious는 실제 싱크 데이터·LRCLIB 가사에서 확인했다.
+    "nervous": "너버스", "ambitious": "앰비셔스", "glorious": "글로리어스",
     "one": "원", "two": "투", "once": "원스",
     "love": "럽",  # 러브 → 조밀
     "yes": "예스",

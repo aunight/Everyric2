@@ -272,6 +272,107 @@ def test_the_bare_final_o_rule_is_not_touched(word, expected):
     assert latin_word_to_hangul(word) == expected
 
 
+# ---------------------------------------------------------------------------
+# ou 자소 — 낱말마다 다른 모음으로 갈린다 (뒤 into류와 같은 부류의 별개 버그)
+# ---------------------------------------------------------------------------
+#
+# 규칙(_VOWEL_GRAPHS)은 ou를 항상 ㅏㅜ(now·how식 /aʊ/)로 읽는데, 이건 out·found·
+# ground·around·sound·about·without·loud·thousand·our처럼 실제 /aʊ/인 낱말에는
+# 맞지만 그 밖의 낱말에는 철자로 구별할 수 없는 예외가 많다. 스크래치패드 코퍼스
+# (206개 파일, 라틴 토큰 3634개)에서 실제 광범위 스캔으로 into류와 마찬가지로
+# 찾았다 — 순수 영어 곡 가사(LRCLIB API 응답의 plainLyrics: Donald Fagen
+# "I.G.Y." 등)와 일본어 가사에 섞인 라틴 줄(JP-mixed) 양쪽에서 확인된 것만 넣었다.
+# 코퍼스에 없는 낱말(poor·four·pour·double·trouble·couple·cousin·shoulder·though 등,
+# 팀리드가 예시로 든 것 포함)은 **일부러 넣지 않았다** — 등장하면 그때 넣는다.
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # /ʊər/·/ɔːr/ — 규칙은 ou를 먼저 ㅏㅜ로 먹어 후치 r 흡수(_R_VOWELS)까지
+        # 못 간다. JP-mixed 코퍼스: "Enjoy tour and travel"·"make your smile".
+        ("tour", "투어"),
+        ("your", "유어"),
+        ("you're", "유어"),  # your와 동음이의
+        ("you'll", "율"),
+        ("you've", "윱"),
+    ],
+)
+def test_our_er_family_gets_the_er_vowel_not_the_au_diphthong(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+def test_soul_is_long_o_not_the_au_diphthong():
+    # /oʊ/ — 규칙은 ㅏㅜ(사울)로 읽는데 실제로는 no·go와 같은 장모음 오다.
+    # LRCLIB 가사("Reggae, Rap, Pop and Soul")에서 확인.
+    assert latin_word_to_hangul("soul") == "솔"
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # /ʌ/ — 이미 표에 있는 young과 같은 부류. LRCLIB 가사("tractor pulls,
+        # country fairs" / "we'll be touching" / "This is not enough" /
+        # "Standing tough under stars")에서 확인. touch(원형)는 코퍼스에 0회라
+        # 넣지 않았다 — touching만 표에 있다.
+        ("country", "컨트리"),
+        ("touching", "터칭"),
+        ("enough", "이넙"),
+        ("tough", "텁"),
+    ],
+)
+def test_ou_can_be_a_short_u_not_the_au_diphthong(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # /ʊ/(book과 같은 단모음) — 실제로는 표에 이미 있는 good(굿)의 모음과 같다.
+        # LRCLIB 가사("we should back it up" / "could only bring the rain" /
+        # "I couldn't find a day" / "I wouldn't let you haunt")에서 확인.
+        ("should", "슏"),
+        ("could", "쿧"),
+        ("couldn't", "쿠든"),
+        ("wouldn't", "우든"),
+    ],
+)
+def test_ou_can_be_the_book_vowel_not_the_au_diphthong(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
+def test_nervous_family_is_a_different_bug_than_the_ou_vowel():
+    # nervous·ambitious·glorious의 ou는 모음이 아니라 무강세 접미사 -ous/-ious(/əs/)의
+    # 일부다 — 위 ou 모음 버그와는 원인이 다르지만 찾다가 함께 발견해 표에 넣었다.
+    # nervous는 JP-mixed 코퍼스("止まぬNervousに")에서, ambitious·glorious는 실제
+    # 싱크 데이터·LRCLIB 가사에서 확인했다.
+    assert latin_word_to_hangul("nervous") == "너버스"
+    assert latin_word_to_hangul("ambitious") == "앰비셔스"
+    assert latin_word_to_hangul("glorious") == "글로리어스"
+
+
+def test_ou_lines_from_the_corpus_render_correctly_end_to_end():
+    assert transliterate_latin("Enjoy tour and travel") == "엔조이 투어 앤 트래벨"
+    assert transliterate_latin("うちらに任せろ make your smile") == "うちらに任せろ 메익 유어 스마일"
+    assert transliterate_latin("止まぬNervousに 拐われないで") == "止まぬ너버스に 拐われないで"
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # 위에서 새로 잡은 ou 규칙이 실제로 /aʊ/인 낱말까지 건드리면 안 된다 — 이
+        # 낱말들은 표에 없고 규칙이 이미 옳게 처리한다(회귀 감시).
+        ("out", "아웃"),
+        ("found", "파운"),
+        ("ground", "그라운"),
+        ("sound", "사운"),
+        ("loud", "라욷"),
+    ],
+)
+def test_the_au_diphthong_words_are_not_touched_by_the_ou_fix(word, expected):
+    assert latin_word_to_hangul(word) == expected
+
+
 def test_single_letters_and_vowelless_initialisms_are_spelled_out():
     # 실측: H7PR6K7xff0의 L-O-P-P-I'm이 사람 자막에서 「엘-오-피-피-아임」, NG!가 「엔지이」다
     assert [latin_word_to_hangul(c) for c in "LOPPI"] == ["엘", "오", "피", "피", "아이"]
