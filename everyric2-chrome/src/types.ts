@@ -57,6 +57,8 @@ export interface PronSegment {
   end: number;
   /** DP 매칭 신뢰 가능 여부 — false면 근사 배치 */
   resolved?: boolean;
+  /** 음절 CTC 정렬 신뢰도 (0~1) — 서버가 음절별로 실어 보낸다. 디버그 레인 색에 쓴다 */
+  confidence?: number;
 }
 
 export type LyricsSource = 'everyric' | 'lrclib' | 'vocaro' | 'caption';

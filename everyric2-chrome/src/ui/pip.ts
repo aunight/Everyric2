@@ -180,9 +180,11 @@ const GHOST_OVERLAP_ALPHA = 0.2;
 // 산물이라, 여러 글자가 같은 시각에 뭉치거나 길이 0으로 찍힌다(실측: 독음 정렬 곡은
 // 3글자 이상 동시 시작이 38~59%인데 원문 정렬 곡은 2%). 두 레인을 나란히 그리면
 // 발음은 매끄러운데 원문만 뭉쳐 있는 게 눈으로 바로 구분된다.
-const TIMING_WORD = '#74c0fc';       // 원문 글자 (지속 있음)
-const TIMING_WORD_ZERO = '#ff922b';  // 원문 글자 (길이 0 — 역매핑 실패 흔적)
-const TIMING_PRON = '#63e6be';       // 발음 음절 온셋
+// 틱·글자 색은 정렬 신뢰도(confBucketColor)로 칠한다 — 레인이 위아래로 나뉘어 있어
+// 색으로 원문/발음을 구분할 필요가 없으므로 그 채널을 신뢰도에 쓴다. 아래 두 색은
+// 신뢰도가 없는 세그먼트의 폴백이자 레인 이름표(좌측 '원문'/'발음') 색이다.
+const TIMING_WORD = '#74c0fc';
+const TIMING_PRON = '#63e6be';
 
 interface PitchNote {
   midi: number;
@@ -1771,10 +1773,13 @@ export class PipController {
   /**
    * CTC가 각 원문 글자·발음 음절에 실제로 준 시각을 시간축 위 두 줄로 찍는다.
    *
-   * 위 줄이 원문 글자다 — 시작에 세로 틱, 지속만큼 가로 막대. 길이가 0이면 막대 없이
-   * 주황 틱만 남으므로, 여러 글자가 한 지점에 겹쳐 찍히는 "뭉침"이 즉시 보인다.
-   * 아래 줄은 같은 라인의 발음 음절 온셋이다. 발음 줄은 고르게 퍼져 있는데 원문 줄만
-   * 뭉쳐 있으면 역매핑이 실패한 구간이고, 두 줄이 나란히 흐르면 정상이다.
+   * 위 줄이 원문 글자, 아래 줄이 같은 라인의 발음 음절이다. 각 세그먼트는 시작에 세로
+   * 틱 + 지속만큼 가로 막대로 그리고, 틱 위에 그 글자·음절을 적는다.
+   *
+   * 두 채널을 분리해 읽는다: **모양**이 타이밍 구조를(길이가 0이면 막대 없이 틱만 남아
+   * 여러 글자가 한 지점에 겹친 "뭉침"이 즉시 보인다), **색**이 정렬 신뢰도를 나타낸다
+   * (패널·노트 가사와 같은 3색 규칙). 발음 줄은 고르게 퍼져 있는데 원문 줄만 뭉쳐
+   * 있으면 역매핑이 실패한 구간이고, 두 줄이 나란히 흐르면 정상이다.
    */
   private renderTimingLanes(
     ctx: CanvasRenderingContext2D,
@@ -1807,7 +1812,11 @@ export class PipController {
         const xe = x(w.end);
         // 1px 미만은 화면상 점 — 길이 0과 구분해도 의미가 없으므로 같이 취급한다
         const zero = xe - xs < 1;
-        const color = zero ? TIMING_WORD_ZERO : TIMING_WORD;
+        // 색은 정렬 신뢰도(패널·노트 가사와 같은 3색 규칙). 레인이 위아래로 나뉘어 있어
+        // 색으로 원문/발음을 구분할 필요가 없으니, 그 채널을 신뢰도에 쓴다.
+        // 길이 0은 색이 아니라 "막대 없이 틱만"이라는 **모양**으로 구분한다 — 신뢰도와
+        // 길이 0은 서로 다른 신호라 같은 채널에 실으면 둘 다 못 읽는다.
+        const color = w.confidence != null ? confBucketColor(w.confidence) : TIMING_WORD;
         ctx.strokeStyle = color;
         ctx.beginPath();
         ctx.moveTo(xs, wordY - 3);
@@ -1828,14 +1837,22 @@ export class PipController {
       for (const s of p.line.pronSegments ?? []) {
         if (s.end < t0 || s.start > t1) continue;
         const sx = x(s.start);
-        ctx.strokeStyle = TIMING_PRON;
+        const se = x(s.end);
+        // 발음 레인도 같은 규칙 — 색은 음절 신뢰도, 지속은 막대
+        const pcolor = s.confidence != null ? confBucketColor(s.confidence) : TIMING_PRON;
+        const pzero = se - sx < 1;
+        ctx.strokeStyle = pcolor;
         ctx.beginPath();
         ctx.moveTo(sx, pronY - 3);
         ctx.lineTo(sx, pronY + 3);
+        if (!pzero) {
+          ctx.moveTo(sx, pronY);
+          ctx.lineTo(se, pronY);
+        }
         ctx.stroke();
         // 같은 시각의 전사 발음 음절
         if (s.text && sx - lastPronLabelX >= LABEL_GAP) {
-          ctx.fillStyle = TIMING_PRON;
+          ctx.fillStyle = pcolor;
           ctx.fillText(s.text, sx + 1, pronY - 5);
           lastPronLabelX = sx;
         }
