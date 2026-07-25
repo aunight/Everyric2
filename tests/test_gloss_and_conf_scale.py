@@ -115,35 +115,41 @@ def test_fx_pattern_tolerates_one_broken_cycle():
     assert 30 not in gloss and 31 not in gloss and 32 not in gloss
 
 
-# ────────────── 항목 1: 실측 패턴 ② ba7YbGO2aq4 (인접 종속) ──────────────
+# ─────── 항목 1: 실측 패턴 ② ba7YbGO2aq4 — 잡아서는 안 되는 형태 ───────
 
 
 def _ba_sheet() -> list[str]:
-    """ba7YbGO2aq4 형태: 일본어 줄이 다수고 한글 8줄이 전부 직전 줄의 번역."""
+    """ba7YbGO2aq4 형태: 일본어 줄이 다수고 한글이 **한 줄씩 흩어져** 섞인다.
+
+    한때 이것을 "한글 8줄이 전부 직전 줄의 번역"으로 판정해 정렬 입력에서 뺐다. **그 판정이
+    틀렸다** — 사용자가 그 곡을 직접 듣고 확인했다: 「아스라이해」「희미한」「미묘한」「좋아해」는
+    실제로 노래에서 한국어로 불린다(그 곡은 일본어·영어·한국어가 실제 발성에 섞인다).
+    """
     texts: list[str] = []
     pairs = 0
     for i in range(40):
         texts.append(f"ゆらゆら numb numb {i}")
-        # 8줄만 번역이 붙어 있다 (나머지는 원문만)
+        # 한국어 가창 줄이 한 줄씩 섞인다 (연달아 나오지 않는다)
         if i % 5 == 0 and pairs < 8:
             texts.append(f"아스라이해 numb numb {i}")
             pairs += 1
     return texts
 
 
-def test_ba_pattern_excludes_all_eight_translations():
+def test_interleaved_sung_korean_lines_are_never_excluded():
+    """한 줄씩 섞인 한국어 가창 줄은 **하나도** 빠지지 않는다.
+
+    이 형태를 잡던 규칙(인접 종속)을 지운 이유는 코퍼스 68곡 전수 조사에서 그 규칙이 잡은
+    곡이 ba7YbGO2aq4 하나였고 그 판정이 오판이었기 때문이다. 빠지면 두 가지를 동시에 잃는다:
+    그 8줄의 가사와, 앵커로 지목된 앞줄의 실제 번역(덮어써진다).
+    """
     texts = _ba_sheet()
-    gloss = detect_gloss_lines(texts)
-    assert len(gloss) == 8
-    assert all(role == "translation" for role, _ in gloss.values())
-    # 각 줄의 원문은 바로 앞줄이다
-    assert all(anchor == i - 1 for i, (_, anchor) in gloss.items())
-    # 한글 줄만 빠진다
-    assert all(_line_script_class(texts[i]) == "ko" for i in gloss)
+    assert sum(1 for t in texts if _line_script_class(t) == "ko") == 8  # 표본 자체를 확인
+    assert detect_gloss_lines(texts) == {}
 
 
-def test_ba_pattern_not_detected_when_one_hangul_line_stands_alone():
-    # 일치율 1.0 요구 — 한 줄이라도 한글 뒤에 오면 전체 미발동 (노래되는 한국어 구간 보호)
+def test_interleaved_korean_still_ignored_when_lines_run_together():
+    # 한글 줄이 연달아 나오는 형태도 당연히 미발동 — 지운 규칙이 그것으로 자신을 정당화했다
     texts = _ba_sheet()
     idx = min(i for i, t in enumerate(texts) if _line_script_class(t) == "ko")
     texts.insert(idx + 1, "연달아 나오는 한국어 가창 줄")
@@ -191,21 +197,25 @@ def test_no_false_positive_on_alternating_bilingual_song():
 
 
 def test_no_false_positive_on_japanese_song_with_two_korean_lines():
-    # 한글 줄이 최소 개수(4) 미달이면 미발동
+    # 일본어 곡에 한국어 줄이 몇 개 섞인 형태 — 주기가 성립하지 않으므로 미발동
     texts = [f"揺らめく光の中で{i}" for i in range(30)]
     texts.insert(5, "흔들리는 빛 속에서")
     texts.insert(12, "나를 부르는 소리")
     assert detect_gloss_lines(texts) == {}
 
 
-def test_no_false_positive_when_one_hangul_line_follows_a_latin_line():
-    # 한글 줄 4개는 일어 줄 뒤인데 하나가 영어 줄 뒤 → 일치율 1.0 미달로 **전체** 미발동
+def test_no_false_positive_when_hangul_lines_follow_japanese_lines():
+    """한글 줄이 전부 일어 줄 뒤에 오는 형태도 미발동 — 지운 규칙이 잡던 바로 그 형태다.
+
+    앞줄 뒤에 붙어 있다는 것만으로 "번역"이라 단정할 수 없다. ba7YbGO2aq4가 정확히 이
+    모양인데 실제로 불리는 한국어였다.
+    """
     texts: list[str] = []
     for i in range(30):
         texts.append(f"揺らめく光の中で{i}")
         if i in (3, 9, 15, 21):
             texts.append(f"흔들리는 빛 속에서{i}")
-    assert len(detect_gloss_lines(texts)) == 4  # 이 상태에서는 감지된다
+    assert detect_gloss_lines(texts) == {}
     texts += ["take me higher", "나를 부르는 소리"]
     assert detect_gloss_lines(texts) == {}
 
