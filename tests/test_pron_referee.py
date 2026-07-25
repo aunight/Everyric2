@@ -158,6 +158,54 @@ def test_normalisation_is_what_stops_short_candidates_from_always_winning():
     assert short_sum > long_sum + 10, (short_sum, long_sum)
 
 
+def _window_avg(window, text):
+    """새 지표 — 창 전체 프레임(blank 포함) 평균 로그확률. `_score_tokens`와 같은 계산."""
+    ids = _candidate_tokens(text, VOCAB)[1]
+    _, scores = forced_align(window, torch.tensor([ids], dtype=torch.int32), blank=BLANK_ID)
+    return float(scores[0].sum()) / int(scores.shape[-1])
+
+
+def test_both_metrics_reject_a_deletion_when_the_audio_clearly_sings_it():
+    """봉우리 emission(오디오가 분명히 들리는 경우)에서는 **두 지표 모두** 삭제를 벌점한다.
+
+    이 테스트는 내가 처음에 세운 가정을 **반증한 결과를 그대로 기록한 것**이다. 실오디오에서
+    삭제 후보 11건이 이겼을 때(s5Rkv_5Sbbo: 쿠루시미→쿠 시미, 와타쿠시오→시오) 나는 원인을
+    "토큰 스팬 평균이 blank 프레임을 안 세므로 삭제가 무료다"로 단정했다. 여기서 실제로
+    재보니 봉우리 emission에서는 옛 지표조차 삭제를 크게 벌점한다(-5.33 vs -2.00) — 창이
+    타이트하면 적은 토큰이 오히려 어긋난 프레임까지 늘어나 평균이 떨어진다.
+
+    그러므로 그 파국은 **오디오가 거의 안 들리는 조건**(합성보컬, 그 곡의 라틴 없는 줄조차
+    conf 0.008)에서 일어난 것이고, 그 조건은 합성 텐서로 함부로 흉내낼 수 없다. 실제 조건의
+    측정은 서버의 실오디오로 따로 한다. 여기서 못박는 것은 **들리는 오디오에서는 어느
+    지표로도 삭제가 채택되지 않는다**는 안전 성질뿐이다.
+    """
+    emission = _emission_favoring(_ids("쿠루시미") + [VOCAB["|"]])
+    window = emission[:, :, : len(VOCAB)]
+
+    full_tok, _ = _per_token_and_sum(window, "쿠루시미")
+    del_tok, _ = _per_token_and_sum(window, "쿠시미")
+    full_win = _window_avg(window, "쿠루시미")
+    del_win = _window_avg(window, "쿠시미")
+
+    # 실측값(이 fixture에서): 옛 −2.00 vs −5.33, 새 −3.20 vs −6.40.
+    # 둘 다 삭제를 벌점하고, 벌점의 크기 순서는 이 조건에서 옛 지표가 오히려 더 크다 —
+    # 즉 "새 지표가 항상 삭제를 더 벌점한다"는 성질은 성립하지 않는다. 단정하지 않는다.
+    assert full_tok > del_tok, ("옛 지표", full_tok, del_tok)
+    assert full_win > del_win, ("새 지표", full_win, del_win)
+
+
+def test_referee_does_not_adopt_a_deletion_when_the_audio_sings_the_full_reading():
+    # 위 성질의 행동판 — 심판이 실제로 삭제 후보를 채택하지 않아야 한다
+    emission = _emission_favoring(_ids("쿠루시미") + [VOCAB["|"]])
+    engine = _engine()
+    results = _align(
+        engine, [_line("쿠루시미")], emission, line_candidates={0: ["쿠루시미", "쿠시미"]}
+    )
+    assert results[0].text == "쿠루시미"
+    d = engine.get_last_referee_decisions()[0]
+    assert d["gain"] < 0, d
+
+
 def test_flat_emission_never_switches_the_reading():
     # 위 성질의 행동판: 오디오가 무정보면 훨씬 짧은 도전자도 기본값을 못 이긴다
     emission = torch.log_softmax(torch.zeros((1, 60, len(VOCAB))), dim=-1)

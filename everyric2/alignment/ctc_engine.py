@@ -296,18 +296,31 @@ def _min_ctc_frames(ids: list[int]) -> int:
 
 
 def _score_tokens(window: torch.Tensor, ids: list[int], blank_id: int):
-    """창(emission 슬라이스)에 토큰열을 강제정렬하고 (토큰당 평균 로그확률, 스팬)을 낸다.
+    """창(emission 슬라이스)에 토큰열을 강제정렬하고 (프레임당 평균 로그확률, 스팬)을 낸다.
 
-    **토큰 수로 정규화**하는 것이 핵심이다 — 프레임 로그확률의 합으로 비교하면 토큰이 적은
-    후보가 무조건 이긴다(음수의 합이므로 항이 적을수록 크다). `span.score`가 이미 그 토큰
-    구간의 평균 로그확률이므로(emission이 log_softmax) 스팬 평균이 곧 토큰당 평균이다.
+    **창의 모든 프레임으로 정규화한다** — blank 프레임까지 포함한 경로 전체의 로그우도를
+    창 길이로 나눈 값이다. 후보들이 **같은 창**에서 채점되므로 분모가 상수이고, 따라서
+    이 비교는 사실상 경로 총 로그우도 비교다.
+
+    처음에는 `merge_tokens`로 병합한 **토큰 스팬만** 평균했다. 그것이 실오디오에서 파국을
+    만들었다(s5Rkv_5Sbbo 134줄 중 53줄 교체, 그중 11줄이 글자가 사라진 것: 私 와타쿠시오→
+    시오, 彼らを 카레라오→카라오, 苦しみ 쿠루시미→쿠 시미). 이유는 비대칭이다 — 토큰 스팬만
+    보면 짧은 후보는 원치 않는 프레임을 blank로 넘기고 **그 프레임 비용을 전혀 내지 않는다.**
+    삽입은 벌점을 받고 삭제는 공짜였다. 창 전체로 정규화하면 blank 프레임의 로그확률도
+    합에 들어가므로, 실제로 발성된 프레임을 blank로 버리는 후보가 그만큼 벌점을 받는다.
+
+    당시 정규화를 못박은 테스트는 균일 emission에서 합 vs 평균만 비교해 이 편향을 볼 수
+    없었다. 봉우리 emission에서 삭제 후보를 세우는 테스트가 함께 있어야 한다.
     """
     targets = torch.tensor([ids], dtype=torch.int32, device=window.device)
     aligned, scores = F.forced_align(window, targets, blank=blank_id)
     spans = F.merge_tokens(aligned[0], scores[0], blank=blank_id)
     if not spans:
         return None, None
-    return sum(float(s.score) for s in spans) / len(spans), spans
+    n_frames = int(scores.shape[-1])
+    if n_frames <= 0:
+        return None, None
+    return float(scores[0].sum()) / n_frames, spans
 
 
 def _line_frame_windows(char_info: list[dict], token_spans) -> dict[int, tuple[int, int]]:
