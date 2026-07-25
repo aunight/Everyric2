@@ -1491,14 +1491,31 @@ async function handleRegenerate(): Promise<void> {
   try {
     const lyrics = data.lines.map(l => l.text).join('\n').trim();
     if (!lyrics) return;
-    let lineMeta: { text: string; pronunciation?: string; translation?: string }[] = data.lines
-      .filter(l => l.pronunciation || l.translation)
-      .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }));
-
-    // 발음이 기대되는 원문인데 발음이 하나도 없으면(번역만 저장된 낡은 싱크) LLM 독음을
-    // 새로 받아 재생성이 독음 정렬 경로를 타게 한다 — 안 그러면 발음 없는 싱크가 재생산된다
+    // 재생성은 **다시 만드는 것**이다 — 저장된 파생물(발음·번역)을 되돌려 넣지 않는다.
+    // 재사용해도 되는 것은 yt-dlp로 다시 받을 수 있는 것(오디오·자막)뿐이고, 그건 서버 캐시가
+    // 담당한다. 파생물을 되돌려 넣으면 생성 품질이 개선돼도 재생성이 낡은 값을 재생산한다
+    // (발음을 결정론적으로 만들게 바꾼 뒤 실제로 그랬다 — 재생성해도 발음이 그대로였다).
+    //
+    // 사람이 쓴 위키 발음도 '보존'이 아니라 **출처에서 다시 가져온다.** 위키는 언제든 다시
+    // 조회할 수 있고, 그동안 위키 쪽이 고쳐졌을 수도 있다.
     const texts = data.lines.map(l => l.text);
-    if (!data.lines.some(l => l.pronunciation) && expectsPronunciation(texts)) {
+    let lineMeta: { text: string; pronunciation?: string; translation?: string }[] = [];
+    // 재생성은 everyric 싱크에서만 호출되므로(위 가드) 위키 여부는 출처 표기로만 알 수 있다 —
+    // 위키 가사로 만든 싱크는 attribution에 '보카로 가사 위키'가 새겨져 내려온다
+    const fromWiki = /위키/.test(data.attribution?.name ?? '');
+    if (fromWiki && currentSong) {
+      const wiki = await sendToBackground<VocaroResult | null>({
+        type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
+      });
+      lineMeta = (wiki.data?.lines ?? [])
+        .filter(l => l.pronunciation || l.translation)
+        .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }));
+    }
+    if (lineMeta.length === 0 && expectsPronunciation(texts)) {
+      // 세션 번역 캐시도 비운다 — 안 비우면 이 영상의 낡은 응답이 그대로 다시 실린다
+      for (const key of [...translationCache.keys()]) {
+        if (key.startsWith(`${videoId}:`)) translationCache.delete(key);
+      }
       const fetched = await fetchLlmLineMeta(videoId, texts);
       if (fetched && fetched.length > 0) lineMeta = fetched;
     }
