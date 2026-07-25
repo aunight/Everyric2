@@ -19,6 +19,17 @@ class SyncResult(Base):
     lyrics_hash: Mapped[str] = mapped_column(String(64), index=True)
     audio_hash: Mapped[str | None] = mapped_column(String(32), index=True)
     timestamps: Mapped[dict[str, Any]] = mapped_column(JSON)
+    # 이것은 **원문 언어**다(가사가 무슨 말인가). 번역 대상 언어가 아니다.
+    #
+    # ⚠ 알려진 한계 — 번역·발음은 `timestamps`의 세그먼트에 박혀 저장되는데(생성 시
+    # merge_line_meta), **어느 언어로 번역했는지는 어디에도 기록되지 않는다.** 그래서 같은
+    # 영상을 모국어가 다른 두 사용자가 보면 먼저 만든 쪽의 언어가 그대로 내려간다: 한국인이
+    # 만든 싱크를 일본인이 열면 한국어 번역과 한글 독음을 받는다(확장의 loadTranslations가
+    # "번역이 다 있다"고 판정해 자기 언어로 재요청하지 않는다 — 그쪽 주석에 경로가 있다).
+    #
+    # 지금은 한국어권 사용자만 대상이라 두었다. 다국어로 넓힐 때 고칠 자리는 번역을
+    # (video_id, target_lang) 키로 분리하는 것이고, 그 전 단계 임시책은 timestamps에 번역
+    # 언어를 적고 클라이언트가 비교하게 하는 것이다(스키마 변경 없이 가능).
     language: Mapped[str | None] = mapped_column(String(8))
     engine: Mapped[str] = mapped_column(String(16), default="ctc")
     quality_score: Mapped[float | None] = mapped_column(Float)
