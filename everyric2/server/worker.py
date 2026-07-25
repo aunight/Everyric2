@@ -1614,8 +1614,56 @@ def _impossible_word_distribution(word_segments, start: float, end: float, max_c
     return width <= 0 or n_chars / width > max_char_rate
 
 
+def _measured_vocal_window(
+    pron_segments, start: float, end: float, n_chars: int, max_char_rate: float
+) -> tuple[float, float] | None:
+    """그 라인에서 **발음 음절이 실제로 차지한 구간** [첫 음절 start, 마지막 음절 end].
+
+    원문 글자 융합(``_fuse_original_char_timing``)의 사상 목표다. 라인 경계 [start,end]를
+    목표로 쓰면 안 되는 이유: ko 라인의 **끝은 실제 발성 종료보다 늦은 경우가 많다** (끝음
+    연장 tail 보정, 다음 줄까지의 여백, 클램프가 남긴 마진). 그 경계에 선형 사상하면 원문
+    글자가 그 여백까지 늘어나는데, 발음 음절(pron_segments)은 ko CTC 실측 시각 그대로라
+    늘어나지 않는다 — 두 레인이 벌어져 화면에서는 "원문만 늦게 점등"으로 보인다.
+    실측(재생성 6곡, 같은 라인 안에서 원문 글자 분위 시각 − 발음 음절 분위 시각): 여섯 곡
+    전부 부호가 양수이고 **첫 글자는 차이 0인데 뒤로 갈수록 벌어진다** (25% +0.00~+0.29,
+    75% +0.09~+0.44, 끝 +0.09~+0.39) — 라인 끝 여백까지 늘리는 선형 사상의 지문이다.
+    발음 음절 구간에 사상하면 두 레인이 같은 봉투를 공유해 나란히 흐른다. 라인 경계 자체는
+    표시·스크롤·노트가 걸려 있는 검증된 값이라 **불변**이고, 바뀌는 것은 라인 내부뿐이다.
+
+    None(호출부는 기존처럼 라인 경계로 사상)인 경우:
+      - 발음 음절이 없거나 시간이 없다 — 애초에 융합 대상이 아닌 한국어/영어 곡, 커버리지
+        0.9 게이트를 통과했지만 발음 표기가 빠진 일부 라인, 누출 스플라이스가 무효화(None)한
+        라인,
+      - 음절 구간이 라인 경계 밖 1초를 넘는다 — 라인은 스냅/클램프로 옮겨졌는데
+        pron_segments는 (results와 별개 자료구조라 함께 움직이지 않는다) 원래 자리에 남은
+        stale 값이다. 1초 기준은 ``_impossible_word_distribution``의 경계 이탈 판정과 같은 잣대,
+      - 라인 경계와 교차한 폭이 0 이하,
+      - 그 폭에 라인 글자를 넣으면 max_char_rate를 넘는다 — 음절이 한두 개만 살아남아 구간이
+        지나치게 좁은 경우('구간을 못 정하는 라인'). 그대로 쓰면 융합 결과가 곧바로 다음
+        단계의 불가능 뭉침 게이트(``_impossible_word_distribution`` ①)에 걸려 균등 분배로
+        덮이므로, 좁은 창에 욱여넣는 대신 기존 폴백을 택한다.
+    """
+    times = [
+        (s["start"], s["end"])
+        for s in (pron_segments or [])
+        if s.get("start") is not None and s.get("end") is not None
+    ]
+    if not times:
+        return None
+    lo = min(t[0] for t in times)
+    hi = max(t[1] for t in times)
+    if lo < start - 1.0 or hi > end + 1.0:
+        return None
+    t0, t1 = max(lo, start), min(hi, end)
+    if t1 <= t0:
+        return None
+    if max_char_rate > 0 and n_chars / (t1 - t0) > max_char_rate:
+        return None
+    return (t0, t1)
+
+
 def _fuse_original_char_timing(
-    results, ja_results, fixes, max_char_rate: float = 0.0, label: str = "fuse"
+    results, ja_results, fixes, max_char_rate: float = 0.0, pron_data=None, label: str = "fuse"
 ) -> set[int]:
     """ko 라인 경계는 그대로 두고 **라인 내부 원문 글자 분포만** ja 정렬 실측값으로 교체.
 
@@ -1626,9 +1674,14 @@ def _fuse_original_char_timing(
 
     그래서 라인 단위로 융합한다: ko의 [start,end]와 pron_segments는 **불변**이고, ja가 같은
     라인 인덱스에서 잰 글자 스팬을 그 라인 안으로 **선형 사상**해 word_segments로 갈아끼운다.
-    사상 구간은 ja 토큰의 실제 extent[min start, max end] → ko 라인 [start,end]다 (ja 라인
-    경계가 아니라 토큰 extent를 쓰므로 결과가 항상 ko 라인 안에 들어오고 라인을 꽉 덮는다 —
-    ``_resynth_word_segments``의 균등 분배와 같은 봉투에 ja의 상대 분포만 실은 꼴이다).
+    사상 구간은 ja 토큰의 실제 extent[min start, max end] → 그 라인의 **발음 음절 구간**
+    (``_measured_vocal_window``: 첫 음절 start ~ 마지막 음절 end)이다. ja 라인 경계가 아니라
+    토큰 extent를 쓰므로 결과가 항상 그 구간 안에 들어오고 구간을 꽉 덮는다.
+    목표가 ko 라인 경계가 **아닌** 이유는 라인 끝이 실제 발성 종료보다 늦은 경우가 많아
+    (끝음 연장 tail, 다음 줄까지의 여백) 경계에 사상하면 원문 글자만 그 여백까지 늘어나
+    실측 그대로인 발음 음절보다 뒤로 밀리기 때문이다 — 근거와 실측은 ``_measured_vocal_window``.
+    발음 음절이 없거나 구간을 못 정하는 라인은 그 함수가 None을 주고, 여기서 **예전처럼
+    라인 경계로 사상**한다(폴백). 어느 쪽이든 글자 스팬은 라인 경계 안에 들어온다.
 
     다음 라인은 융합하지 않고 기존 역매핑을 유지한다:
       - ja 토큰이 없거나 라인 텍스트가 대응하지 않음(인덱스 어긋남 방어),
@@ -1665,25 +1718,31 @@ def _fuse_original_char_timing(
             continue
         lo = min(w.start for w in toks)
         hi = max(w.end for w in toks)
-        target = r.end_time - r.start_time
-        if hi - lo <= 0 or target <= 0:
+        if hi - lo <= 0 or r.end_time - r.start_time <= 0:
             continue
         if _measured_anchor_count(r.text, toks) < _measured_anchor_count(
             r.text, r.word_segments
         ):
             continue
-        scale = target / (hi - lo)
+        t0, t1 = _measured_vocal_window(
+            ((pron_data or {}).get(i) or {}).get("pron_segments"),
+            r.start_time,
+            r.end_time,
+            sum(len(w.word) for w in toks),
+            max_char_rate,
+        ) or (r.start_time, r.end_time)
+        scale = (t1 - t0) / (hi - lo)
         new = [
             WordSegment(
                 word=w.word,
-                start=r.start_time + (w.start - lo) * scale,
-                end=r.start_time + (w.end - lo) * scale,
+                start=t0 + (w.start - lo) * scale,
+                end=t0 + (w.end - lo) * scale,
                 confidence=w.confidence,
             )
             for w in toks
         ]
         # 단조 비감소 보장 — ja가 비단조여도 직렬화 계약(단조)이 깨지지 않게 접는다.
-        prev = r.start_time
+        prev = t0
         for w in new:
             w.start = max(w.start, prev)
             w.end = max(w.end, w.start)
@@ -2623,6 +2682,8 @@ def _run_alignment(
 
         # ko/ja 융합 (스냅·클램프로 라인 경계가 확정된 뒤, 재합성 직전): ko 라인 경계와
         # pron_segments는 그대로 두고 라인 **내부** 원문 글자 분포만 ja 실측값으로 교체한다.
+        # 사상 목표 구간은 라인 경계가 아니라 그 라인의 발음 음절 구간이다 — pron_data를
+        # 넘겨야 원문 글자와 발음 음절이 같은 봉투를 공유한다(_measured_vocal_window).
         # 이미 합성물(3단 역매핑)인 부분만 진짜 측정값으로 갈아끼우는 것이라 회귀 표면이 작다.
         # 재합성보다 **먼저** 도는 이유: 융합으로 분포가 정상화된 라인은 아래 구조 게이트
         # (_impossible_word_distribution)에 더 이상 안 걸려 균등 분배로 덮이지 않는다 —
@@ -2634,11 +2695,13 @@ def _run_alignment(
                 ja_alignment,
                 fixes,
                 settings.alignment.mass_leak_min_char_rate,
+                pron_data=pron_data,
             )
             if fused_lines:
                 logger.info(
                     f"Fused measured original-text char timing into {len(fused_lines)}/"
-                    f"{len(results)} line(s) (ko line bounds and pron_segments kept)"
+                    f"{len(results)} line(s) (ko line bounds and pron_segments kept; chars "
+                    f"mapped onto each line's measured pron-syllable window)"
                 )
 
         # 보정 마지막(스냅·클램프 이후, 직렬화 전): 붕괴 곡/누출 라인의 라인 내부 word/pron

@@ -11,6 +11,12 @@
   - 직렬화 계약 join(words)==text와 단조 비감소 유지,
   - ja가 그 라인에서 붕괴했거나 본문 글자를 덜 덮으면 융합하지 않고 역매핑 유지,
   - 스위치를 끄면(= ja 정렬 자체를 안 돌림) 완전 무동작.
+
+사상 **목표 구간**은 라인 경계가 아니라 그 라인의 발음 음절 구간이다. ko 라인의 끝은 실제
+발성 종료보다 늦은 경우가 많아(끝음 연장 tail, 다음 줄까지의 여백) 라인 경계에 사상하면
+원문 글자만 그 여백까지 늘어나고, 실측 시각 그대로인 발음 음절보다 뒤로 밀린다 — 실측
+6곡 전부 "원문 − 발음" 분위 차이가 양수(첫 글자 0, 75% +0.09~+0.44, 끝 +0.09~+0.39)로
+뒤로 갈수록 벌어졌다. 아래 ``_pron_window`` 계열 테스트가 그 지표를 직접 잰다.
 """
 from everyric2.config.settings import AlignmentSettings
 from everyric2.inference.prompt import SyncResult, WordSegment
@@ -19,6 +25,7 @@ from everyric2.server.worker import (
     _full_coverage_words,
     _fuse_original_char_timing,
     _measured_anchor_count,
+    _measured_vocal_window,
     _original_align_needed,
     _synthesize_collapsed_timing,
 )
@@ -56,6 +63,31 @@ def _spread(text, start, end, conf=0.02):
 
 def _starts(ws):
     return [w.start for w in ws]
+
+
+# 실측 라인(중앙값 3.54s)에 끝음 연장 tail 0.40s가 붙은 형태 — 발성은 VOCAL_END에서 끝나는데
+# 라인 경계는 LINE_END까지 늘어나 있다. 이 여백이 원문 글자를 뒤로 밀던 구간이다.
+LINE_START, VOCAL_END, LINE_END = 10.0, 13.14, 13.54
+
+
+def _pron(n, start, end, text="가"):
+    """발음 음절 스팬 n개를 [start,end]에 균등 배치 — ko CTC 실측값 자리."""
+    w = (end - start) / n
+    return [
+        {"text": text, "start": start + w * k, "end": start + w * (k + 1), "resolved": True}
+        for k in range(n)
+    ]
+
+
+def _quantile(xs, p):
+    """분위 시각 — 팀 리드 실측 표와 같은 지표(선형 보간)."""
+    xs = sorted(xs)
+    if len(xs) == 1:
+        return xs[0]
+    pos = p * (len(xs) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
 # ---- 융합 본체: ko 경계 유지 + 내부만 ja 실측 분포 -----------------------------
@@ -356,6 +388,231 @@ def test_fusion_prevents_uniform_resynthesis_of_a_crammed_ko_line():
         ko, None, fixes, song_conf=None, threshold=0.0, max_char_rate=11.0
     ) == set()
     assert all(w.confidence is not None for w in ko[0].word_segments)
+
+
+# ---- 사상 목표 구간: 라인 경계가 아니라 발음 음절 구간 ---------------------------
+
+
+def test_fuse_ends_chars_at_pron_window_not_at_the_padded_line_end():
+    # 라인 끝 0.40s는 발성 종료 이후 여백이다. 원문 마지막 글자는 라인 끝(13.54)이 아니라
+    # 발음 마지막 음절 끝(13.14)에 맞아야 한다 — 수정 전에는 13.54였다.
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [_spread(text, 100.0, 103.14)]
+    pron_data = {0: {"pron_segments": _pron(len(text), LINE_START, VOCAL_END)}}
+
+    assert _fuse_original_char_timing(
+        ko, ja, {}, max_char_rate=11.0, pron_data=pron_data
+    ) == {0}
+    ws = ko[0].word_segments
+    assert abs(ws[0].start - LINE_START) < 1e-9
+    assert abs(ws[-1].end - VOCAL_END) < 1e-9
+    assert ws[-1].end < LINE_END - 0.3  # 여백까지 늘어나지 않았다
+
+
+def test_fuse_char_quantiles_match_pron_syllable_quantiles():
+    # 이번 수정의 핵심 지표: 같은 라인 안에서 (원문 글자 분위 시각 − 발음 음절 분위 시각).
+    # 수정 전에는 첫 글자 0, 25% +0.09, 50% +0.18, 75% +0.27, 끝 +0.36으로 뒤로 갈수록
+    # 벌어졌다(라인 끝 여백까지 늘리는 선형 사상의 지문). 수정 후에는 전 분위에서 0이다.
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [_spread(text, 100.0, 103.14)]
+    pron_segments = _pron(len(text), LINE_START, VOCAL_END)
+    pron_data = {0: {"pron_segments": pron_segments}}
+
+    _fuse_original_char_timing(ko, ja, {}, max_char_rate=11.0, pron_data=pron_data)
+
+    char_starts = _starts(ko[0].word_segments)
+    pron_starts = [s["start"] for s in pron_segments]
+    for p in (0.0, 0.25, 0.5, 0.75, 1.0):
+        assert abs(_quantile(char_starts, p) - _quantile(pron_starts, p)) < 1e-9
+
+
+def test_fuse_keeps_line_bounds_and_serialization_contracts_on_pron_window():
+    # 목표 구간이 좁아져도 라인 경계는 불변이고, 직렬화 계약(join==text, 단조, 경계 내
+    # 포함)은 그대로다. 본문에 ja 토큰이 안 덮는 공백·부호를 섞어 재구성까지 확인한다.
+    text = "ねぇ、 いつか"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [
+        SyncResult(
+            text=text,
+            start_time=0.0,
+            end_time=10.0,
+            word_segments=[
+                _ws("ね", 0.0, 2.0, 0.02),
+                _ws("ぇ", 2.0, 4.0, 0.02),
+                _ws("いつ", 6.0, 8.0, 0.02),
+                _ws("か", 8.0, 10.0, 0.02),
+            ],
+        )
+    ]
+    pron_data = {0: {"pron_segments": _pron(5, LINE_START, VOCAL_END)}}
+
+    assert _fuse_original_char_timing(
+        ko, ja, {}, max_char_rate=11.0, pron_data=pron_data
+    ) == {0}
+    r = ko[0]
+    assert (r.start_time, r.end_time) == (LINE_START, LINE_END)  # 라인 경계 불변
+    assert r.text == text
+    out = _full_coverage_words(r.text, r.word_segments, r.start_time, r.end_time)
+    assert "".join(w["word"] for w in out) == text
+    starts = [w["start"] for w in out]
+    assert starts == sorted(starts)
+    assert all(out[i]["end"] <= out[i + 1]["start"] + 1e-9 for i in range(len(out) - 1))
+    assert out[0]["start"] >= LINE_START - 1e-9 and out[-1]["end"] <= LINE_END + 1e-9
+    # 토큰이 덮는 마지막 글자는 발음 구간 끝에서 멈춘다 (뒤 여백으로 안 늘어남)
+    assert abs(out[-1]["end"] - VOCAL_END) < 1e-9
+
+
+def test_fuse_pron_window_output_is_not_treated_as_debris_by_resynthesis():
+    # 좁아진 목표 구간이 다음 단계의 불가능 뭉침 게이트에 걸리면 균등 분배가 융합을 덮어
+    # 수정이 무효화된다 — 걸리지 않아야 한다(발음 구간은 라인 폭의 88%).
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [_spread(text, 100.0, 103.14)]
+    pron_data = {0: {"pron_segments": _pron(len(text), LINE_START, VOCAL_END)}}
+    fixes: dict[int, list[str]] = {}
+
+    assert _fuse_original_char_timing(
+        ko, ja, fixes, max_char_rate=11.0, pron_data=pron_data
+    ) == {0}
+    assert _synthesize_collapsed_timing(
+        ko, pron_data, fixes, song_conf=None, threshold=0.0, max_char_rate=11.0
+    ) == set()
+    assert abs(ko[0].word_segments[-1].end - VOCAL_END) < 1e-9  # 융합 분포가 살아 있다
+
+
+def test_fuse_clamps_pron_window_into_the_line_bounds():
+    # 발음 음절이 라인 시작보다 앞에서 시작하면(경계 보정으로 라인 시작이 뒤로 밀린 경우)
+    # 그 구간을 라인 경계로 잘라 쓴다 — 글자가 라인 밖으로 나가면 안 된다.
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [_spread(text, 100.0, 103.14)]
+    pron = _pron(len(text), LINE_START - 0.3, VOCAL_END)
+    pron_data = {0: {"pron_segments": pron}}
+
+    assert _fuse_original_char_timing(
+        ko, ja, {}, max_char_rate=11.0, pron_data=pron_data
+    ) == {0}
+    ws = ko[0].word_segments
+    assert abs(ws[0].start - LINE_START) < 1e-9  # 9.7이 아니라 라인 시작
+    assert abs(ws[-1].end - VOCAL_END) < 1e-9
+
+
+# ---- 폴백: 발음 음절로 구간을 못 정하면 예전처럼 라인 경계로 사상 -----------------
+
+
+def test_fuse_falls_back_to_line_bounds_without_pron_data():
+    # 발음이 없는 곡(한국어·영어)은 융합 경로 자체가 pron_data 없이 돈다 — 기존 동작 유지
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [_spread(text, 100.0, 103.14)]
+    assert _fuse_original_char_timing(ko, ja, {}, max_char_rate=11.0) == {0}
+    ws = ko[0].word_segments
+    assert abs(ws[0].start - LINE_START) < 1e-9 and abs(ws[-1].end - LINE_END) < 1e-9
+
+
+def test_fuse_falls_back_on_lines_whose_pron_segments_are_missing_or_void():
+    # 커버리지 0.9 게이트를 통과한 곡에도 발음 표기가 빠진 라인이 있고, 누출 스플라이스는
+    # 그 라인의 pron_segments를 None으로 무효화한다 — 그 라인만 라인 경계로 사상한다.
+    text = "あいうえおかきくけこ"
+    for pron_data in (
+        {},                                   # 그 라인 항목 자체가 없음
+        {0: {}},                              # 항목은 있으나 키가 없음
+        {0: {"pron_segments": None}},         # 스플라이스가 무효화
+        {0: {"pron_segments": []}},           # 빈 목록
+        {0: {"pron_segments": [{"text": "가", "start": None, "end": None}]}},  # 시간 없음
+    ):
+        ko = [_clumped(text, LINE_START, LINE_END)]
+        ja = [_spread(text, 100.0, 103.14)]
+        assert _fuse_original_char_timing(
+            ko, ja, {}, max_char_rate=11.0, pron_data=pron_data
+        ) == {0}
+        ws = ko[0].word_segments
+        assert abs(ws[0].start - LINE_START) < 1e-9
+        assert abs(ws[-1].end - LINE_END) < 1e-9
+
+
+def test_fuse_falls_back_when_pron_segments_are_stale_after_a_line_moved():
+    # pron_segments는 results와 별개 자료구조라 스냅·클램프로 라인이 옮겨져도 함께 안 움직인다.
+    # 원래 자리에 남은 stale 값을 목표로 쓰면 글자가 라인 밖으로 날아간다 — 라인 경계 폴백.
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, 40.0, 43.54)]
+    ja = [_spread(text, 100.0, 103.14)]
+    pron_data = {0: {"pron_segments": _pron(len(text), LINE_START, VOCAL_END)}}
+
+    assert _fuse_original_char_timing(
+        ko, ja, {}, max_char_rate=11.0, pron_data=pron_data
+    ) == {0}
+    ws = ko[0].word_segments
+    assert abs(ws[0].start - 40.0) < 1e-9 and abs(ws[-1].end - 43.54) < 1e-9
+
+
+def test_fuse_falls_back_when_pron_window_is_too_narrow_for_the_chars():
+    # 음절이 한두 개만 살아남아 구간이 지나치게 좁으면(10글자를 0.2s에) 그 창에 욱여넣은
+    # 결과가 곧바로 불가능 뭉침 게이트에 걸린다 — 좁은 창 대신 라인 경계로 사상한다.
+    text = "あいうえおかきくけこ"
+    ko = [_clumped(text, LINE_START, LINE_END)]
+    ja = [_spread(text, 100.0, 103.14)]
+    pron_data = {0: {"pron_segments": _pron(1, LINE_START, LINE_START + 0.2)}}
+
+    assert _fuse_original_char_timing(
+        ko, ja, {}, max_char_rate=11.0, pron_data=pron_data
+    ) == {0}
+    ws = ko[0].word_segments
+    assert abs(ws[-1].end - LINE_END) < 1e-9
+
+
+def test_fuse_stays_monotonic_inside_the_pron_window_on_nonmonotonic_ja():
+    ko = [_clumped("あいうえお", LINE_START, LINE_END)]
+    jumbled = SyncResult(
+        text="あいうえお",
+        start_time=0.0,
+        end_time=10.0,
+        word_segments=[
+            _ws("あ", 0.0, 2.0, 0.02),
+            _ws("い", 6.0, 8.0, 0.02),
+            _ws("う", 3.0, 4.0, 0.02),  # 역행
+            _ws("え", 8.0, 9.0, 0.02),
+            _ws("お", 9.0, 10.0, 0.02),
+        ],
+    )
+    pron_data = {0: {"pron_segments": _pron(5, LINE_START, VOCAL_END)}}
+    assert _fuse_original_char_timing(
+        ko, [jumbled], {}, max_char_rate=0.0, pron_data=pron_data
+    ) == {0}
+    ws = ko[0].word_segments
+    assert _starts(ws) == sorted(_starts(ws))
+    assert all(ws[i].end <= ws[i + 1].start + 1e-9 for i in range(len(ws) - 1))
+    assert ws[0].start >= LINE_START - 1e-9 and ws[-1].end <= VOCAL_END + 1e-9
+
+
+# ---- _measured_vocal_window: 목표 구간 결정 규칙 ---------------------------------
+
+
+def test_measured_vocal_window_rules():
+    pron = _pron(10, LINE_START, VOCAL_END)
+    # 정상: 첫 음절 start ~ 마지막 음절 end
+    win = _measured_vocal_window(pron, LINE_START, LINE_END, 10, 11.0)
+    assert win is not None and abs(win[0] - LINE_START) < 1e-9 and abs(win[1] - VOCAL_END) < 1e-9
+    # 발음 없음
+    assert _measured_vocal_window(None, LINE_START, LINE_END, 10, 11.0) is None
+    assert _measured_vocal_window([], LINE_START, LINE_END, 10, 11.0) is None
+    # 라인 경계 밖 1초 초과(stale) — 앞·뒤 양방향
+    assert _measured_vocal_window(pron, LINE_START + 1.5, LINE_END, 10, 11.0) is None
+    assert _measured_vocal_window(pron, LINE_START, VOCAL_END - 1.5, 10, 11.0) is None
+    # 1초 이내로 벗어난 값은 경계로 잘라 쓴다
+    win = _measured_vocal_window(pron, LINE_START + 0.5, LINE_END, 10, 11.0)
+    assert win is not None and abs(win[0] - (LINE_START + 0.5)) < 1e-9
+    # 폭 0 (한 음절의 start==end)
+    zero = [{"text": "가", "start": LINE_START, "end": LINE_START}]
+    assert _measured_vocal_window(zero, LINE_START, LINE_END, 10, 11.0) is None
+    # 좁은 창 + 글자 과다 → max_char_rate 초과
+    narrow = _pron(1, LINE_START, LINE_START + 0.2)
+    assert _measured_vocal_window(narrow, LINE_START, LINE_END, 10, 11.0) is None
+    # 같은 창이라도 글자가 적으면 통과하고, 게이트를 끄면(0) 언제나 통과
+    assert _measured_vocal_window(narrow, LINE_START, LINE_END, 2, 11.0) is not None
+    assert _measured_vocal_window(narrow, LINE_START, LINE_END, 10, 0.0) is not None
 
 
 # ---- _measured_anchor_count: 직렬화와 동일 규칙 ---------------------------------
