@@ -22,6 +22,8 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
+from everyric2.text.ja_numbers import digits_to_reading
+
 logger = logging.getLogger(__name__)
 
 _KANJI_RE = re.compile(r"[㐀-鿿]")
@@ -42,6 +44,17 @@ _HAS_KATAKANA_RE = re.compile(r"[ァ-ヺｦ-ﾟ]")
 
 # 접두사 뒤에 이것이 오면 붙을 내용어가 없다 — 공백·문장부호·줄끝 (_is_orphan_prefix 참조)
 _ORPHAN_TAIL_RE = re.compile(r"^[\s、。，．,\.！？!?…‥・「」『』（）\(\)\[\]〜~ー\-—/／]")
+
+# UniDic이 数詞로 묶는 아라비아 숫자 토큰의 표면 형태 (_numeral_override 참조)
+_ARABIC_DIGITS_RE = re.compile(r"^[0-9]+$")
+
+# 아라비아 숫자 뒤에서 자릿수 읽기를 적용하는 조수사 — 실측(보카로 위키 사람 발음 표본
+# tests/fixtures/wiki_pron_sample.json 115줄)에서 아라비아 숫자 뒤에 조수사가 온 사례는
+# "1秒"(→ 이치뵤오) 단 1건이었다. 秒는 앞자리 숫자와 무관하게 촉음화·반탁음화가 없는
+# 규칙 조수사라(いちびょう/にびょう/さんびょう/…) 자릿수 읽기를 그대로 이어 붙이면 된다.
+# 分・回・人처럼 음변화가 있는 조수사는 이 표본에 없어 넣지 않는다 — 잘못된 음변화를
+# 새로 만드는 것이 기존의 "숫자 그대로" 동작보다 나쁘다(_numeral_override 참조).
+_MEASURED_ARABIC_COUNTERS = frozenset({"秒"})
 
 
 def _katakana_as_hiragana(surface: str) -> str | None:
@@ -192,6 +205,35 @@ def _is_orphan_prefix(words, i: int, text: str, idx: int) -> bool:
     return bool(_ORPHAN_TAIL_RE.match(tail))
 
 
+def _numeral_override(words, i: int, text: str, idx: int) -> str | None:
+    """아라비아 숫자 토큰 ``words[i]``를 자릿수 읽기로 바꿀지 판정.
+
+    UniDic은 아라비아 숫자에 읽기를 주지 않아(``feature.kana``/``pron`` 둘 다 빈값) 사다리가
+    표면 그대로("1")로 떨어진다(``_token_readings`` 3·4단 참조) — 한자 숫자(一/二/三…)는
+    사전에 읽기가 있어 이 문제가 없다(실측: ``一分``→いち+ふん처럼 숫자 자리는 이미
+    맞다). 여기서 그 빈 자리만 메운다.
+
+    바로 뒤 토큰이 ``_MEASURED_ARABIC_COUNTERS``에 있고 원문에서 숫자와 공백·기호 없이
+    바로 붙어 있을 때만 적용한다 — 실측 밖 조합(예: "1 秒"처럼 사이가 뜬 경우, 또는 分・回
+    같은 음변화 조수사)은 건드리지 않고 기존 동작(숫자 그대로)을 유지한다.
+    """
+    surface = words[i].surface
+    if not _ARABIC_DIGITS_RE.match(surface):
+        return None
+    feature = words[i].feature
+    if (getattr(feature, "pos1", "") or "") != "名詞" or (getattr(feature, "pos2", "") or "") != "数詞":
+        return None
+    if i + 1 >= len(words):
+        return None
+    nxt = words[i + 1].surface
+    if nxt not in _MEASURED_ARABIC_COUNTERS:
+        return None
+    tail_start = idx + len(surface)
+    if text[tail_start : tail_start + len(nxt)] != nxt:
+        return None
+    return digits_to_reading(surface)
+
+
 def _token_readings(
     word, *, phonetic: bool = False, orphan_prefix: bool = False
 ) -> tuple[str, str]:
@@ -264,6 +306,9 @@ def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[Read
         reading, surface_reading = _token_readings(
             word, phonetic=phonetic, orphan_prefix=_is_orphan_prefix(words, i, text, idx)
         )
+        numeral = _numeral_override(words, i, text, idx)
+        if numeral is not None:
+            reading = surface_reading = numeral
         tokens.append(
             ReadingToken(
                 surface,

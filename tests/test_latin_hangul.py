@@ -353,9 +353,10 @@ def test_mm_is_a_unit_after_a_digit_and_an_interjection_otherwise():
 
 
 def test_digits_are_not_transliterated():
-    # 사람은 「1秒」를 「이치뵤오」로 읽지만 숫자 읽기는 조수사·문맥에 달린 별개 문제다.
-    # 이 테스트는 그 미해결을 기록해 둔다 — 흉내면 틀린 값을 박게 된다.
-    assert "1" in wiki_pronunciation("1秒先")
+    # 숫자는 라틴 음차가 아니라 조수사 결합 규칙(ja_numbers)의 몫이다 — 실측된 조합
+    # (1秒 → 이치뵤오, ja_reading._MEASURED_ARABIC_COUNTERS)만 자릿수로 읽고, 그 밖은
+    # 여전히 라틴 음차 대상이 아닌 그대로다.
+    assert "이치" in wiki_pronunciation("1秒先")
     assert transliterate_latin("2024") == "2024"
 
 
@@ -416,10 +417,15 @@ def test_latin_lines_still_produce_forward_pron_segments(text):
 def test_candidates_share_the_latin_transliteration_with_the_default():
     # 후보와 기본값이 라틴 표기에서 갈라지면 오디오 심판이 "독음 차이"가 아니라
     # "라틴 표기 차이"를 재게 된다 — 둘 다 _render_pronunciation을 지나야 한다.
-    text = "当然 all I want"
+    # 후보는 애매 어휘 표(pron_style._AMBIGUOUS_WORDS)에 있는 낱말이 있어야 나온다 —
+    # 当然은 표에 없으므로 애매 어휘가 있는 문장으로 바꿔 축을 확인한다.
+    text = "何も all I want"
     cands = pronunciation_candidates(text)
     assert cands and cands[0] == wiki_pronunciation(text)
+    assert len(cands) > 1, "何も가 애매 어휘 표에 있으니 대안이 하나는 나와야 한다"
     assert all("all" not in c and "want" not in c for c in cands)
+    latin_tail = wiki_pronunciation(text).split(None, 1)[1]
+    assert all(c.endswith(latin_tail) for c in cands), cands
 
 
 def test_latin_only_lines_get_a_pronunciation_but_no_referee_candidates():

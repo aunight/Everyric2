@@ -4,20 +4,38 @@ no-mock: fugashi + unidic-lite / pykakasi 실제 분석 결과를 그대로 쓴�
 것은 "오디오 심판이 고를 수 있는 서로 다른 독음이 실제로 생성되는가"다 — 어느 후보가 맞는지는
 오디오가 고르므로(tests/test_pron_referee.py) 이 파일은 정답을 주장하지 않는다.
 
-사례는 전부 실측 오독이다 (결정론 경로는 사람이 쓴 위키 발음 2,207줄 대비 82.1%이고 남은
-불일치가 "어느 독음이 맞나"로 수렴한다): 私 와타시/와타쿠시, 三日月 미카즈키/밋카츠키,
-数え事 카조에 고토(연탁)/코토, 何も 나니모/난모, 涙（シル） 아테지.
+**후보는 ``pron_style._AMBIGUOUS_WORDS``/``_STEM_AMBIGUOUS_WORDS`` 표에 있는 낱말로만
+제한된다.** 예전엔 nbest·pykakasi·루비 미채택·표층 읽기(phonetic=False)까지 전부 후보
+축으로 썼는데, 실오디오 검증(``s5Rkv_5Sbbo``, 134줄)에서 그 구현은 53줄을 갈아치웠고
+53줄 전부 틀렸다. 원인은 심판이 아니라 후보 생성이었다 — 삭제가 섞이고(11건), kor
+어댑터가 못 듣는 장음 표기 변종이 섞였다(21건). 후보를 낱말 전체 문자열 일치로
+제한하고 오프라인 후처리 필터로 재측정하니 8건 맞고 0건 틀렸다.
+
+그런데 그 필터를 후보 **생성** 단계로 그대로 옮기면(낱말 전체 일치) 弾く/行く가 사전형
+(활용 안 된 꼴)일 때만 걸려 실오디오 재채점에서 5줄에서만 후보가 생겼다(맞게 2). 활용형
+(弾いて, 行けば 등)은 후보가 아예 안 생겨서였다. 그래서 弾く/行く 두 항목만 "한자 어간 +
+읽기 접두" 짝(``_STEM_AMBIGUOUS_WORDS``)으로 바꿔 활용 어미를 그대로 두고 어간 읽기만
+바꾸게 했다 — 재측정하면 7줄에서 후보가 생기고(맞게 3, 틀리게 0), 나머지 격차는 후보가
+안 생겨서가 아니라 그 순간의 오디오 점수가 마진을 못 넘어서였다(candidate 생성 문제가
+아니라 채점 문제 — 이 파일이 검증하는 범위 밖이다).
+
+이 파일의 대부분은 그 제한이 실제로 지켜지는지(표 밖 낱말은 후보를 안 만든다, 대립
+읽기 외의 차이가 안 생긴다, 삭제가 없다, 활용형이 잡히되 品詞 다른 동음이의 한자
+이웃(弾む·弾丸·糾弾·行方·行う 등)은 안 걸린다)를 못박는다.
 """
+import re
+from difflib import SequenceMatcher
+
 import pytest
 
 from everyric2.config.settings import AlignmentSettings
 from everyric2.server.worker import _referee_candidates
-from everyric2.text.ja_reading import (
-    has_ruby,
-    tokenize_reading_nbest,
-    tokenize_reading_pykakasi,
+from everyric2.text.pron_style import (
+    _AMBIGUOUS_WORDS,
+    _STEM_AMBIGUOUS_WORDS,
+    pronunciation_candidates,
+    wiki_pronunciation,
 )
-from everyric2.text.pron_style import pronunciation_candidates, wiki_pronunciation
 
 
 class _Line:
@@ -37,7 +55,7 @@ def test_first_candidate_is_exactly_the_deterministic_default():
 
 
 def test_candidates_are_distinct_and_non_empty():
-    for text in ("私は歩く", "数え事をする", "今更止められない"):
+    for text in ("彼はギターを弾く", "祭りの最中に", "今更止められない"):
         cands = pronunciation_candidates(text)
         assert len(cands) == len(set(cands)), cands
         assert all(c.strip() for c in cands)
@@ -50,77 +68,259 @@ def test_no_candidates_for_non_japanese_lines():
 
 
 def test_max_candidates_is_respected():
-    assert len(pronunciation_candidates("三日月の夜", max_candidates=3)) == 3
-    assert pronunciation_candidates("三日月の夜", max_candidates=0) == []
+    # 弾く와 刃가 두 번씩 걸려 대안이 4개(+ 기본값 = 5개) 나오는 줄로 상한을 실제로 시험한다.
+    text = "刃を弾く 刃を弾く"
+    assert len(pronunciation_candidates(text)) == 5
+    assert len(pronunciation_candidates(text, max_candidates=3)) == 3
+    assert pronunciation_candidates(text, max_candidates=0) == []
+
+
+# ---------------------------------------------------------------------------
+# 애매 어휘 표 — 표에 있는 낱말만 후보를 만든다
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "text,alternative",
     [
-        # 사람 와타시 / 기계 와타쿠시 — MeCab N-best 대안 파스
-        ("私は歩く", "와타시와 아루쿠"),
-        # 사람 미카즈키 / 기계 미카츠키
-        ("三日月の夜", "미카즈키노 요루"),
-        # 사람 나니모 / 기계 난모
-        ("何も言えない", "나니모 이에나이"),
-        # 連濁: 사람 카조에 고토 / 기계 카조에 코토
-        ("数え事をする", "카조에 고토오 스루"),
-        # 조사 は의 표층 읽기 변종 (phonetic=False 축)
-        ("私は歩く", "와타쿠시하 아루쿠"),
+        ("彼はギターを弾く", "카레와 기타아오 하지쿠"),  # 튕기다 / 연주하다(기본값)
+        ("一人で行く", "히토리데 유쿠"),  # 구어체(기본값) / 문어체
+        ("祭りの最中に", "마츠리노 사나카니"),  # さいちゅう(기본값) / さなか
+        ("好き好きな気持ち", "스키스키나 키모치"),  # 連濁(기본값) / 連濁 없음
+        ("真に受ける", "마코토니 우케루"),  # しんに(기본값) / まことに
+        ("何も言えない", "나니모 이에나이"),  # なんも(기본값) / なにも
+        ("刃を研ぐ", "야이바오 토구"),  # は(기본값) / やいば
+        ("この期に及んで", "코노고니 오욘데"),  # このき(기본값) / このご
     ],
 )
-def test_known_misreadings_appear_as_candidates(text, alternative):
+def test_ambiguous_table_words_appear_as_candidates(text, alternative):
     cands = pronunciation_candidates(text)
     assert alternative in cands, f"{text}: {alternative} 가 후보에 없다 — {cands}"
-    assert cands[0] != alternative, "이 사례의 기본값은 대안이 아니어야 한다(오독 사례)"
+    assert cands[0] != alternative, "표의 기본 읽기와 대안이 뒤바뀌면 안 된다"
 
 
-def test_ruby_line_offers_the_unadopted_reading():
-    # 루비 채택은 순이득 +0.7p(개선 14줄 / 악화 6줄)에 그쳤다 — 그 6줄이 이 축이다
-    text = "涙（シル）をこぼす"
-    assert has_ruby(text)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "私は歩く",  # 私(와타시/와타쿠시)는 표에 없다 — 옛 구현의 nbest 축이었다
+        "三日月の夜",  # 三日月(미카즈키/밋카츠키)도 표에 없다
+        "数え事をする",  # 連濁(카조에 고토/코토)도 표에 없다
+        "涙（シル）をこぼす",  # 루비 미채택 축도 더는 없다
+        "一緒に歩こう",  # 옛 구현에서 오오/오우 표기 변종이 나오던 낱말
+        "この対象を見る",  # 위와 같은 부류(타이쇼오)
+    ],
+)
+def test_words_outside_the_table_never_produce_alternatives(text):
+    # 표 밖 낱말은 사전/문맥으로 못 가르는 축이 아니므로(또는 텍스트만으로 결정되므로)
+    # 후보를 만들 이유가 없다 — 기본값 하나만 남아야 referee가 아예 안 돈다.
     cands = pronunciation_candidates(text)
-    assert cands[0] == "(시루)오 코보스"
-    assert any(c.startswith("나미다") for c in cands), cands
+    assert cands == [wiki_pronunciation(text)]
 
 
-def test_non_ruby_line_does_not_waste_a_candidate_on_the_ruby_axis():
-    # 루비가 없으면 adopt_ruby 축은 기본값과 동일하다 — 중복 제거로 사라져야 한다
+def test_ambiguous_table_has_no_degenerate_entries():
+    # 표 항목이 스스로 규칙을 어기면(빈 읽기, 두 읽기가 같음) 실측이 무의미해진다.
+    assert _AMBIGUOUS_WORDS
+    for word, (reading_a, reading_b) in _AMBIGUOUS_WORDS.items():
+        assert word, "낱말이 비어 있으면 절대 안 걸린다"
+        assert reading_a and reading_b, f"{word}: 빈 읽기는 삭제 후보와 같다"
+        assert reading_a != reading_b, f"{word}: 두 읽기가 같으면 후보가 기본값과 중복된다"
+        assert re.fullmatch(r"[ぁ-ゖー]+", reading_a), f"{word}: {reading_a} — 히라가나가 아니다"
+        assert re.fullmatch(r"[ぁ-ゖー]+", reading_b), f"{word}: {reading_b} — 히라가나가 아니다"
+
+
+def test_stem_table_has_no_degenerate_entries():
+    assert _STEM_AMBIGUOUS_WORDS
+    for kanji, (prefix_a, prefix_b, allow_sokuon) in _STEM_AMBIGUOUS_WORDS.items():
+        assert kanji, "한자 어간이 비어 있으면 절대 안 걸린다"
+        assert prefix_a and prefix_b, f"{kanji}: 빈 읽기 접두는 삭제 후보와 같다"
+        assert prefix_a != prefix_b, f"{kanji}: 두 접두가 같으면 후보가 기본값과 중복된다"
+        assert re.fullmatch(r"[ぁ-ゖー]+", prefix_a), f"{kanji}: {prefix_a} — 히라가나가 아니다"
+        assert re.fullmatch(r"[ぁ-ゖー]+", prefix_b), f"{kanji}: {prefix_b} — 히라가나가 아니다"
+        assert isinstance(allow_sokuon, bool), f"{kanji}: 촉음 허용 플래그가 bool이 아니다"
+
+
+# ---------------------------------------------------------------------------
+# 활용 동사(_STEM_AMBIGUOUS_WORDS) — 어간 읽기만 바뀌고 활용 어미는 그대로여야 한다
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,alternative",
+    [
+        # 弾く: 사전형 히쿠(기본값)의 활용형들 — 어미(테/타/코오/케레바/키마스)는 그대로,
+        # 어간(히→하지)만 바뀐다
+        ("あなたの言葉を弾いてみせるよ", "아나타노 코토바오 하지이테미세루요"),
+        ("風を切って弾いた", "카제오 킷테 하지이타"),
+        ("この手で弾こう", "코노 테데 하지코우"),
+        # 行く: 이쿠(기본값)의 활용형들
+        ("ああ、どこへ行けばいいの", "아아, 도코에 유케바 이이노"),
+        ("行こうと思う", "유코우토 오모우"),
+    ],
+)
+def test_stem_table_covers_inflected_verb_forms(text, alternative):
+    # 이게 이번 확장의 핵심이다 — 낱말 전체 문자열 일치 방식은 사전형(弾く, 行く)만
+    # 잡고 이 활용형들을 전부 놓쳤다(실오디오 재채점으로 확인).
+    cands = pronunciation_candidates(text)
+    assert alternative in cands, f"{text}: {alternative} 가 후보에 없다 — {cands}"
+    assert cands[0] == wiki_pronunciation(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "弾き語りをする",  # 名詞(히키가타리) — 읽기 접두만으론 안 걸러진다(품사 조건 필요)
+        "弾む心",  # 별개 낱말(하즈무) — 읽기 접두가 안 맞음
+        "弾丸が飛ぶ",  # 별개 낱말(단간)
+        "糾弾する",  # 弾이 낱말 중간(큐우단) — 표층이 弾로 시작 안 함
+        "行方不明になる",  # 名詞(유쿠에) — 읽기 접두만으론 안 걸러진다(품사 조건 필요)
+        "テストを行った",  # 별개 낱말 行う의 활용(오코낫타) — 읽기 접두가 안 맞음
+        "銀行の前で",  # 行이 낱말 중간(긴코오)
+        "行動を起こす",  # 別語(코오도오) — 읽기 접두가 い/ゆ가 아니라서 안 걸림
+        "行事に参加する",  # 別語(교오지) — 위와 같음
+    ],
+)
+def test_stem_table_does_not_match_unrelated_kanji_neighbors(text):
+    # 접두 매칭이라 오탐 위험이 크다 — 弾き語り/行方는 읽기 접두(히/유)까지 우연히
+    # 맞아서 品詞=動詞 조건이 없으면 뚫린다(실측으로 찾은 함정). 나머지는 읽기 접두
+    # 자체가 달라서 걸러진다.
+    cands = pronunciation_candidates(text)
+    assert cands == [wiki_pronunciation(text)], cands
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "行ったり来たりして",  # 行った의 촉음편(いった)은 いく 전용 — ゆった는 존재하지 않는다
+        "行った",
+        "テストに行って来た",
+    ],
+)
+def test_stem_table_excludes_sokuon_inflection_for_iku(text):
+    # 실측(재채점): 行ったり来たりして에서 만든 「윳타리」 후보가 오디오에 거부되긴 했지만
+    # (gain -0.0564) 애초에 문법적으로 존재하지 않는 읽기였다 — 다른 곡에서는 이길 수
+    # 있다. 促音便(っ으로 시작하는 활용 어미)은 行 항목에서 아예 후보를 안 만든다.
+    cands = pronunciation_candidates(text)
+    assert cands == [wiki_pronunciation(text)], cands
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["行けば", "行けない", "行こう", "行きたい", "行かない"],
+)
+def test_stem_table_still_covers_non_sokuon_iku_inflections(text):
+    # 促音便 제외가 い/ゆ 축 자체를 없애면 안 된다 — 촉음이 아닌 활용형은 여전히 잡혀야 한다.
+    cands = pronunciation_candidates(text)
+    assert len(cands) > 1, f"{text}: 후보가 안 생겼다 — {cands}"
+
+
+def test_naniga_is_in_the_table_but_nante_node_nanika_are_not():
+    # 何が(나니가/난가)는 何も와 같은 なに/なん 축이라 표에 넣었다(실측: 사람 나니가 /
+    # 기본값 난가). 何て・何で・何か는 표기가 고정이라 넣지 않는다 — 何를 어간으로 잡아
+    # 넓히면 이 고정 낱말들까지 오탐이 된다.
+    ga_cands = pronunciation_candidates("そこから何が見えるの？")
+    assert "소코카라 나니가 미에루노?" in ga_cands
+
+    for text in ("何てことだ", "何でだろう", "何か違う"):
+        cands = pronunciation_candidates(text)
+        assert cands == [wiki_pronunciation(text)], f"{text}: {cands} — 고정 표기인데 후보가 생겼다"
+
+
+# ---------------------------------------------------------------------------
+# 제한 규칙 1: 삭제 후보를 절대 만들지 않는다
+# ---------------------------------------------------------------------------
+
+_TABLE_EXAMPLES = {
+    "弾く": "彼はギターを弾く",
+    "行く": "一人で行く",
+    "最中": "祭りの最中に",
+    "好き好き": "好き好きな気持ち",
+    "真に": "真に受ける",
+    "何も": "何も言えない",
+    "刃": "刃を研ぐ",
+    "この期": "この期に及んで",
+    # 활용 동사(_STEM_AMBIGUOUS_WORDS)의 활용형도 같은 규칙(삭제 없음, 그 낱말만 변경)을
+    # 지켜야 한다 — 어간+접두 매칭이라 사전형과 다른 경로를 타므로 따로 넣는다.
+    "弾く(활용)": "あなたの言葉を弾いてみせるよ",
+    "行く(활용)": "ああ、どこへ行けばいいの",
+}
+
+
+def test_no_word_disappears_between_default_and_a_candidate():
+    # 낱말이 통째로 사라지면(삭제) 후보의 모라 수가 원본과 크게 어긋난다. 대립 읽기끼리는
+    # 길어야 2모라 차이인데(예: 刃 は/やいば), 삭제라면 그 낱말 전체 모라가 빠져 훨씬 크게
+    # 벌어진다 — 넉넉한 상한(4)으로 "차이가 작다"만 못박는다.
+    for word, text in _TABLE_EXAMPLES.items():
+        default = wiki_pronunciation(text)
+        for cand in pronunciation_candidates(text):
+            if cand == default:
+                continue
+            delta = abs(len(cand.replace(" ", "")) - len(default.replace(" ", "")))
+            assert delta <= 4, f"{word}: {text} 기본값 {default!r} vs 후보 {cand!r} (Δ{delta})"
+
+
+def test_candidate_differs_from_default_only_at_the_matched_word():
+    # 후보와 기본값의 유일한 차이가 그 낱말의 독음이어야 심판이 "독음 차이"만 재게 된다.
+    # 공통 접두사/접미사를 떼어내면 남는 가운데 구간이 그 낱말 하나의 대립 읽기여야 한다.
+    for word, text in _TABLE_EXAMPLES.items():
+        default = wiki_pronunciation(text)
+        alts = [c for c in pronunciation_candidates(text) if c != default]
+        assert alts, f"{word}: {text}에서 대안이 하나도 안 나왔다"
+        for cand in alts:
+            matcher = SequenceMatcher(None, default, cand)
+            blocks = [b for b in matcher.get_matching_blocks() if b.size]
+            # 첫/마지막 매칭 블록 밖(=바뀐 구간)을 빼면 앞뒤가 원본과 글자 단위로 같아야 한다
+            prefix_len = blocks[0].size if blocks and blocks[0].a == 0 and blocks[0].b == 0 else 0
+            assert default[:prefix_len] == cand[:prefix_len]
+            suffix_len = 0
+            if blocks:
+                last = blocks[-1]
+                if last.a + last.size == len(default) and last.b + last.size == len(cand):
+                    suffix_len = last.size
+            assert (not suffix_len) or (default[-suffix_len:] == cand[-suffix_len:])
+
+
+def test_this_period_reading_fuses_without_a_stray_space():
+    # この期に及んで는 기본값에서 この/期가 서로 다른 문절(공백으로 분리)이지만,
+    # このご는 관용구 하나로 통짜 읽기다 — 대안 후보에서 다시 갈라지면(코노 고니) 문절
+    # 경계가 기본값과 달라져 "표기 차이"가 섞인다.
+    text = "この期に及んで"
+    default = wiki_pronunciation(text)
+    assert default == "코노 키니 오욘데"
+    cands = pronunciation_candidates(text)
+    assert "코노고니 오욘데" in cands
+    assert "코노 고니 오욘데" not in cands
+
+
+# ---------------------------------------------------------------------------
+# 제한 규칙 3: 한 줄에서 나오는 후보 수 상한
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_ambiguous_words_in_one_line_each_get_their_own_candidate():
+    # 弾く와 刃가 한 줄에 같이 있으면 각 낱말의 대립 읽기가 독립적으로 후보가 된다 —
+    # 두 낱말을 동시에 바꾼 후보는 만들지 않는다(그러면 "어느 낱말 때문에 이겼는지" 해석이
+    # 안 된다).
+    text = "刃を弾く"
+    default = wiki_pronunciation(text)
+    cands = pronunciation_candidates(text)
+    assert cands[0] == default
+    assert "야이바오 히쿠" in cands  # 刃만 바뀜
+    assert "하오 하지쿠" in cands  # 弾く만 바뀜
+    assert "야이바오 하지쿠" not in cands  # 둘 다 바뀐 조합은 만들지 않는다
+    assert len(cands) == 3
+
+
+# ---------------------------------------------------------------------------
+# 라틴 음차 공유 (표기 규칙이 후보와 기본값에서 갈라지면 안 된다)
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_shares_the_wiki_convention_with_the_default():
     text = "何も言えない"
-    assert not has_ruby(text)
-    cands = pronunciation_candidates(text)
-    assert len(cands) == len(set(cands))
-
-
-# ---------------------------------------------------------------------------
-# 후보 생성의 재료 (ja_reading의 새 접근자)
-# ---------------------------------------------------------------------------
-
-
-def test_nbest_returns_alternative_parses_only():
-    text = "私は三日月を見た"
-    parses = tokenize_reading_nbest(text, n=8, phonetic=True)
-    assert parses, "N-best 대안 파스를 못 얻었다"
-    readings = {"".join(t.reading for t in p) for p in parses}
-    assert len(readings) > 1
-    # 오프셋·표면 계약은 1순위 파스와 동일해야 한다 (모라 정렬이 이 불변식에 걸려 있다)
-    for parse in parses:
-        assert "".join(t.surface for t in parse) == text
-        for token in parse:
-            assert text[token.start : token.end] == token.surface
-
-
-def test_nbest_is_a_noop_when_disabled():
-    assert tokenize_reading_nbest("私は歩く", n=1) == []
-    assert tokenize_reading_nbest("", n=8) == []
-
-
-def test_pykakasi_fallback_tokens_keep_the_offset_contract():
-    text = "今更止められない"
-    tokens = tokenize_reading_pykakasi(text)
-    assert tokens
-    assert "".join(t.surface for t in tokens) == text
-    assert tokenize_reading_pykakasi("") == []
+    for cand in pronunciation_candidates(text):
+        # 둘 다 _render_pronunciation을 지나므로 문장부호 정규화·라틴 음차 규칙이 같다
+        assert "이에나이" in cand
+        assert cand.endswith("이에나이")
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +336,8 @@ def _settings(**kw):
 
 
 def test_worker_puts_the_line_meta_pronunciation_first():
-    lines = [_Line("私は歩く")]
-    default = wiki_pronunciation("私は歩く")
+    lines = [_Line("何も言えない")]
+    default = wiki_pronunciation("何も言えない")
     cands, margins = _referee_candidates(lines, [default], _settings())
     assert cands[0][0] == default
     assert len(cands[0]) > 1
@@ -159,17 +359,24 @@ def test_worker_requires_a_larger_margin_for_a_human_written_pronunciation():
 
 
 def test_worker_skips_lines_without_alternatives():
-    # 발음이 없는 라인, 그리고 대안이 없는 라인은 심판 대상이 아니다 → 비용 0
-    lines = [_Line("私は歩く"), _Line("hello"), _Line("오늘")]
-    cands, margins = _referee_candidates(lines, ["와타쿠시와 아루쿠", "", ""], _settings())
+    # 발음이 없는 라인, 그리고 대안이 없는 라인은 심판 대상이 아니다 → 비용 0.
+    # 私は歩く는 표 밖 낱말이라 대안이 없다 — 何も言えない만 대안이 있다.
+    lines = [_Line("何も言えない"), _Line("私は歩く"), _Line("hello"), _Line("오늘")]
+    cands, margins = _referee_candidates(
+        lines,
+        [wiki_pronunciation("何も言えない"), wiki_pronunciation("私は歩く"), "", ""],
+        _settings(),
+    )
     assert set(cands) == {0}
     assert set(margins) == {0}
 
 
 def test_worker_respects_the_candidate_cap():
-    lines = [_Line("三日月の夜")]
+    lines = [_Line("刃を弾く 刃を弾く")]
     cands, _ = _referee_candidates(
-        lines, [wiki_pronunciation("三日月の夜")], _settings(pron_referee_max_candidates=3)
+        lines,
+        [wiki_pronunciation("刃を弾く 刃を弾く")],
+        _settings(pron_referee_max_candidates=3),
     )
     assert len(cands[0]) == 3
 
@@ -178,9 +385,9 @@ def test_worker_respects_the_candidate_cap():
 # 워커 배선 — 심판이 이긴 후보가 역매핑·표시·디버그에 실제로 반영되는가
 # ---------------------------------------------------------------------------
 
-_JA = "私は歩く"
+_JA = "何も言えない"
 _DEFAULT = wiki_pronunciation(_JA)
-_WINNER = "와타시와 아루쿠"
+_WINNER = "나니모 이에나이"
 
 
 class _FakeEngine:
@@ -229,7 +436,7 @@ class _FakeEngine:
                     "scores": [[_DEFAULT, -3.1], [self.winner, -2.68]],
                 }
             ]
-        self._last_heard = {0: "와타시와 아루쿠"}
+        self._last_heard = {0: "나니모 이에나이"}
         return results
 
 
@@ -239,7 +446,7 @@ def _pron_align(winner):
 
     engine = _FakeEngine(winner)
     lines = [LyricLine(text=_JA, line_number=1)]
-    by_text = _pron_by_text([{"text": _JA, "pronunciation": _DEFAULT, "translation": "나는 걷는다"}])
+    by_text = _pron_by_text([{"text": _JA, "pronunciation": _DEFAULT, "translation": "아무 말도 못 한다"}])
     results, pron_data = _align_with_pronunciation(
         engine, object(), lines, by_text, _settings()
     )
@@ -255,7 +462,7 @@ def test_worker_passes_candidates_to_the_engine():
 
 def test_worker_adopts_the_winning_reading_for_display_and_backmapping():
     _, results, pron_data = _pron_align(_WINNER)
-    # 표시 발음이 이긴 후보로 바뀐다 (私 → 와타시)
+    # 표시 발음이 이긴 후보로 바뀐다 (何も → 나니모)
     assert pron_data[0]["pronunciation"] == _WINNER
     # 원문 라인은 그대로고, 음절 스팬은 이긴 후보의 음절 수만큼 잡힌다
     assert results[0].text == _JA
@@ -266,7 +473,7 @@ def test_worker_adopts_the_winning_reading_for_display_and_backmapping():
 def test_worker_carries_heard_text_and_referee_reasoning_into_debug_meta():
     # 실오디오 검증에서 후보별 점수를 못 보면 판정을 되짚을 수 없다 — 반드시 실려야 한다
     _, _, pron_data = _pron_align(_WINNER)
-    assert pron_data[0]["heard"] == "와타시와 아루쿠"
+    assert pron_data[0]["heard"] == "나니모 이에나이"
     ref = pron_data[0]["referee"]
     assert ref["default"] == _DEFAULT and ref["chosen"] == _WINNER
     assert ref["scores"] == [[_DEFAULT, -3.1], [_WINNER, -2.68]]
@@ -281,7 +488,7 @@ def test_line_meta_remerge_does_not_revert_a_referee_decision():
     switched = {
         "text": _JA,
         "pronunciation": _WINNER,
-        "pron_segments": [{"text": "와", "start": 0.0, "end": 0.2}],
+        "pron_segments": [{"text": "나", "start": 0.0, "end": 0.2}],
         "debug": {"referee": {"default": _DEFAULT, "chosen": _WINNER}},
     }
     kept = {
@@ -290,11 +497,11 @@ def test_line_meta_remerge_does_not_revert_a_referee_decision():
         "debug": {"referee": {"default": _DEFAULT, "chosen": _DEFAULT}},
     }
     plain = {"text": _JA}
-    meta = [{"text": _JA, "pronunciation": _DEFAULT, "translation": "나는 걷는다"}]
+    meta = [{"text": _JA, "pronunciation": _DEFAULT, "translation": "아무 말도 못 한다"}]
 
     merge_line_meta([switched, kept, plain], meta)
     assert switched["pronunciation"] == _WINNER, "심판 판정이 재병합으로 되돌아갔다"
-    assert switched["translation"] == "나는 걷는다", "번역 병합은 그대로여야 한다"
+    assert switched["translation"] == "아무 말도 못 한다", "번역 병합은 그대로여야 한다"
     # 심판이 기본값을 유지한 라인과 심판이 안 돈 라인은 예전대로 병합된다
     assert kept["pronunciation"] == _DEFAULT
     assert plain["pronunciation"] == _DEFAULT

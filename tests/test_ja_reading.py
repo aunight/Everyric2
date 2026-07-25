@@ -272,3 +272,44 @@ def test_katakana_particle_keeps_its_phonetic_reading():
     from everyric2.text.ja_reading import _PARTICLE_POS
 
     assert "助詞" in _PARTICLE_POS and "助動詞" in _PARTICLE_POS
+
+
+# ---------------------------------------------------------------------------
+# 아라비아 숫자 + 조수사 읽기 — 실측 근거: tests/fixtures/wiki_pron_sample.json
+# 115줄 중 아라비아 숫자 뒤에 조수사가 온 사례는 "1秒"(사람 발음 「이치뵤오」) 단 1건.
+# 다른 조수사(分・回・人 등)는 표본에 없어 ``_MEASURED_ARABIC_COUNTERS``에 넣지 않았고,
+# 아래 미적용 케이스가 그 경계를 지킨다.
+# ---------------------------------------------------------------------------
+
+
+def test_arabic_digit_before_a_measured_counter_reads_as_a_number():
+    # 실측 그 자체(위키 사람 발음): 1秒 → 이치뵤오. UniDic은 아라비아 숫자에 읽기를
+    # 주지 않아(feature.kana/pron 둘 다 빈값) 손대지 않으면 표면 "1"이 그대로 샌다.
+    assert kana_reading("1秒") == "いちびょう"
+    assert kana_reading("スケジュールは1秒先だって書き記していたい") == (
+        "すけじゅーるはいちびょうせんだってかきしるしていたい"
+    )
+
+
+@pytest.mark.parametrize(
+    ("digits", "expected_prefix"),
+    [("0", "ゼロ"), ("3", "さん"), ("10", "じゅう"), ("24", "にじゅうよん")],
+)
+def test_arabic_digit_reading_scales_with_the_number(digits, expected_prefix):
+    assert kana_reading(f"{digits}秒") == expected_prefix + "びょう"
+
+
+def test_arabic_digit_before_an_unmeasured_counter_is_left_alone():
+    # 分은 조수사에 따라 촉음화·반탁음화가 걸리는데(一分→いっぷん) 표본에 아라비아
+    # 숫자+分 조합이 없다 — 잘못된 음변화를 새로 만드느니 기존 동작(숫자 그대로)을 지킨다.
+    assert kana_reading("1分") == "1ふん"
+
+
+def test_arabic_digit_needs_the_counter_immediately_adjacent():
+    # 실측 형태("1秒", 사이 공백 없음)를 벗어나면 손대지 않는다.
+    assert kana_reading("1 秒") == "1 びょう"
+
+
+def test_standalone_arabic_digit_without_a_counter_is_unaffected():
+    # 뒤에 조수사가 없으면(줄 끝, 다른 낱말) 숫자 읽기를 시도하지 않는다 — 실측 밖이다.
+    assert kana_reading("2024年") == "2024ねん"

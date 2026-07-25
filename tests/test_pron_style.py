@@ -245,21 +245,23 @@ def test_trailing_punctuation_is_not_dropped():
     assert wiki_pronunciation("「だめだ！」").endswith("!」")
 
 
-def test_latin_is_transliterated_and_digits_are_kept_verbatim():
-    """라틴은 음차하고 숫자는 그대로 둔다.
+def test_latin_is_transliterated_and_unmeasured_digit_counters_are_kept_verbatim():
+    """라틴은 음차하고, 실측 밖 숫자+조수사 조합은 그대로 둔다.
 
     옛 기댓값은 ``"numb" in wiki_pronunciation("numb な僕")``였다 — "위키는 음차하지만
     (numb→넘) 규칙화가 불가능하다"는 방침의 기록이다. 실측이 그 방침을 뒤집었다: 라틴을
     남기면 그 줄이 정렬되지 않고(라틴 글자 conf<0.01이 90~99%), 사람 자막 대조에서 잔차
     p90이 0.629s→0.170s로 줄었다. 자세한 수치는 ``everyric2.text.latin_hangul``에 있다.
 
-    숫자는 여전히 그대로다. 사람은 「1秒」를 「이치뵤오」로 읽지만 숫자 읽기는 조수사·문맥에
-    달려 있어 라틴 음차와 별개 문제이고, 흉내면 틀린 값을 박게 된다.
+    숫자는 실측된 조합(1秒 → 이치뵤오, ``ja_reading._MEASURED_ARABIC_COUNTERS``)만
+    자릿수로 읽는다. 分처럼 촉음화·반탁음화가 걸리는 조수사는 표본에 없어 그대로 둔다 —
+    흉내 내면 틀린 값을 박게 된다.
     """
     got = wiki_pronunciation("---深刻なエラーが発生しました---")
     assert got == "---신코쿠나 에라아가 핫세이시마시타---"  # 부호만 있는 구간은 그대로
     assert wiki_pronunciation("numb な僕") == "넘 나 보쿠"
-    assert "1" in wiki_pronunciation("1秒先")
+    assert "이치" in wiki_pronunciation("1秒先")  # 실측된 조합은 자릿수로 읽는다
+    assert "1" in wiki_pronunciation("1分先")  # 표본에 없는 조합은 여전히 그대로
 
 
 def test_sokuon_and_n_cross_token_boundaries():

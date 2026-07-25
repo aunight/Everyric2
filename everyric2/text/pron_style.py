@@ -13,17 +13,12 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 import unicodedata
 
 from everyric2.text import kana_hangul
-from everyric2.text.ja_reading import (
-    ReadingToken,
-    has_ruby,
-    tokenize_reading,
-    tokenize_reading_nbest,
-    tokenize_reading_pykakasi,
-)
+from everyric2.text.ja_reading import ReadingToken, tokenize_reading
 from everyric2.text.latin_hangul import transliterate_latin
 
 # ---------------------------------------------------------------------------
@@ -294,57 +289,224 @@ def wiki_pronunciation(text: str) -> str:
     return _render_pronunciation(text, tokenize_reading(text, phonetic=True, adopt_ruby=True))
 
 
-def pronunciation_candidates(text: str, *, max_candidates: int = 8, nbest: int = 16) -> list[str]:
+# ---------------------------------------------------------------------------
+# 애매 어휘 표 — 오디오 심판 후보의 유일한 재료
+# ---------------------------------------------------------------------------
+#
+# 실측(s5Rkv_5Sbbo, 134줄): nbest·pykakasi·루비 미채택·표층 읽기(phonetic=False)를 전부
+# 후보 축으로 쓴 이전 구현은 53줄을 갈아치웠고 **53줄 전부 틀렸다**. 원인 셋:
+#   1. 삭제가 무료 — 짧은 토큰열이 프레임 평균 점수에서 유리해 11건이 낱말을 그냥 지웠다.
+#   2. kor 어댑터가 못 듣는 축 — 21건이 오오/오우 같은 장음 표기 변종이었다. 오디오로
+#      가릴 수 없는 축인데 후보에 섞여 신호를 익사시켰다.
+#   3. 신뢰도 게이트 없음 — 심판이 들은 것(heard)이 쓰레기여도 채택했다.
+#
+# 후보를 **텍스트만으로는 결정할 수 없는 낱말**로만 제한하고 재측정하니 8건 맞고 0건
+# 틀렸다. 즉 심판 자체가 아니라 후보 생성이 문제였다. 그래서 여기서는 사전/문맥으로
+# 못 가르는 것이 확인된 낱말만 표로 등록해 두고, 그 낱말이 실제로 그 줄에 있을 때
+# **그 낱말의 대립 읽기 하나만** 후보로 낸다 — 삭제도, 표기 변종도, 무관한 낱말의
+# 갈림도 만들지 않는다.
+#
+# 값은 ``ReadingToken.surface_reading``(표층 읽기, kana 우선)과 비교한다 — phonetic=True
+# 음가는 最中처럼 장음을 ー로 뭉개(さいちゅう→さいちゅー) 표 문자열과 어긋난다
+# (``_token_readings`` 참조). 표층 읽기는 그 뭉갬이 없어 표와 그대로 맞는다(실측 확인).
+#
+# 弾く・行く는 여기 없다 — 활용하는 동사라 ``_STEM_AMBIGUOUS_WORDS``(아래)를 쓴다.
+#
+# 何が도 何も와 같은 축(なに/なん)이다 — 실측(재채점 덤프): 사람 「나니가」/기본값 「난가」로
+# 갈렸다. **何て・何で・何か는 표에 넣지 않는다** — 이건 表記가 고정이다(항상 なんて/なんで,
+# 何か는 문맥에 관계없이 하나로 굳어 있다). 何만 어간으로 잡아 접두 방식으로 넓히면 이
+# 고정 낱말들까지 걸려 전부 오탐이 된다 — 그래서 낱말 전체 일치(何が/何も 각각)로만 잡는다.
+_AMBIGUOUS_WORDS: dict[str, tuple[str, str]] = {
+    "最中": ("さなか", "さいちゅう"),  # 두 읽기 다 "한창 ~하는 중"
+    "好き好き": ("すきすき", "すきずき"),  # 連濁 유무
+    "真に": ("まことに", "しんに"),  # 정말로 / 진실로 — 문맥에 따라 갈린다
+    "何も": ("なにも", "なんも"),  # 표준 / 축약(회화체)
+    "何が": ("なにが", "なんが"),  # 위와 같은 なに/なん 축, が 조사일 때
+    "刃": ("は", "やいば"),  # 칼날(짧은 형) / 칼(긴 형, 시적)
+    "この期": ("このき", "このご"),  # 관용구 「この期に及んで」의 두 통용 독음
+}
+
+# 활용하는 동사 두 항목은 "낱말 전체 문자열"이 아니라 "한자 어간 + 읽기 접두" 짝으로
+# 표를 세운다. 실측(4곡 161줄, 실오디오 재채점 덤프로 GPU 없이 재현): 낱말 전체 일치
+# 방식은 弾く/行く가 사전형(활용 안 된 꼴)으로 나올 때만 걸려 5줄에서만 후보가 생겼다
+# (맞게 2/틀리게 0). 실제로 놓친 줄은 대부분 활용형이었다(弾いて, 行けば 등).
+#
+# はじく/ひく와 ゆく/いく는 둘 다 か행 활용이라 활용 어미(く/いた/こう/けば/きます…)가
+# 두 읽기에서 정확히 똑같이 붙는다(온빈까지 포함: 弾いた→はじいた/ひいた, 行けば→
+# ゆけば/いけば). 그래서 **어간 읽기만 바꾸면 활용형이 자동으로 따라온다** — 활용
+# 어미 쪽은 원본 토큰의 읽기를 그대로 쓴다.
+#
+# 값은 (어간 뒤에 오는 읽기 접두 A, 읽기 접두 B)다. 매칭은 토큰의 ``surface_reading``이
+# 둘 중 하나로 **시작하는지**만 본다 — 그래서 弾き/弾い/弾か/弾けれ/弾こう 전부 걸린다.
+#
+# 오탐 방어(실측 확인, ``tests/test_pron_candidates.py`` 참조):
+#   - 표층이 한자로 시작해야 한다(``token.surface.startswith(kanji)``) — 銀行(긴코오)의
+#     行은 낱말 중간이라 안 걸린다.
+#   - 읽기 접두 조건 — 弾む(하즈무)·弾丸(단간)·糾弾(큐우단)·行った(오코난타, 行う의 활용)은
+#     읽기가 ひ/はじ・い/ゆ로 시작하지 않아 자동으로 빠진다.
+#   - **품사가 動詞여야 한다** — 이게 없으면 弾き語り(히키가타리, 名詞)와 行方(유쿠에,
+#     名詞)가 뚫린다. 弾き語り는 읽기가 「히」로, 行方는 「유」로 시작해서 읽기 접두
+#     조건만으로는 안 걸러진다(실측으로 찾은 함정) — 둘 다 品詞가 名詞라 動詞 조건으로
+#     막는다.
+#   - **활용 어미가 촉음(っ)으로 시작하면 行 항목은 후보를 만들지 않는다** — 実측
+#     (재채점): 行ったり来たりして에서 만든 「윳타리」 후보가 그 자체로 존재하지 않는
+#     읽기였다. 行った/行って/行ったり의 촉음편(いった)은 **いく 전용 활용**이고
+#     ゆく의 た형은 문어 ゆきたり다 — 즉 ゆ+った는 애초에 성립하지 않는 활용형이라
+#     대입 방향을 만들면 안 된다. 弾く는 이 제외가 필요 없다 — 弾いた(히이타)↔
+#     はじいた(하지이타)는 촉음이 아니라 い-온빈이고 둘 다 유효하다(``allow_sokuon``).
+_STEM_AMBIGUOUS_WORDS: dict[str, tuple[str, str, bool]] = {
+    # (읽기 접두 A, 읽기 접두 B, 촉음(っ)으로 시작하는 활용 어미도 허용하는가)
+    "弾": ("ひ", "はじ", True),  # (악기를) 연주하다 / 튕기다 — 둘 다 い-온빈 활용
+    "行": ("い", "ゆ", False),  # 구어체 / 문어체·관용구 — 촉음편(いった)은 いく 전용
+}
+
+
+def _covered_tokens(tokens: list[ReadingToken], start: int, end: int) -> list[ReadingToken]:
+    """``[start, end)``를 정확히 덮는 연속 토큰열. 경계가 안 맞으면 빈 목록.
+
+    표 낱말이 더 큰 낱말의 부분 문자열일 뿐인 경우(예: 다른 복합어 속의 「刃」)를
+    걸러낸다 — 그 복합어가 형태소 분석기에서 한 토큰이면 그 토큰은 ``end``를 넘어서므로
+    ``t.end <= end`` 조건에 걸려 뽑히지 않는다.
+    """
+    covered = [t for t in tokens if t.start >= start and t.end <= end]
+    if not covered or covered[0].start != start or covered[-1].end != end:
+        return []
+    return covered
+
+
+def _substitute_reading(
+    tokens: list[ReadingToken], covered: list[ReadingToken], alternative: str
+) -> list[ReadingToken]:
+    """``covered``(연속 토큰 구간)의 읽기를 ``alternative`` 하나로 갈아 끼운 새 토큰 열.
+
+    대안 읽기 전체를 첫 토큰에 싣고 나머지 토큰은 읽기·품사를 비운다. 품사를 비우는
+    이유: ``_starts_phrase``는 내용어 품사(名詞 등)를 새 문절의 시작으로 본다 — この期
+    처럼 두 토큰이 원래 각자 문절 머리인 경우, 품사를 그대로 두면 대안 읽기를 한
+    낱말로 합쳐도 "코노 키" 처럼 여전히 갈라진다. 원본 ``tokens``는 손대지 않는다
+    (다른 낱말 자리를 채점할 때 이전 치환이 남아 있으면 안 된다 — 후보 하나당 대립
+    읽기 하나만 바꾼다는 계약이 깨진다).
+    """
+    covered_ids = {id(t) for t in covered}
+    out: list[ReadingToken] = []
+    is_head = True
+    for token in tokens:
+        if id(token) not in covered_ids:
+            out.append(token)
+            continue
+        if is_head:
+            out.append(dataclasses.replace(token, reading=alternative, surface_reading=alternative))
+            is_head = False
+        else:
+            out.append(dataclasses.replace(token, reading="", surface_reading="", pos="", pos2=""))
+    return out
+
+
+def _ambiguous_word_candidates(text: str, default_tokens: list[ReadingToken]) -> list[str]:
+    """줄에 있는 애매 어휘마다, 그 낱말만 대립 읽기로 바꾼 후보 하나씩.
+
+    다른 모든 토큰(따라서 문절 띄어쓰기·다른 낱말의 독음)은 기본값과 완전히 같다 — 이
+    후보와 기본값의 유일한 차이가 그 낱말의 독음이어야 심판이 "독음 차이"만 재게 된다.
+    """
+    out: list[str] = []
+    for word, (reading_a, reading_b) in _AMBIGUOUS_WORDS.items():
+        search_from = 0
+        while True:
+            idx = text.find(word, search_from)
+            if idx < 0:
+                break
+            end = idx + len(word)
+            search_from = end
+            covered = _covered_tokens(default_tokens, idx, end)
+            if not covered or "".join(t.surface for t in covered) != word:
+                continue
+            current = "".join(t.surface_reading for t in covered)
+            if current == reading_a:
+                alternative = reading_b
+            elif current == reading_b:
+                alternative = reading_a
+            else:
+                # 기본 읽기가 표의 둘 중 어느 쪽도 아니다(활용형 등 자리가 안 맞음) —
+                # 대입 방향을 짐작하지 않는다.
+                continue
+            candidate_tokens = _substitute_reading(default_tokens, covered, alternative)
+            rendered = _render_pronunciation(text, candidate_tokens)
+            if rendered:
+                out.append(rendered)
+    return out
+
+
+def _stem_word_candidates(text: str, default_tokens: list[ReadingToken]) -> list[str]:
+    """줄에 있는 활용 동사(``_STEM_AMBIGUOUS_WORDS``)마다, 어간 읽기만 바꾼 후보 하나씩.
+
+    토큰 하나만 바꾼다(``_substitute_reading``에 단일 토큰 구간을 넘긴다) — 활용 어미는
+    같은 토큰에 붙어 있는 채로 남으므로 손대지 않는다. 弾く/行く는 활용해도 어미 앞
+    토큰 하나에 어간+활용부가 함께 들어오므로(예: 弾いた → 토큰 "弾い" + "た") 이걸로
+    충분하다.
+    """
+    out: list[str] = []
+    for kanji, (prefix_a, prefix_b, allow_sokuon) in _STEM_AMBIGUOUS_WORDS.items():
+        for token in default_tokens:
+            if token.pos != "動詞" or not token.surface.startswith(kanji):
+                continue
+            reading = token.surface_reading
+            if reading.startswith(prefix_a):
+                matched, alt_prefix = prefix_a, prefix_b
+            elif reading.startswith(prefix_b):
+                matched, alt_prefix = prefix_b, prefix_a
+            else:
+                # 읽기가 표의 두 어간 중 어느 쪽도 아니다(弾む·行った(行う) 등 동음 다른
+                # 낱말) — 대입 방향을 짐작하지 않는다.
+                continue
+            suffix = reading[len(matched):]
+            if not allow_sokuon and suffix.startswith("っ"):
+                # 行った類의 촉음편은 いく 전용 활용이라 ゆ 쪽에 대응하는 형태가 존재하지
+                # 않는다 — 대입 방향을 만들지 않는다(위 표 주석 참조).
+                continue
+            alternative = alt_prefix + suffix
+            candidate_tokens = _substitute_reading(default_tokens, [token], alternative)
+            rendered = _render_pronunciation(text, candidate_tokens)
+            if rendered:
+                out.append(rendered)
+    return out
+
+
+def pronunciation_candidates(text: str, *, max_candidates: int = 8) -> list[str]:
     """오디오 심판(``ctc_engine``)에 넘길 후보 독음 목록. ``[0]``이 기본값이다.
 
-    왜 후보인가: 결정론 발음 표기는 사람이 쓴 보카로 위키 발음 2,207줄 대비 82.1%까지 왔고
-    남은 불일치가 거의 전부 **"어느 독음이 맞나"** 하나로 수렴한다 — 私 와타시/와타쿠시,
-    三日月 미카즈키/밋카츠키, 数え事 카조에 고토/코토(연탁), 何も 나니모/난모, 涙（シル）의
-    아테지. 사전은 이걸 모르지만 오디오는 안다. 그래서 여기서는 **고르지 않고** 서로 다른
-    독음이 실제로 나오는 축만 모아 준다:
+    **후보는 ``_AMBIGUOUS_WORDS``/``_STEM_AMBIGUOUS_WORDS`` 표에 있는 낱말의 대립 읽기로만
+    제한된다.** 예전에는 nbest·pykakasi·루비 미채택·표층 읽기(phonetic=False)까지 전부
+    후보 축으로 썼지만, 실오디오 검증에서 그 구현은 해로웠다(위 표 앞의 실측 참고) —
+    삭제가 섞이고, kor 어댑터가 못 듣는 표기 변종이 섞여 신호를 익사시켰다. 표로
+    제한하고 재측정하니 8건 맞고 0건 틀렸다. 사전은 표의 낱말이 어느 쪽으로 읽히는지
+    모르지만(문맥·표기만으로는 원리적으로 못 가른다) 오디오는 안다 — 그래서 그 축만
+    후보로 남긴다.
 
-    1. 기본 — ``phonetic=True`` + 루비 채택 (``wiki_pronunciation``과 완전히 동일)
-    2. 루비 미채택 — 루비가 있는 라인만. 위키가 한자 독음과 루비를 **둘 다** 적는 경우가
-       있어 루비 채택의 순이득이 +0.7p(개선 14줄 / 악화 6줄)에 그쳤다. 그 6줄이 이 축이다.
-    3. 표층 읽기(``phonetic=False``) — 조사 は가 「하」가 되는 변종. 음가 우선이 실측
-       +3.5p(72.0%→75.5%)지만 뒤집히는 줄이 남는다.
-    4. MeCab N-best 대안 파스 — 위 예시의 갈림이 정확히 여기 있다(실측 확인).
-    5. pykakasi — 한자 독음이 갈리는 변종 (止められない: やめ vs とめ).
+    기본값(``[0]``)은 항상 ``phonetic=True`` + 루비 채택(``wiki_pronunciation``과 완전히
+    동일)이다. 그 뒤에 줄에서 실제로 걸린 애매 낱말마다 **그 낱말만** 대립 읽기로 바꾼
+    후보를 하나씩 붙인다(활용 동사는 어간만, 나머지는 낱말 전체). 중복은 제거하고
+    순서를 보존한다.
 
-    중복은 제거하고 순서를 보존한다. 반환이 1개면(또는 빈 목록이면) **후보 없음**이며
-    호출부는 심판을 아예 돌리지 않는다 → 비용 0. 일본어가 없는 라인은 빈 목록.
-
-    일본어가 없는 라인(라틴만)은 ``wiki_pronunciation``이 음차를 내지만 여기서는 빈 목록을
-    준다 — 후보의 존재 이유는 **한자·조사 독음의 갈림**이고, 라틴만 있는 줄에는 갈릴 것이
-    없어 어느 파스로 렌더해도 같은 음차가 나온다. 빈 목록이면 호출부가 심판을 돌리지 않아
-    비용이 0이다.
-
-    기본값 ``nbest=16``/``max_candidates=8``의 근거: 三日月の夜의 사람 표기(미카즈키)는
-    nbest 얕은 깊이에서 안 나오고 16에서 7번째 후보로 들어온다(실측). 생성 비용은 60줄
-    0.064초로 무시할 수준이고, 후보가 늘어난 만큼의 오채택 위험은 심판의 마진이 막는다.
+    반환이 1개면(또는 빈 목록이면) **후보 없음**이며 호출부는 심판을 아예 돌리지 않는다
+    → 비용 0. 애매 낱말이 없는 압도적 다수의 줄이 이 경우다. 일본어가 없는 라인은
+    빈 목록(``wiki_pronunciation``은 라틴만 있는 줄도 음차를 내지만, 후보의 존재 이유인
+    "낱말 독음의 갈림"이 라틴 줄엔 없다).
     """
     if not _has_japanese(text) or max_candidates <= 0:
         return []
 
-    out: list[str] = []
-
-    def add(tokens: list[ReadingToken]) -> None:
-        if len(out) >= max_candidates:
-            return
-        rendered = _render_pronunciation(text, tokens)
-        if rendered and rendered not in out:
-            out.append(rendered)
-
-    add(tokenize_reading(text, phonetic=True, adopt_ruby=True))
-    if not out:
+    default_tokens = tokenize_reading(text, phonetic=True, adopt_ruby=True)
+    default = _render_pronunciation(text, default_tokens)
+    if not default:
         # 기본값을 못 만드는 라인은 후보 비교의 기준이 없다 — 심판 대상이 아니다.
         return []
-    if has_ruby(text):
-        add(tokenize_reading(text, phonetic=True, adopt_ruby=False))
-    add(tokenize_reading(text, phonetic=False, adopt_ruby=True))
-    for parse in tokenize_reading_nbest(text, n=nbest, phonetic=True, adopt_ruby=True):
+
+    out = [default]
+    for candidate in (
+        *_ambiguous_word_candidates(text, default_tokens),
+        *_stem_word_candidates(text, default_tokens),
+    ):
         if len(out) >= max_candidates:
             break
-        add(parse)
-    add(tokenize_reading_pykakasi(text))
+        if candidate not in out:
+            out.append(candidate)
     return out
