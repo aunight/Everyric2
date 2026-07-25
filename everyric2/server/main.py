@@ -41,10 +41,19 @@ def _gpu_available() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 만료 리스 주기 스윕을 여기서만 띄운다 — 임포트 시점에 뜨면 실행 중인 루프가 없고,
+    # 앱을 띄우지 않는 테스트에 태스크가 남는다 (api/worker.start_lease_sweeper 주석 참고).
+    from everyric2.server.api.worker import start_lease_sweeper, stop_lease_sweeper
+
     await init_db()
     _gpu_available()  # 기동 시 프리웜 — 첫 /health가 2초 페널티를 물지 않게
-    yield
-    await close_db()
+    start_lease_sweeper()
+    try:
+        yield
+    finally:
+        # 예외로 끝나는 종료에서도 태스크를 반드시 회수한다 (누수 금지)
+        await stop_lease_sweeper()
+        await close_db()
 
 
 app = FastAPI(

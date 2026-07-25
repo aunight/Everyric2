@@ -12,6 +12,7 @@ GPU 등)가 돌린다. 인증은 X-Worker-Key(EVERYRIC_SERVER_WORKER_KEY) 한 �
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -131,7 +132,7 @@ async def _prepare_worker_audio(
 
 
 async def _sweep_expired_leases() -> None:
-    """만료 리스의 잡을 queued로 되돌리고 레지스트리에서 제거 (claim 시 lazy 호출).
+    """만료 리스의 잡을 queued로 되돌리고 레지스트리에서 제거 (claim + 주기 태스크가 호출).
 
     아직 processing인 잡만 복원한다 — 그 사이 완료/실패(취소 포함)했으면 그대로 둔다.
     스태시(line_meta 등)는 peek 방식이라 재클레임 시 다시 전달된다. 링크 잡("link:{id}")도
@@ -157,6 +158,98 @@ async def _sweep_expired_leases() -> None:
         _LEASES.pop(key, None)
         if not key.startswith("link:"):
             _cleanup_worker_audio(key)
+
+
+# ── 만료 리스 주기 스윕 ───────────────────────────────────────────
+#
+# 스윕이 claim에만 얹혀 있으면 **워커가 하나인 배포에서 그 워커가 죽는 순간 스윕이 영영
+# 발화하지 않는다** — 이후 claim이 없으니 만료 리스를 훑는 주체가 없고, 잡은 processing에
+# 영구 정착한다. 2차 피해가 더 크다: get_active_by_video가 pending/queued/processing을
+# 활성으로 보므로 이후 같은 (video, lyrics) 요청이 죽은 잡에 합류해 새 잡을 만들지 않는다
+# → 서버 재기동까지 그 가사로는 재생성이 불가능하다(그 영상이 봉인된다).
+#
+# 그래서 스윕을 claim에서 떼어 앱 lifespan의 주기 태스크로도 돌린다. claim 안의 lazy 스윕은
+# 그대로 남긴다 — 다중 워커에서는 그쪽이 회수 지연을 0에 가깝게 줄인다.
+#
+# 조회 경로(get_active_by_video)에서 "리스 만료 잡은 활성으로 세지 않는" 대안은 채택하지
+# 않았다: 리스는 원격 워커 잡에만 존재하고, **인프로세스 워커(local_worker=true)와
+# _queue_after_line_meta의 "번역 대기" 구간은 리스 없이 정상적으로 processing**이다.
+# 리스 부재를 사망으로 읽으면 살아 있는 그 잡들을 죽은 것으로 오판해 같은 영상에 중복 잡을
+# 만들고, 두 잡이 같은 임시 오디오를 잡아 WinError 32를 부른다(합류 로직이 막으려던 바로 그
+# 사고). 리스 만료는 리스를 아는 쪽에서만 판정한다.
+#
+# 간격: 회수 지연 상한이 이 간격이므로 리스 만료(worker_lease_sec, 기본 120s)보다 충분히
+# 짧게 잡는다. 리스가 하나도 없으면 _sweep_expired_leases가 DB를 건드리지 않고 즉시
+# 반환하므로 워커 풀을 쓰지 않는 배포에서는 비용이 사실상 0이다.
+LEASE_SWEEP_INTERVAL_SEC = 20.0
+
+_SWEEPER_TASK: asyncio.Task | None = None
+
+
+async def _lease_sweep_loop() -> None:
+    """LEASE_SWEEP_INTERVAL_SEC마다 만료 리스를 스윕한다 (취소로만 끝난다).
+
+    한 번의 실패로 루프가 죽으면 위의 영구 processing 결함이 그대로 돌아오므로, 스윕
+    예외는 로그로 남기고 다음 주기에 재시도한다 (취소는 그대로 전파해야 종료가 된다).
+    첫 스윕 전에 한 번 기다리는 것은 의도다 — 기동 직후의 좀비는 init_db의 재기동 정리가
+    이미 처리했고, 리스 레지스트리는 그 시점에 비어 있다.
+
+    _CLAIM_LOCK을 잡지 않는다: 스윕은 **이미 만료된**(exp < now) 리스만 건드리고 claim은
+    락 안에서 항상 방금 만든 리스를 넣으므로 둘이 같은 항목을 다툴 수 없다. 잡을 processing
+    으로 마킹한 뒤 리스를 넣기 전의 짧은 창에도 그 잡은 레지스트리에 없어 스윕 대상이
+    아니다. 반대로 락을 잡으면 DB가 느린 순간의 스윕이 워커 claim 전체를 막는다.
+    """
+    while True:
+        await asyncio.sleep(LEASE_SWEEP_INTERVAL_SEC)
+        try:
+            await _sweep_expired_leases()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Lease sweep failed; retrying at the next interval")
+
+
+def start_lease_sweeper() -> None:
+    """주기 스윕 시작 — **앱 lifespan에서만 호출한다**. 멱등.
+
+    임포트 시점에 태스크를 만들지 않는 것이 중요하다: 이 레포의 서버 테스트는 앱을 띄우지
+    않고 라우트 코루틴을 직접 await하므로(httpx 미사용 규약), 임포트만으로 태스크가 뜨면
+    실행 중인 루프가 없어 실패하거나 테스트 루프에 매달린 태스크가 남는다.
+    """
+    global _SWEEPER_TASK
+    if _SWEEPER_TASK is None or _SWEEPER_TASK.done():
+        _SWEEPER_TASK = asyncio.create_task(_lease_sweep_loop())
+
+
+async def stop_lease_sweeper() -> None:
+    """주기 스윕 취소 + 종료 확인 — lifespan 종료에서 반드시 호출한다 (태스크 누수 금지)."""
+    global _SWEEPER_TASK
+    task = _SWEEPER_TASK
+    _SWEEPER_TASK = None
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def reclaim_expired_leases() -> None:
+    """만료 리스 회수 — 생성 경로(api/sync)가 활성 잡을 보기 **전에** 부르는 공개 진입점.
+
+    주기 태스크와 **같은 함수**를 호출한다. 사망 판정 규칙을 두 곳에 각각 두면 언젠가
+    갈라지고, 갈라진 쪽이 살아 있는 잡을 죽었다고 부르는 순간 중복 잡이 생긴다.
+
+    이것이 ①의 두 번째 방어선이며 **이벤트 루프에 의존하지 않는다**: 주기 태스크가 아직
+    돌지 않았거나(간격 이내) 어떤 이유로든 죽었더라도, 죽은 워커의 잡이 그 (영상, 가사)의
+    재생성을 막고 있으면 생성 요청 자체가 그것을 회수한다.
+
+    "리스가 만료된 잡을 활성 목록에서 **제외**"하는 방식을 쓰지 않은 이유: 제외만 하면 죽은
+    잡은 여전히 processing으로 남은 채 새 잡이 하나 더 생기고, 나중에 스윕이 죽은 잡을
+    queued로 되돌리는 순간 같은 (영상, 가사) 잡이 둘 돌게 된다. 회수를 먼저 하면 그 잡이
+    queued가 되어 요청은 **살아 있는 그 잡에 합류**한다 — 봉인은 풀리고 중복은 없다.
+    리스가 하나도 만료돼 있지 않으면 DB를 건드리지 않고 즉시 반환한다.
+    """
+    await _sweep_expired_leases()
 
 
 # ── 요청/응답 모델 ────────────────────────────────────────────────

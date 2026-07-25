@@ -11,6 +11,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from everyric2.config.settings import get_settings
 from everyric2.server.db.connection import get_session
 from everyric2.server.db.repository import LinkJobRepository
 
@@ -42,7 +43,13 @@ class LinkJobStatusResponse(BaseModel):
 @router.post("", response_model=LinkJobCreateResponse)
 async def create_link_job(request: LinkJobRequest):
     """링크 검증 잡 생성. 자기 자신 검증은 거부. 같은 쌍이 이미 진행 중(queued/processing)이면
-    새 잡을 만들지 않고 그 id를 돌려준다(중복 방지)."""
+    새 잡을 만들지 않고 그 id를 돌려준다(중복 방지).
+
+    **최근에 끝난 같은 쌍도 재제출하지 않는다** — 이 경로의 억제는 진행 중 중복 확인뿐이라,
+    done/failed로 끝난 쌍을 호출자가 반복 제출하면 영상 2개 다운로드 + demucs ×2 + 상관을
+    매번 새로 태울 수 있었다(쿨다운은 후보 자동 제출 경로에만 걸려 있었다). 자동 제출 경로와
+    같은 기준(link_retry_cooldown_days)을 쓰고, 그 이력 잡의 id를 돌려준다 — 호출자는
+    GET /api/link-jobs/{id}로 이미 나온 판정을 그대로 읽을 수 있다."""
     if request.video_id == request.source_video_id:
         raise HTTPException(status_code=400, detail="Cannot validate a video against itself")
     async with get_session() as session:
@@ -50,6 +57,13 @@ async def create_link_job(request: LinkJobRequest):
         active = await repo.get_active_pair(request.video_id, request.source_video_id)
         if active:
             return LinkJobCreateResponse(id=active.id)
+        recent = await repo.get_recent_attempt(
+            request.video_id,
+            request.source_video_id,
+            get_settings().server.link_retry_cooldown_days,
+        )
+        if recent:
+            return LinkJobCreateResponse(id=recent.id)
         link_job = await repo.create(request.video_id, request.source_video_id)
         return LinkJobCreateResponse(id=link_job.id)
 

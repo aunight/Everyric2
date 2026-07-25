@@ -78,6 +78,27 @@ async def init_db():
             logging.getLogger(__name__).warning(
                 f"Reset {result.rowcount} zombie jobs left from a previous run"
             )
+        # 링크 검증 잡도 같은 좀비를 남긴다 — 이 정리가 없으면 processing으로 영구 잔류하고
+        # 리스 레지스트리(_LEASES)는 재기동으로 유실돼 만료 스윕도 되돌릴 수 없다.
+        # get_active_pair가 그 잡을 활성(queued/processing)으로 보므로 같은 (커버, 원곡) 쌍은
+        # 영구 pending이 되어 그 커버는 다시는 링크를 얻지 못한다.
+        #
+        # **failed가 아니라 queued로 되돌린다.** sync 잡을 failed로 마감하는 이유는 인메모리
+        # 스태시(line_meta·출처·제목·force)가 재기동으로 유실돼 그대로 재개하면 번역·독음이
+        # 조용히 사라지기 때문인데, 링크 잡은 행 안의 (video_id, source_video_id)만으로
+        # 완결돼 유실될 상태가 없다. 오히려 failed가 더 해롭다: get_recent_attempt가 최근
+        # failed를 쿨다운(link_retry_cooldown_days, 기본 14일)으로 세어 같은 쌍의 자동 재제출을
+        # 막으므로 그 커버는 2주간 링크를 못 얻는다. queued면 워커가 다시 물어 완주한다.
+        # (queued 링크 잡은 손대지 않는다 — 아직 아무도 물지 않았으므로 그대로 유효하다.)
+        link_result = await conn.execute(
+            _text("UPDATE link_jobs SET status='queued' WHERE status='processing'")
+        )
+        if link_result.rowcount:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                f"Requeued {link_result.rowcount} zombie link jobs left from a previous run"
+            )
 
 
 async def close_db():

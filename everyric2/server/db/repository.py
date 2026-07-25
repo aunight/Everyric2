@@ -23,6 +23,11 @@ class SyncRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def get_by_id(self, sync_id: str) -> SyncResult | None:
+        """싱크 id로 정확히 한 건 — 잡이 실제로 만든 결과(job.result_id)를 짚을 때 쓴다."""
+        result = await self.session.execute(select(SyncResult).where(SyncResult.id == sync_id))
+        return result.scalar_one_or_none()
+
     async def get_by_video_and_hash(self, video_id: str, lyrics_hash: str) -> SyncResult | None:
         # force 재생성은 같은 (video_id, lyrics_hash) 행을 여러 개 만들 수 있다 — 최신 우선
         result = await self.session.execute(
@@ -266,6 +271,37 @@ class JobRepository:
             values["stage"] = stage
 
         await self.session.execute(update(Job).where(Job.id == job_id).values(**values))
+
+    async def update_status_if(
+        self,
+        job_id: str,
+        status: str,
+        expected: tuple[str, ...],
+        progress: int | None = None,
+        error: str | None = None,
+        stage: str | None = None,
+    ) -> bool:
+        """현재 status가 expected 안에 있을 때만 상태를 쓴다 (조건부 UPDATE). 썼으면 True.
+
+        무조건 쓰기(update_status)는 취소와 경합한다: 취소 확인과 상태 쓰기 사이에 취소 API가
+        끼면 방금 failed로 마킹된 잡이 되살아난다. 실제 사례가 sync.py의
+        _queue_after_line_meta 말미다 — 되살아난 queued를 워커가 물어 processing이 되고,
+        취소된 잡은 워커가 fail을 제출하지 않으므로 processing에 남고, 만료 스윕이 다시
+        queued로 되돌려 **무한 진동**한다. WHERE에 현재 상태를 넣어 읽기-쓰기를 한 문장으로
+        만들면 그 창이 사라진다.
+        """
+        values: dict[str, Any] = {"status": status}
+        if progress is not None:
+            values["progress"] = progress
+        if error is not None:
+            values["error"] = error
+        if stage is not None:
+            values["stage"] = stage
+
+        result = await self.session.execute(
+            update(Job).where(Job.id == job_id, Job.status.in_(expected)).values(**values)
+        )
+        return bool(result.rowcount)
 
 
 class VideoOffsetRepository:

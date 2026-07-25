@@ -88,8 +88,19 @@ async def get_job_status(job_id: str):
 
         if job.status == "completed" and job.result_id:
             sync_repo = SyncRepository(session)
-            results = await sync_repo.get_by_video(job.video_id)
-            if results:
-                response.timestamps = results[0].timestamps.get("segments", [])
+            # **이 잡이 만든 싱크**를 돌려준다. 최신 싱크를 돌려주면 그 사이 같은 영상에 다른
+            # 가사로 만들어진 싱크가 이 잡의 결과로 나가 계약이 틀린다 (result_id를 저장해
+            # 두고도 무시하던 동작).
+            result = await sync_repo.get_by_id(job.result_id)
+            if result is None:
+                # 그 행이 사라졌을 때만 최신으로 폴백한다 — DELETE /api/sync/{video_id}
+                # (싱크 초기화)는 sync_results만 지우고 completed 잡 행은 남기므로,
+                # result_id가 죽은 id를 가리키는 상태가 실제로 생긴다. 되살릴 수 없는 id
+                # 하나 때문에 응답을 비우는 것보다 같은 영상의 최신 싱크를 주는 편이 낫다
+                # (기존 동작과 동일한 폴백이라 회귀도 없다).
+                results = await sync_repo.get_by_video(job.video_id)
+                result = results[0] if results else None
+            if result is not None:
+                response.timestamps = result.timestamps.get("segments", [])
 
         return response

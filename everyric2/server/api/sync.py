@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 from everyric2.config.settings import get_settings
 from everyric2.server import title_match
+
+# 리스 회수는 워커 API가 소유한다 (레지스트리가 거기 있다). api/worker는 api/sync를
+# 임포트하지 않으므로 순환이 없다 — 요청마다 함수 내 임포트를 반복하지 않게 최상위로 둔다.
+from everyric2.server.api.worker import reclaim_expired_leases
 from everyric2.server.db.connection import get_session
 from everyric2.server.db.repository import (
     ActionLogRepository,
@@ -23,14 +27,69 @@ from everyric2.server.db.repository import (
 logger = logging.getLogger(__name__)
 
 
-async def _check_destructive_limit(session, action: str, video_id: str, api_key: str | None):
-    """파괴적 행위(강제 재생성·초기화) 일일 한도 — admin_api_key가 설정된 배포에서만.
+# ── GPU를 태우는 경로의 일일 상한 (action_logs 기반, 영상·행위별 24시간) ──────────
+#
+# 파괴적 행위(daily_destructive_limit, 기본 2회)와 **같은 기전**을 상한만 달리해 재사용한다.
+# 설정으로 올릴 후보라 값의 근거를 붙여 모듈 상수로 둔다.
 
-    키가 미설정이면(로컬 사용) 제한 없음. 키 보유 요청은 어드민으로 보고 통과.
-    통과 시 로그를 남겨 다음 검사에 반영한다.
+# POST /api/sync/generate — 이 경로에는 한도가 전혀 없었다. 가사를 한 글자만 바꾸면 매번 새
+# lyrics_hash가 되어 캐시·합류를 모두 비켜 새 GPU 잡이 생긴다. 다만 이건 제품의 **주 경로**라
+# 파괴적 행위와 같은 2회로 잡으면 정상 사용이 망가진다: 오탈자 수정, 다른 가사 판본 시도,
+# 실패 후 재시도로 한 영상에 여러 번 생성하는 것은 흔하다. 20회/24h는 그 여유를 크게 남기면서
+# (하루 20번 같은 영상에 새 가사로 생성하는 정상 사용자는 없다) 무한 반복은 잘라낸다.
+# 캐시 히트·진행 중 잡 합류는 GPU를 쓰지 않으므로 세지 않는다 (검사 위치가 잡 생성 직전).
+DAILY_GENERATE_LIMIT = 20
+
+# GET /api/sync/{video_id}/link-candidates — GET 하나가 GPU 잡(영상 2개 다운로드 + demucs ×2
+# + 상관)을 제출한다. 억제가 (video_id, 후보) 쌍 쿨다운뿐이라 같은 영상에서도 후보를 바꿔가며
+# 반복 제출이 가능했다. 같은 영상에서 자동 후보 제출이 하루 3번을 넘을 이유가 없다 — 상위
+# 후보 1건만 제출하고, 그 후보가 쿨다운에 걸려도 다음 후보로 넘어가는 경로는 없다.
+DAILY_LINK_CANDIDATE_LIMIT = 3
+
+# 가사 하한 — 이 줄 수를 못 넘기는 생성 요청은 잡을 만들지 않고 400으로 거절한다.
+#
+# 왜: lyrics에 최소 길이 제약이 없어 빈 가사가 무검증 통과하면 정렬 결과가 0줄이고, 그 0줄이
+# completed로 저장돼 이후 같은 lyrics_hash는 **캐시 히트로 영구히 0줄**을 돌려준다
+# (GET /api/sync/{id}가 found:true, timestamps:[]를 낸다 → 사용자에겐 "싱크가 있다"고 표시된
+# 채 가사가 영원히 안 나오고, 같은 가사로는 다시 생성할 수도 없다).
+#
+# 값이 자막 경로(services.youtube_captions.MIN_LYRIC_LINES=3)와 다른 이유: 그 3줄은 «[음악]»
+# 류 효과음 표기뿐인 자동자막을 걸러내는 값이고, /generate의 가사는 사용자가 의도해 붙여넣은
+# 것이라 짧은 후크 한 줄도 정당한 입력이다. 영구 0줄 봉인은 1줄 하한으로 완전히 막힌다.
+MIN_LYRICS_LINES = 1
+
+# 가사 한 줄로 인정하는 조건 — 공백·구두점만 있는 줄은 세지 않는다 ("...\n---" 같은 입력이
+# 하한을 통과해 0줄 정렬로 가는 것을 막는다). \w는 유니코드라 한글·가나·한자를 센다.
+_LYRIC_WORD_RE = re.compile(r"\w")
+
+
+def _validate_lyrics(lyrics: str) -> None:
+    """생성 요청의 가사 하한 검사 — 미달이면 400 + 무엇을 하면 되는지 알리는 한국어 사유."""
+    usable = sum(1 for line in lyrics.splitlines() if _LYRIC_WORD_RE.search(line))
+    if usable < MIN_LYRICS_LINES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"가사에 글자가 있는 줄이 {MIN_LYRICS_LINES}줄 이상 필요해요 "
+                "(지금은 비어 있거나 공백·기호뿐이에요). 가사를 붙여넣고 다시 시도해 주세요."
+            ),
+        )
+
+
+async def _check_action_limit(
+    session, action: str, video_id: str, api_key: str | None, limit: int
+) -> None:
+    """(action, video_id) 24시간 횟수 상한 — admin_api_key가 설정된 배포에서만.
+
+    키가 미설정이면(로컬 사용) 제한 없음. 어드민 키 보유 요청은 통과.
+    통과 시 로그를 남겨 다음 검사에 반영한다. 초과면 429.
+
+    **한계(의도적)**: 키가 (행위, 영상)이라 같은 영상의 반복만 막고, 임의의 11자 video_id를
+    바꿔 가며 새 영상으로 부르는 순환은 막지 못한다. 전역 상한으로 바꾸면 한 사용자의 남용이
+    다른 모든 사용자의 정상 생성을 함께 막으므로, 이 층에서는 영상 단위가 옳다 — 순환 남용은
+    상위(요청자 단위 인증·쿼터)에서 다뤄야 한다.
     """
     server = get_settings().server
-    limit = server.daily_destructive_limit
     if not server.admin_api_key or limit <= 0 or api_key == server.admin_api_key:
         return
     log_repo = ActionLogRepository(session)
@@ -40,6 +99,13 @@ async def _check_destructive_limit(session, action: str, video_id: str, api_key:
             detail=f"이 영상의 {action} 일일 한도({limit}회/24시간)에 도달했어요. 내일 다시 시도해 주세요.",
         )
     await log_repo.log(action, video_id)
+
+
+async def _check_destructive_limit(session, action: str, video_id: str, api_key: str | None):
+    """파괴적 행위(강제 재생성·초기화) 일일 한도 — daily_destructive_limit(기본 2회/24h)."""
+    await _check_action_limit(
+        session, action, video_id, api_key, get_settings().server.daily_destructive_limit
+    )
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -92,7 +158,12 @@ async def _queue_after_line_meta(job_id: str) -> None:
     대기 중에는 status=processing + stage="번역 대기"로 둔다 — 확장이 무엇을 기다리는지
     보이고, queued가 아니라 워커의 get_oldest_queued에도 잡히지 않는다. 대기 중 취소되면
     큐에 올리지 않고 끝낸다. 상한은 유한하므로(LINE_META_WAIT_SEC) 확장이 아무것도 보내지
-    않아도 잡은 결국 큐로 올라가 원문 정렬로 완주한다."""
+    않아도 잡은 결국 큐로 올라가 원문 정렬로 완주한다.
+
+    **말미의 queued 쓰기는 조건부다.** 취소 확인(_consume_cancel)과 그 쓰기 사이에 취소
+    요청이 들어오면 무조건 쓰기는 방금 failed가 된 잡을 queued로 되살린다 → 워커가 물어
+    processing이 되고, 취소된 잡은 워커가 fail을 제출하지 않아 processing에 남고, 만료
+    스윕이 다시 queued로 돌려 무한 진동한다. 아직 대기 중(processing)일 때만 쓴다."""
     from everyric2.server.worker import (
         LINE_META_WAIT_SEC,
         LINE_META_WAIT_STAGE,
@@ -119,7 +190,14 @@ async def _queue_after_line_meta(job_id: str) -> None:
             LINE_META_WAIT_SEC,
         )
     async with get_session() as session:
-        await JobRepository(session).update_status(job_id, "queued", progress=0)
+        # 위 취소 확인 이후에 들어온 취소도 여기서 이긴다 — processing(대기 중)일 때만 쓴다
+        queued = await JobRepository(session).update_status_if(
+            job_id, "queued", expected=("processing",), progress=0
+        )
+    if not queued:
+        # 대기 중 종결된 잡(취소·실패) — 되살리지 않는다. 되살리면 워커가 물고, 취소된 잡은
+        # fail을 제출하지 않아 processing에 남고, 만료 스윕이 다시 queued로 돌려 진동한다.
+        logger.info("Job %s: no longer waiting when line_meta finished; not queued", job_id)
 
 
 class SyncLookupResponse(BaseModel):
@@ -484,7 +562,7 @@ FOLLOWUP_LINK_VALIDATE = "link_validate"
 
 
 async def _dispatch_candidate_followup(
-    session, video_id: str, candidate_video_id: str
+    session, video_id: str, candidate_video_id: str, api_key: str | None = None
 ) -> tuple[str, str, str | None]:
     """후보를 확정한 뒤 **무엇을 제출할지** 결정하는 단일 교체 지점. (kind, status, job_id) 반환.
 
@@ -500,6 +578,10 @@ async def _dispatch_candidate_followup(
       - 같은 (영상, 후보) 쌍의 재제출 억제를 반드시 자체적으로 유지할 것 — 진행 중이면
         pending, 최근에 끝난 이력이 있으면 cooldown. 이게 없으면 사용자가 같은 영상을
         열 때마다 GPU가 다시 돈다(현재 쿨다운 기준: link_retry_cooldown_days).
+      - 실제 제출 직전에 영상 단위 일일 상한(_check_action_limit)을 통과할 것 — 쌍 쿨다운은
+        후보를 바꾸면 비켜 가므로, GET 하나가 GPU 잡을 만드는 이 경로에는 쌍과 무관한
+        상한이 한 겹 더 필요하다. 초과는 429다(확장은 이 조회의 실패를 조용히 무시한다 —
+        content.ts probeLinkCandidates: `if (!data) return;`).
       - kind는 클라이언트가 진행 상태를 어느 API로 폴링할지 가르는 값이므로, 새 종류를
         도입하면 그 종류의 조회 경로도 함께 알려야 한다.
     """
@@ -514,6 +596,10 @@ async def _dispatch_candidate_followup(
     )
     if recent:
         return FOLLOWUP_LINK_VALIDATE, "cooldown", recent.id
+    # 억제(pending/cooldown)를 모두 통과해 실제로 GPU 잡을 만드는 지점 — 여기서만 센다
+    await _check_action_limit(
+        session, "link_candidates", video_id, api_key, DAILY_LINK_CANDIDATE_LIMIT
+    )
     link_job = await repo.create(video_id, candidate_video_id)
     return FOLLOWUP_LINK_VALIDATE, "submitted", link_job.id
 
@@ -523,6 +609,7 @@ async def find_link_candidates(
     video_id: str,
     title: Annotated[str, Query(min_length=1, max_length=256)],
     artist: Annotated[str | None, Query(max_length=128)] = None,
+    x_api_key: str | None = Header(default=None),
 ):
     """이 영상과 같은 곡일 만한 코퍼스 영상을 제목으로 찾고, 최상위 후보 1건에 대해
     후속 작업을 자동 제출한다 (무엇을 제출할지는 _dispatch_candidate_followup이 정한다 —
@@ -535,7 +622,9 @@ async def find_link_candidates(
 
     자기 싱크가 있거나 이미 링크가 있으면 후보 없이 즉시 반환한다. 같은 쌍을 최근
     link_retry_cooldown_days 안에 이미 시도했으면 재제출하지 않는다 — 사용자가 같은 영상을
-    반복해 열 때마다 GPU를 다시 태우는 남용 경로를 막는다."""
+    반복해 열 때마다 GPU를 다시 태우는 남용 경로를 막는다. 쌍 쿨다운은 후보를 바꾸면 비켜
+    가므로 실제 제출에는 영상 단위 일일 상한(DAILY_LINK_CANDIDATE_LIMIT)이 한 겹 더 걸린다
+    (초과 시 429)."""
     _validate_video_id(video_id)
     server = get_settings().server
 
@@ -576,7 +665,7 @@ async def find_link_candidates(
         # (c) 최상위 후보 1건만 인프로세스로 제출한다 (여러 후보 순차 재시도는 넣지 않는다).
         # 무엇을 제출할지는 _dispatch_candidate_followup 한 곳에서만 정해진다
         kind, status, job_id = await _dispatch_candidate_followup(
-            session, video_id, candidates[0].video_id
+            session, video_id, candidates[0].video_id, x_api_key
         )
         return LinkCandidatesResponse(
             video_id=video_id,
@@ -666,19 +755,34 @@ async def reset_video_syncs(video_id: str, x_api_key: str | None = Header(defaul
 
 
 @router.post("/generate", response_model=GenerateResponse)
-async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTasks):
+async def generate_sync(
+    request: GenerateRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: str | None = Header(default=None),
+):
     """가사로 싱크 생성 잡을 만든다 (기존 싱크가 있으면 즉시 completed).
 
     line_meta(발음/번역)는 **선택**이다. 본문에 실어 보내는 기존 경로가 그대로 동작하고,
     아직 번역이 안 끝났으면 line_meta_pending=true로 잡을 먼저 만들어 다운로드·보컬 분리를
     선행시킨 뒤 POST /api/sync/jobs/{job_id}/line-meta로 붙일 수 있다 (응답의
-    line_meta_wait_sec이 서버가 실제로 기다려 주는 상한)."""
+    line_meta_wait_sec이 서버가 실제로 기다려 주는 상한).
+
+    공개 배포(admin_api_key 설정)에서는 새 잡을 만드는 요청에 DAILY_GENERATE_LIMIT이
+    걸린다 — 캐시 히트·진행 중 잡 합류는 GPU를 쓰지 않으므로 세지 않는다."""
     from everyric2.server.worker import LINE_META_WAIT_SEC
 
+    _validate_lyrics(request.lyrics)
     lyrics_hash_value = hash_lyrics(request.lyrics)
     # 본문에 line_meta가 이미 있으면 기다릴 것이 없다 — 플래그보다 실제 값이 우선
     await_line_meta = request.line_meta_pending and not request.line_meta
     wait_sec = LINE_META_WAIT_SEC if await_line_meta else 0.0
+
+    # 활성 잡을 보기 **전에** 만료 리스를 회수한다 (락 밖 — 중첩 세션 금지).
+    # 죽은 워커가 물고 있던 잡은 processing에 남아 get_active_by_video에 활성으로 잡히고,
+    # 그러면 이 요청이 죽은 잡에 합류해 그 (영상, 가사)는 재기동까지 재생성 불가가 된다.
+    # 주기 스윕이 이미 그 일을 하지만 여기서 한 번 더 하는 것이 **이벤트 루프에 의존하지
+    # 않는 방어선**이다 — 주기 태스크가 아직 안 돌았거나(간격 이내) 죽어 있어도 봉인이 풀린다.
+    await reclaim_expired_leases()
 
     # 확인(기존 싱크/활성 잡)→생성 사이에 다른 요청이 끼면 중복 잡이 생긴다 — 직렬화
     async with _CREATE_LOCK, get_session() as session:
@@ -721,6 +825,11 @@ async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTa
                 estimated_time=15,
                 line_meta_wait_sec=wait_sec,
             )
+        # 여기부터가 실제로 GPU를 태우는 유일한 분기 — 한도 검사는 이 지점이어야 한다
+        # (위의 캐시 히트·합류에서 예산을 먹으면 정상 사용이 헛되게 소모된다)
+        await _check_action_limit(
+            session, "generate", request.video_id, x_api_key, DAILY_GENERATE_LIMIT
+        )
         job = await job_repo.create(
             video_id=request.video_id,
             lyrics=request.lyrics,
@@ -771,6 +880,29 @@ class LineMetaAttachResponse(BaseModel):
     merged_segments: int = 0
 
 
+async def _merge_meta_into_completed_job(
+    session,
+    job,
+    line_meta: list[LineMeta],
+    attribution: Attribution | None,
+    title: str | None,
+    artist: str | None,
+) -> LineMetaAttachResponse:
+    """완료된 잡의 싱크에 메타를 직접 병합 — merged, 싱크를 못 찾으면 dropped.
+
+    정렬은 다시 하지 않는다 (캐시 히트로 몇 초 만에 끝난 잡이 대표적).
+    """
+    sync_repo = SyncRepository(session)
+    existing = await sync_repo.get_by_video_and_hash(job.video_id, job.lyrics_hash)
+    if existing is None:
+        return LineMetaAttachResponse(job_id=job.id, status=job.status, applied="dropped")
+    merged = _merge_meta_into_sync(existing, line_meta, attribution)
+    await sync_repo.set_title_if_missing(existing, title, artist)
+    return LineMetaAttachResponse(
+        job_id=job.id, status=job.status, applied="merged", merged_segments=merged
+    )
+
+
 async def _attach_line_meta_to_job(
     job_id: str,
     line_meta: list[LineMeta],
@@ -791,18 +923,8 @@ async def _attach_line_meta_to_job(
             return None
 
         if job.status == "completed":
-            # 이미 끝난 잡 (캐시 히트로 몇 초 만에 완료된 경우가 대표적) — 정렬은 다시 하지
-            # 않고 완성된 싱크에 발음·번역만 병합한다
-            sync_repo = SyncRepository(session)
-            existing = await sync_repo.get_by_video_and_hash(job.video_id, job.lyrics_hash)
-            if existing is None:
-                return LineMetaAttachResponse(
-                    job_id=job_id, status=job.status, applied="dropped"
-                )
-            merged = _merge_meta_into_sync(existing, line_meta, attribution)
-            await sync_repo.set_title_if_missing(existing, title, artist)
-            return LineMetaAttachResponse(
-                job_id=job_id, status=job.status, applied="merged", merged_segments=merged
+            return await _merge_meta_into_completed_job(
+                session, job, line_meta, attribution, title, artist
             )
 
         if job.status == "failed":
@@ -816,6 +938,30 @@ async def _attach_line_meta_to_job(
     if attribution:
         stash_attribution(job_id, attribution.model_dump())
     stash_title(job_id, title, artist)
+
+    # 스태시를 쓴 **뒤에 상태를 다시 읽는다**. 위 읽기와 이 쓰기 사이에 잡이 종결되면(캐시
+    # 히트 완료·취소·실패) 스태시를 거둘 주체가 사라져 프로세스 수명 동안 영구 잔류하고
+    # (누수), 메타는 싱크에 병합되지도 않는데 응답은 applied="stashed"라 사실과 다르다.
+    # 종결됐으면 스태시를 회수하고 완료 싱크에 직접 병합(merged)하거나 버린다(dropped) —
+    # 실제로 일어난 일을 응답에 담는다.
+    #
+    # 재확인 이후에 종결되는 창은 남는다(터미널 처리는 워커 쪽 코드가 소유해 여기서 같은 락을
+    # 걸 수 없다). 다만 그 경우 스태시는 워커의 터미널 정리(_pop_stashes)가 거두므로 누수는
+    # 되지 않고, 남는 것은 "stashed로 답했는데 반영되지 못했다"는 좁은 창뿐이다.
+    async with get_session() as session:
+        job = await JobRepository(session).get_by_id(job_id)
+        if job is not None and job.status in ("completed", "failed"):
+            from everyric2.server.api.worker import _pop_stashes
+
+            _pop_stashes(job_id)
+            if job.status == "failed":
+                return LineMetaAttachResponse(
+                    job_id=job_id, status=job.status, applied="dropped"
+                )
+            return await _merge_meta_into_completed_job(
+                session, job, line_meta, attribution, title, artist
+            )
+
     return LineMetaAttachResponse(job_id=job_id, status=job_status, applied="stashed")
 
 
@@ -964,7 +1110,9 @@ async def _process_caption_job(
 
 @router.post("/generate-from-caption", response_model=CaptionGenerateResponse)
 async def generate_sync_from_caption(
-    request: GenerateFromCaptionRequest, background_tasks: BackgroundTasks
+    request: GenerateFromCaptionRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: str | None = Header(default=None),
 ):
     """video_id만으로 유튜브 자막을 조달해 싱크 생성 잡을 만든다.
 
@@ -1025,6 +1173,8 @@ async def generate_sync_from_caption(
             line_meta_pending=True,
         ),
         pipeline,
+        # 어드민 키는 이 경로에서도 일일 생성 상한을 면제받아야 한다 (같은 검사를 재사용)
+        x_api_key,
     )
     if base.status != "completed":
         # completed는 같은 자막 가사의 싱크를 그대로 재사용한 경우다 — job_id가 잡이 아니라
@@ -1132,9 +1282,13 @@ async def regenerate_sync(
 ):
     from everyric2.server.worker import LINE_META_WAIT_SEC
 
+    _validate_lyrics(request.lyrics)
     lyrics_hash_value = hash_lyrics(request.lyrics)
     await_line_meta = request.line_meta_pending and not request.line_meta
     wait_sec = LINE_META_WAIT_SEC if await_line_meta else 0.0
+
+    # 재생성도 죽은 잡에 합류해 봉인될 수 있다 — 생성 경로와 같은 회수를 먼저 한다
+    await reclaim_expired_leases()
 
     # 확인(기존 싱크/활성 잡)→생성 사이에 다른 요청이 끼면 중복 잡이 생긴다 — 직렬화
     async with _CREATE_LOCK, get_session() as session:
@@ -1163,6 +1317,13 @@ async def regenerate_sync(
                 status="processing",
                 estimated_time=15,
                 line_meta_wait_sec=wait_sec,
+            )
+        if not request.force:
+            # force는 위에서 이미 훨씬 엄격한 파괴적 한도(기본 2회/24h)를 통과했다 —
+            # 여기서 또 세면 한 번의 재생성이 두 예산을 먹는다. 비force 재생성은 GPU
+            # 소비가 /generate와 같으므로 같은 상한을 쓴다.
+            await _check_action_limit(
+                session, "generate", request.video_id, x_api_key, DAILY_GENERATE_LIMIT
             )
         job = await job_repo.create(
             video_id=request.video_id,
