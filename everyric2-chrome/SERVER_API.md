@@ -109,6 +109,15 @@
 "host_permissions": [ "...", "https://your-server.example/*" ]
 ```
 
+현재 `host_permissions`에 등록된 서버 호스트와 근거:
+- `https://everyric.moref.co/*` — 확장 기본 서버(`src/lib/settings.ts`의 `DEFAULT_SETTINGS.serverUrl`).
+  설정을 바꾸지 않은 모든 사용자가 첫 실행부터 이 호스트로 싱크 조회/생성/번역을 호출한다.
+- `http://localhost:8000/*`, `http://127.0.0.1:8000/*` — 사용자가 로컬에서 이 저장소의
+  서버(`everyric2/server`)를 직접 구동해 붙일 수 있게 하는 개발/자체 호스팅용 진입점
+  (패널 설정 ⚙에서 서버 URL을 이 값으로 바꿔 사용). 이 두 호스트가 아닌 제3의 서버로
+  바꾸려면 위 예시처럼 `manifest.json`에 도메인을 추가하고 리빌드해야 한다(런타임 권한
+  요청 흐름은 아직 구현돼 있지 않음).
+
 ## 참고 구현
 
 이 저장소의 FastAPI 서버가 참고 구현이다 (큐 순번 필드만 미구현):

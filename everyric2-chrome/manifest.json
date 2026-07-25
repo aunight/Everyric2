@@ -8,8 +8,7 @@
   "permissions": ["storage", "notifications"],
 
   "host_permissions": [
-    "https://lrclib.net/*",
-    "https://api.everyric.com/*",
+    "https://everyric.moref.co/*",
     "http://vocaro.wikidot.com/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*"
@@ -44,7 +43,7 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png"
     },
-    "default_title": "Everyric 媛???⑤꼸 ?닿린/?リ린"
+    "default_title": "Everyric 가사 패널 열기/닫기"
   },
 
   "web_accessible_resources": [{
