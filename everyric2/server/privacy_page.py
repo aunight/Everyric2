@@ -177,9 +177,24 @@ API 키를 포함한 설정값은 <strong>암호화되지 않은 평문으로</s
     영역이며 이 문서의 범위를 벗어납니다.</li>
 </ul>
 
-<h2>7. 문의</h2>
+<h2>7. 가사 저작권</h2>
 <p>
-이 확장의 소스 코드는 공개되어 있으며, 문의·삭제 요청은
+<strong>가사의 저작권은 원저작자 및 관련 권리자에게 있습니다.</strong> Everyric은 가사에 대한
+어떠한 권리도 주장하지 않으며, 소유하거나 독점하지 않습니다. 이 서비스가 하는 일은 이용자가
+보고 있는 곡의 가사를 오디오와 맞추어 표시 시각을 계산하는 것입니다.
+</p>
+<ul>
+<li><strong>출처를 표시합니다</strong> — 가사를 어디서 가져왔는지(공개 가사 데이터베이스, 가사
+    위키, 유튜브 자막, 이용자 입력) 화면에 함께 보여줍니다.</li>
+<li><strong>저작권자의 요청이 있으면 해당 자료를 즉시 삭제합니다.</strong> 아래 문의 창구로
+    연락해 주시면 해당 영상·곡의 저장본을 지웁니다.</li>
+<li><strong>이용자도 직접 삭제할 수 있습니다</strong> — 4번에 적은 방법으로 특정 영상의
+    저장본을 언제든 지울 수 있습니다.</li>
+</ul>
+
+<h2>8. 문의</h2>
+<p>
+이 확장의 소스 코드는 공개되어 있으며, 문의·삭제 요청·저작권 관련 연락은
 <a href="https://github.com/onpe5679/Everyric2/issues">GitHub 이슈</a>로 받습니다.
 </p>
 
@@ -300,9 +315,26 @@ extension.
     policy is a third-party matter outside the scope of this document.</li>
 </ul>
 
-<h2>7. Contact</h2>
+<h2>7. Lyrics copyright</h2>
 <p>
-The source code for this extension is public. For questions or deletion requests, please open a
+<strong>Copyright in the lyrics belongs to the original authors and rights holders.</strong>
+Everyric claims no rights in any lyrics and neither owns nor licenses them. What this service does
+is compute display timings by matching the lyrics of the song you are listening to against its
+audio.
+</p>
+<ul>
+<li><strong>Sources are attributed</strong> — the on-screen panel shows where the lyrics came from
+    (public lyrics database, lyrics wiki, YouTube captions, or the user's own paste).</li>
+<li><strong>On a rights holder's request, the material is deleted immediately.</strong> Please
+    contact us through the channel below and the stored copy for that video/song will be removed.</li>
+<li><strong>Users can delete it themselves too</strong> — the action described in section 4 removes
+    a given video's stored copy at any time.</li>
+</ul>
+
+<h2>8. Contact</h2>
+<p>
+The source code for this extension is public. For questions, deletion requests, or copyright
+matters, please open a
 <a href="https://github.com/onpe5679/Everyric2/issues">GitHub issue</a>.
 </p>
 

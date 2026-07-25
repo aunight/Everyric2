@@ -1,10 +1,49 @@
 # Chrome 웹 스토어 심사 노트 / Chrome Web Store Review Notes
 
-이 확장(`manifest.json`)이 요청하는 `host_permissions` 4개 각각의 용도를 설명합니다.
-심사자가 "왜 이 호스트가 필요한가"를 물으면 아래 내용을 그대로 제출/답변에 사용하세요.
+이 확장(`manifest.json`)이 요청하는 `host_permissions` 각각의 용도와, 심사자가 기능을
+실제로 확인하려면 필요한 것을 설명합니다.
 
-This document explains why this extension requests each of its 4 `host_permissions`
-entries. Use the text below directly when the reviewer asks "why is this host needed".
+This document explains why this extension requests each of its `host_permissions`
+entries, and what a reviewer needs in order to actually exercise the features.
+
+---
+
+## ⚠ 제출 전 필수: 심사자용 API 키를 대시보드에 입력할 것
+
+**이 항목이 빠지면 심사자는 확장이 아무것도 하지 않는 것으로 봅니다.**
+
+기본 설정의 API 키는 빈 문자열(`src/lib/settings.ts`)이고, 백엔드는 키 없는 요청을
+거부합니다(실측: `GET https://everyric.moref.co/api/health` → `401
+{"error":"unauthorized","hint":"personal key required"}`). 즉 확장을 설치만 하고 키를
+넣지 않으면 **가사가 한 줄도 표시되지 않습니다.** 심사자가 그 상태를 보면 "기능이 동작하지
+않는 확장"으로 판단합니다.
+
+키가 필요한 이유(심사자에게 설명할 내용): 가사 정렬은 서버에서 GPU로 오디오를 분석하는
+작업이라 한 곡당 수십 초의 연산이 듭니다. 무기명 공개 시 남용으로 서버가 마비되므로 키로
+사용량을 제한합니다. 개인 식별 정보와는 무관하며, 이용자가 설정에 직접 입력한 값만
+서버 인증 헤더로 전송됩니다(개인정보처리방침 2번 항목).
+
+**해야 할 일**: 크롬 웹스토어 개발자 대시보드의 심사자용 자격증명 입력란(테스트 계정/로그인
+정보 필드)에 **심사 전용 키와 사용법**을 적습니다. 사용법은 다음과 같이 쓰면 됩니다.
+
+> 1. 유튜브에서 아무 노래 영상을 엽니다(예: `https://www.youtube.com/watch?v=s5Rkv_5Sbbo`).
+> 2. 툴바의 Everyric 아이콘을 눌러 가사 패널을 엽니다.
+> 3. 패널 우측 상단의 ⚙(설정)을 열고 **API key** 칸에 아래 키를 붙여넣습니다.
+> 4. 패널이 자동으로 가사를 찾아 재생에 맞춰 한 줄씩 하이라이트합니다.
+>
+> API key: `(대시보드에 직접 입력)`
+
+**키 값을 이 파일에 적지 마십시오.** 이 저장소는 공개되어 있습니다. 키는 대시보드
+입력란에만 넣고, 심사가 끝나면 폐기·회전할 수 있는 전용 키를 쓰십시오.
+
+**English**: The default API key is empty and the backend rejects unauthenticated requests
+(`401 unauthorized`), so an installed extension shows no lyrics at all until a key is entered.
+A reviewer seeing that state would conclude the extension is non-functional. Provide a
+review-only key and the four steps above in the dashboard's reviewer-credentials field.
+Lyrics alignment runs GPU audio analysis on the server (tens of seconds per song), so
+anonymous access is rate-limited by key; the key is unrelated to any personal data and is only
+sent as an auth header when the user enters one. **Do not put the key value in this file — this
+repository is public.**
 
 ---
 
