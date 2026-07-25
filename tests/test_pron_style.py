@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from everyric2.text.ja_reading import kana_reading, tokenize_reading
+from everyric2.text.ja_reading import ReadingToken, kana_reading, tokenize_reading
 from everyric2.text.pron_style import wiki_pronunciation
 from everyric2.text.reading import align_pron_to_moras, text_to_moras
 
@@ -237,6 +237,46 @@ def test_prefix_binds_to_the_following_word():
     assert " " not in wiki_pronunciation("お馬さん")
 
 
+def test_numeral_and_counter_are_one_phrase():
+    """수사 + 조수사는 한 문절이다 — 사이를 띄우면 안 된다.
+
+    사용자 제보: 1秒 → 「이치 뵤오」(목표 「이치뵤오」). 위키 사람 발음도 붙여 쓴다
+    (fixtures/wiki_pron_sample.json: 「1秒先だって」→「이치뵤오 사키닷테」,
+    「ひとつふたつ白く」→「히토츠 후타츠 시로쿠」).
+
+    조수사의 절반이 UniDic에서 접미사가 아니라 名詞-普通名詞-助数詞可能이라 그대로 두면
+    문절이 갈라진다(``pron_style._COUNTER_POS3``). 코퍼스 실측으로 나온 줄들이다.
+    """
+    assert wiki_pronunciation("1秒ごとに 崩れていく世界") == "이치뵤오고토니 쿠즈레테이쿠 세카이"
+    assert wiki_pronunciation("一度まっさらにしてほしいから") == "이치도 맛사라니 시테 호시이카라"
+    assert wiki_pronunciation("何度でも送るよ") == "난도데모 오쿠루요"
+    assert wiki_pronunciation("何回だってさ") == "난카이닷테사"
+    assert wiki_pronunciation("これからも この先何年も") == "코레카라모 코노 사키 난넨모"
+    assert wiki_pronunciation("百点満点は今だけしか") == "햐쿠텐 만텐와 이마다케시카"
+    # 접미사로 태깅되는 조수사는 원래 붙어 있었다 — 회귀 감시
+    assert wiki_pronunciation("たった1人　君に") == "탓타 히토리 키미니"
+    assert wiki_pronunciation("『これ一つ いくらでしょう』") == "『코레 히토츠 이쿠라데쇼오』"
+
+
+def test_counter_nouns_only_bind_right_after_a_numeral():
+    """助数詞可能은 "조수사로 쓰일 **수도** 있는 명사"라는 뜻이다 — 수사 뒤가 아니면 안 붙인다.
+
+    이 조건을 빼고 品詞만 보면 度·回·年·時間처럼 홀로도 쓰는 명사가 앞말에 붙어 정상 줄의
+    띄어쓰기가 무너진다. 앞 토큰이 数詞일 때만 붙이는 것이 그 방어다.
+    """
+    from everyric2.text.pron_style import _starts_phrase
+
+    counter = ReadingToken("回", "かい", 0, 1, pos="名詞", pos2="普通名詞", pos3="助数詞可能")
+    assert _starts_phrase(counter, "名詞", "数詞") is False  # 수사 뒤 — 한 문절
+    assert _starts_phrase(counter, "名詞", "普通名詞") is True  # 보통명사 뒤 — 갈라진다
+    assert _starts_phrase(counter, "動詞", "一般") is True
+    # 조수사가 아닌 명사(助数詞可能이 아닌 것)는 수사 뒤에서도 갈라진다
+    plain = ReadingToken("世界", "せかい", 0, 2, pos="名詞", pos2="普通名詞", pos3="一般")
+    assert _starts_phrase(plain, "名詞", "数詞") is True
+    assert wiki_pronunciation("今度は僕が行く") == "콘도와 보쿠가 이쿠"
+    assert wiki_pronunciation("言葉の意味 何回も") == "코토바노 이미 난카이모"
+
+
 def test_original_whitespace_becomes_a_phrase_boundary():
     assert wiki_pronunciation("痛み 痛み 見えない") == "이타미 이타미 미에나이"
     assert wiki_pronunciation("乾いた心臓の音　淡いうわ言") == (
@@ -268,23 +308,26 @@ def test_trailing_punctuation_is_not_dropped():
     assert wiki_pronunciation("「だめだ！」").endswith("!」")
 
 
-def test_latin_is_transliterated_and_unmeasured_digit_counters_are_kept_verbatim():
-    """라틴은 음차하고, 실측 밖 숫자+조수사 조합은 그대로 둔다.
+def test_latin_is_transliterated_and_digits_before_a_counter_are_read_aloud():
+    """라틴은 음차하고, 조수사가 뒤따르는 숫자는 소리내어 읽는다.
 
     옛 기댓값은 ``"numb" in wiki_pronunciation("numb な僕")``였다 — "위키는 음차하지만
     (numb→넘) 규칙화가 불가능하다"는 방침의 기록이다. 실측이 그 방침을 뒤집었다: 라틴을
     남기면 그 줄이 정렬되지 않고(라틴 글자 conf<0.01이 90~99%), 사람 자막 대조에서 잔차
     p90이 0.629s→0.170s로 줄었다. 자세한 수치는 ``everyric2.text.latin_hangul``에 있다.
 
-    숫자는 실측된 조합(1秒 → 이치뵤오, ``ja_reading._MEASURED_ARABIC_COUNTERS``)만
-    자릿수로 읽는다. 分처럼 촉음화·반탁음화가 걸리는 조수사는 표본에 없어 그대로 둔다 —
-    흉내 내면 틀린 값을 박게 된다.
+    숫자도 같은 방향으로 정리됐다. 예전에는 실측된 조수사(秒·人) 뒤에서만 자릿수로 읽고
+    ``1分先``은 「1분 사키」처럼 숫자를 남겼다 — 촉음화·반탁음화 규칙이 없어 「いちふん」을
+    만드는 것보다 숫자를 남기는 편이 나았기 때문이다. 이제 그 규칙이 있으므로
+    (``ja_reading._counter_sandhi``) 조수사 뒤 숫자는 모두 읽는다.
     """
     got = wiki_pronunciation("---深刻なエラーが発生しました---")
     assert got == "---신코쿠나 에라아가 핫세이시마시타---"  # 부호만 있는 구간은 그대로
     assert wiki_pronunciation("numb な僕") == "넘 나 보쿠"
-    assert "이치" in wiki_pronunciation("1秒先")  # 실측된 조합은 자릿수로 읽는다
-    assert "1" in wiki_pronunciation("1分先")  # 표본에 없는 조합은 여전히 그대로
+    assert "이치" in wiki_pronunciation("1秒先")
+    assert wiki_pronunciation("1分先") == "잇푼 사키"  # 숫자가 화면에 남지 않는다
+    # 조수사가 없는 숫자는 여전히 그대로다 — 읽을 근거가 없다
+    assert wiki_pronunciation("0と1に還元され") == "0토 1니 칸겐사레"
 
 
 def test_sokuon_and_n_cross_token_boundaries():

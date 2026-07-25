@@ -48,16 +48,205 @@ _ORPHAN_TAIL_RE = re.compile(r"^[\s、。，．,\.！？!?…‥・「」『』�
 # UniDic이 数詞로 묶는 아라비아 숫자 토큰의 표면 형태 (_numeral_override 참조)
 _ARABIC_DIGITS_RE = re.compile(r"^[0-9]+$")
 
-# 아라비아 숫자 뒤에서 자릿수 읽기를 적용하는 조수사 — 실측(보카로 위키 사람 발음 표본
-# tests/fixtures/wiki_pron_sample.json 115줄)에서 아라비아 숫자 뒤에 조수사가 온 사례는
-# "1秒"(→ 이치뵤오) 단 1건이었다. 秒는 앞자리 숫자와 무관하게 촉음화·반탁음화가 없는
-# 규칙 조수사라(いちびょう/にびょう/さんびょう/…) 자릿수 읽기를 그대로 이어 붙이면 된다.
-# 分・回처럼 음변화가 있는 조수사는 이 표본에 없어 넣지 않는다 — 잘못된 음변화를
-# 새로 만드는 것이 기존의 "숫자 그대로" 동작보다 나쁘다(_numeral_override 참조).
-# 人은 실사용자 확인 오류(たった1人 → 정답 「탓타 히토리」, 우리 「탓타 1닌」)로 추가했다
-# — 음변화(1/2가 딴 낱말이 되고 4가 よん→よ로 줄어드는 것)는 그 사다리로 못 메우므로
-# ``_adopt_person_counter_readings``가 자릿수 읽기 위에 따로 얹는다.
-_MEASURED_ARABIC_COUNTERS = frozenset({"秒", "人"})
+# ---------------------------------------------------------------------------
+# 수사 + 조수사(助数詞)
+# ---------------------------------------------------------------------------
+
+# 조수사 판정은 **UniDic 태그로만** 한다 — 조수사 목록을 손으로 들지 않는다. 두 태그가
+# 조수사를 표시하고(실측), 어느 쪽이냐는 조수사마다 갈린다:
+#   접미사형 …… 接尾辞-名詞的 (本・歳・個・枚・匹・人・冊・軒・発)
+#   명사형   …… 名詞-普通名詞-助数詞可能 (分・回・階・年・度・秒・時・台・点・歩)
+_COUNTER_SUFFIX_POS = ("接尾辞", "名詞的")
+_COUNTER_NOUN_POS3 = "助数詞可能"
+_NUMERAL_POS2 = "数詞"
+
+# 語種(goshu)=漢 조건이 이 규칙 전체의 안전장치다. 촉음화·반탁음화는 **한자어 조수사에서만**
+# 일어나고, 和語 조수사(つ・日=カ・組・羽)와 외래어 조수사(キロ・ページ)는 규칙 밖이다.
+# 게다가 和語 조수사 앞에서는 수사 자체가 和語 계열로 갈리므로(1日 ついたち, 2つ ふたつ)
+# 한자어 자릿수 읽기를 붙이면 이중으로 틀린다. UniDic이 그 갈림을 이미 語種에 적어 둔다
+# — 실측: 같은 日이 一日에서는 漢/ニチ, 1日・3日에서는 和/カ로 태그가 다르고, 1月의 月은
+# 和/ツキ, 1巻의 巻은 和/マキ, 1通의 通은 和/トーリ다. 즉 "수사가 和語로 읽히는 자리"를
+# 사전이 스스로 표시해 준다 — 우리가 조수사 목록을 짐작할 필요가 없다.
+_SINO_GOSHU = "漢"
+
+# UniDic이 조수사로 표시하지 않지만 코퍼스에 아라비아 숫자와 붙어 나온 조수사.
+# 이 상수의 이름이 "MEASURED"인 이유는 그대로다 — **실측된 것만** 넣는다. 다만 역할이
+# 바뀌었다: 예전에는 이 집합이 판정의 전부였고(秒・人 둘) 그래서 3分이 「3 훈」으로 샜다.
+# 지금은 위 UniDic 태그가 판정을 하고, 이 집합은 사전이 놓친 자리만 메운다 — 秒(名詞-
+# 助数詞可能)와 人(接尾辞-名詞的)은 사전이 이미 표시하므로 여기서 빠졌다(회귀 테스트가
+# 그 둘의 기존 동작을 그대로 지킨다).
+# 文字: 코퍼스 4줄(「10文字以内で 答エヨ」「100文字以内で」 gsGjcLVI6X4)에서 아라비아
+# 숫자 뒤에 나왔고 UniDic 태그는 名詞-普通名詞-一般이다. ま행이라 음변화가 없어
+# 자릿수 읽기를 그대로 이으면 된다(じゅうもじ・ひゃくもじ).
+_MEASURED_ARABIC_COUNTERS = frozenset({"文字"})
+
+
+def _is_sino_counter(pos1: str, pos2: str, pos3: str, goshu: str) -> bool:
+    """이 토큰이 **한자어 조수사**인가 (음변화 규칙과 자릿수 읽기의 공통 판정)."""
+    if goshu != _SINO_GOSHU:
+        return False
+    if (pos1, pos2) == _COUNTER_SUFFIX_POS:
+        return True
+    return pos1 == "名詞" and pos3 == _COUNTER_NOUN_POS3
+
+
+def _reads_arabic_digits(word) -> bool:
+    """아라비아 숫자 뒤에서 자릿수 읽기를 붙일 조수사인가 (사전 판정 + 실측 보충)."""
+    feature = word.feature
+    goshu = getattr(feature, "goshu", "") or ""
+    if goshu != _SINO_GOSHU:
+        return False
+    if word.surface in _MEASURED_ARABIC_COUNTERS:
+        return True
+    return _is_sino_counter(
+        getattr(feature, "pos1", "") or "",
+        getattr(feature, "pos2", "") or "",
+        getattr(feature, "pos3", "") or "",
+        goshu,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 촉음화(促音化)·반탁음화(半濁音化) — 규칙
+# ---------------------------------------------------------------------------
+#
+# 촉음이 붙는지는 **수사 읽기의 꼬리**가 정한다. 꼬리로 키를 잡으면 합성수가 자동으로
+# 따라온다 — 二十分→にじゅっぷん, 十一回→じゅういっかい, 三百回→さんびゃっかい를 따로
+# 적지 않아도 된다.
+#   いち(一)·はち(八)             → か·さ·た·は행 조수사 앞에서 촉음
+#                                    (いっかい・いっさい・いってん・いっぷん / はっかい・はっさい)
+#   く (六 ろく・百 ひゃく…)        → **か·は행에서만** (ろっかい・ろっぽん).
+#                                    さ·た행은 그대로다 — ろくさい(六歳)·ろくてん(六点)이
+#                                    ろっさい·ろってん이 아니다. 이 제약을 빼면 새 오류가 된다.
+#   じゅう/じゅー (十)             → か·さ·た·は행 (じゅっかい・じゅっさい・じゅってん・じゅっぷん)
+#   ん (三 さん・四 よん・何 なん…) → 촉음 없음. は행의 유·무성은 조수사마다 갈린다
+#                                    (아래 ``_HA_ROW_COUNTERS``)
+# 그 밖(に·ご·なな·きゅう)은 아무 일도 일어나지 않는다.
+#
+# **꼬리를 "ち"로 잡으면 안 된다** — しち(七)도 ち로 끝나는데 촉음이 없다(七件 しちけん,
+# 七回 しちかい/ななかい). 대조표가 실제로 그 오류를 잡아냈다(しっけん·しっぱく·しっぽ가
+# 나왔다). 그래서 いち·はち를 낱개로 적는다.
+#
+# 음가(pron)는 十을 ジュー로 주므로 ``じゅー``까지 함께 받는다 — ``phonetic=True`` 경로가
+# 그 값을 쓴다(``_token_readings`` 참조).
+_SOKUON_ALL_ROWS = frozenset("かさたは")
+_SOKUON_K_H_ROWS = frozenset("かは")
+
+# 조수사 읽기의 첫 글자 → 행(行). 청음 か·さ·た·は행만 담는다 — 탁음(が·ざ·だ·ば)·な·ま·
+# や·ら·わ행 조수사는 음변화가 없다(いちだい・いちど・いちねん・いちまい・いちびょう).
+_KANA_ROW = {
+    ch: row
+    for row, chars in (
+        ("か", "かきくけこ"),
+        ("さ", "さしすせそ"),
+        ("た", "たちつてと"),
+        ("は", "はひふへほ"),
+    )
+    for ch in chars
+}
+
+_HANDAKU = {"は": "ぱ", "ひ": "ぴ", "ふ": "ぷ", "へ": "ぺ", "ほ": "ぽ"}
+
+# は행 조수사의 **어휘적** 정보. 규칙으로 만들 수 없는 두 가지만 담는다:
+#
+#  (1) UniDic이 음변화형을 표제 읽기로 주는 조수사의 청음 원형. 本의 읽기는 문맥과
+#      무관하게 항상 ポン이고(실측: 二本도 ニ+ポン → 니폰) 杯는 항상 バイ다. 원형을
+#      모르면 二本(にほん)도, 一本의 촉음(いっぽん)도 만들 수 없다 — っ 뒤에 ば가 올 수는
+#      없으니 원형 없이 촉음만 얹으면 いっばい 같은 없는 꼴이 나온다.
+#
+#  (2) ん으로 끝나는 수사(三·何·千·万) 뒤에서 は행이 어느 쪽으로 가는가. **이건 조수사마다
+#      갈리고 규칙이 없다**: 分은 반탁음(さんぷん), 本·杯·匹는 탁음(さんぼん·さんばい·
+#      さんびき)이다. 같은 자리에서 갈리므로 음운만으로 유추할 수 없다. 예외의 예외로
+#      よん은 連濁을 일으키지 않는다(よんほん·よんはい·よんひき — 和語 수사라서다).
+#      分만 よん 뒤에서도 반탁음이 된다(よんぷん) — 세 번째 값이 그것이다.
+#
+# 표에 없는 は행 조수사(泊·発 등)는 촉음화 규칙만 받고 ん 뒤에서는 손대지 않는다
+# (一泊→いっぱく는 규칙이 맞히고, 三泊은 기존 동작 さんはく 그대로) — 즉 이 표가
+# 비어 있어도 기존보다 나빠지지 않는다. 넓히려면 사전 대조가 먼저다.
+_HA_ROW_COUNTERS: dict[str, tuple[str, str, bool]] = {
+    # 조수사 표면: (청음 원형 읽기, ん 뒤 형태, よん 뒤에도 ん 형태를 쓰는가)
+    "分": ("ふん", "ぷん", True),
+    "本": ("ほん", "ぼん", False),
+    "杯": ("はい", "ばい", False),
+    "匹": ("ひき", "びき", False),
+    "歩": ("ほ", "ぽ", False),
+}
+
+
+def _long_vowel_variants(reading: str) -> tuple[str, ...]:
+    """``う`` 장음을 ``ー``로도 적은 변종까지 (음가 경로 대응).
+
+    ``phonetic=True`` 경로의 읽기는 음가(``feature.pron``)라 장음을 ー로 적는다 —
+    十은 ジュウ/ジュー, 九는 キュウ/キュー로 표기가 갈린다. 수사 읽기의 꼬리로 규칙을
+    찾는 이상 두 표기를 모두 받아야 한다. 실측으로 찾은 함정이다: 九時가 표층 읽기
+    경로에서는 くじ로 맞고 음가 경로에서는 きゅーじ로 틀렸다(발음 표기가 쓰는 쪽이
+    음가 경로다).
+    """
+    return (reading, reading[:-1] + "ー") if reading.endswith("う") else (reading,)
+
+
+_SOKUON_ALL_ROW_TAILS = (*_long_vowel_variants("じゅう"), "いち", "はち")
+
+
+def _sokuon_rows(numeral: str) -> frozenset[str]:
+    """이 수사 읽기 뒤에서 촉음이 붙는 조수사의 행 집합 (없으면 빈 집합).
+
+    한 글자 읽기는 아예 제외한다 — 촉음화는 끝 글자를 っ로 바꾸는 것이라 한 글자짜리에
+    걸리면 수사가 「っ」하나로 남는다. 여기 걸리는 수사(いち·はち·ろく·ひゃく·じゅう)는
+    모두 두 글자 이상이고, 한 글자 읽기 く는 九를 時 앞에서 줄인 꼴(9時 くじ)뿐이다.
+    """
+    if len(numeral) < 2:
+        return frozenset()
+    if numeral.endswith(_SOKUON_ALL_ROW_TAILS):
+        return _SOKUON_ALL_ROWS
+    if numeral.endswith("く"):  # ろく·ひゃく·びゃく·ぴゃく
+        return _SOKUON_K_H_ROWS
+    return frozenset()
+
+
+def _handaku(reading: str) -> str:
+    """첫 글자만 반탁음으로 (ふん→ぷん, ほ→ぽ)."""
+    return _HANDAKU.get(reading[:1], reading[:1]) + reading[1:]
+
+
+def _counter_base(surface: str, reading: str) -> tuple[str, tuple[str, str, bool] | None] | None:
+    """조수사 읽기를 청음 원형으로 되돌린다 → (원형, 표 항목). 표를 못 믿으면 ``None``.
+
+    표에 있는 조수사인데 관측된 읽기가 표의 어느 꼴도 아니면(복합어·미등록 활용 등
+    자리가 안 맞으면) 손대지 않는다 — 짐작으로 원형을 만들지 않는다.
+    """
+    entry = _HA_ROW_COUNTERS.get(surface)
+    if entry is None:
+        return reading, None
+    base, after_n, _ = entry
+    if reading in (base, after_n, _handaku(base)):
+        return base, entry
+    return None
+
+
+def _counter_sandhi(numeral: str, counter_surface: str, counter: str) -> tuple[str, str] | None:
+    """(수사 읽기, 조수사 읽기) → 음변화를 적용한 새 짝. 바뀔 것이 없으면 ``None``.
+
+    치환은 모두 **글자 수를 보존한다**(いち→いっ, ふん→ぷん, ほん→ぽん, じゅう→じゅっ) —
+    ``reading.py``의 모라 글자 오프셋이 토큰 길이에 걸려 있어서 늘거나 줄면 안 된다.
+    """
+    if not numeral or not counter:
+        return None
+    based = _counter_base(counter_surface, counter)
+    if based is None:
+        return None
+    base, entry = based
+    row = _KANA_ROW.get(base[:1])
+    if row is None:
+        # 탁음·な·ま행… 음변화가 없는 조수사. 원형 복원만 남았을 수 있다(현재 표엔 없다).
+        return (numeral, base) if base != counter else None
+    if row in _sokuon_rows(numeral):
+        return numeral[:-1] + "っ", (_handaku(base) if row == "は" else base)
+    if entry is not None and numeral.endswith("ん"):
+        _, after_n, yon_too = entry
+        if yon_too or not numeral.endswith("よん"):
+            return numeral, after_n
+    return (numeral, base) if base != counter else None
 
 
 def _katakana_as_hiragana(surface: str) -> str | None:
@@ -99,6 +288,12 @@ class ReadingToken:
     뭉개므로(鮮明 kana=センメイ / pron=センメー) 두 읽기를 맞춰 보면 "여기가 원래 い였다"를
     알 수 있다(``pron_style._restore_ei``). 표층 읽기를 따로 알 수 없는 토큰(리터럴·폴백)은
     빈 문자열이며, 그 경우 비교하는 쪽이 아무것도 하지 않는다.
+
+    ``pos3``/``goshu``는 조수사(助数詞) 판정에만 쓴다. 조수사는 UniDic에서 pos3
+    (助数詞·助数詞可能)로 표시되고, 그 조수사가 한자어냐 和語냐가 語種(goshu)에 적혀 있다
+    — 수사와의 음변화(一分→いっぷん)도, 수사+조수사를 한 문절로 붙이는 판정도
+    (``pron_style._starts_phrase``) 그 두 필드에 걸려 있다. 품사가 없는 토큰(리터럴·폴백)은
+    빈 문자열이며, 그 경우 어느 규칙도 걸리지 않는다.
     """
 
     surface: str
@@ -108,6 +303,8 @@ class ReadingToken:
     pos: str = ""
     pos2: str = ""
     surface_reading: str = ""
+    pos3: str = ""
+    goshu: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +410,15 @@ def _numeral_override(words, i: int, text: str, idx: int) -> str | None:
 
     UniDic은 아라비아 숫자에 읽기를 주지 않아(``feature.kana``/``pron`` 둘 다 빈값) 사다리가
     표면 그대로("1")로 떨어진다(``_token_readings`` 3·4단 참조) — 한자 숫자(一/二/三…)는
-    사전에 읽기가 있어 이 문제가 없다(실측: ``一分``→いち+ふん처럼 숫자 자리는 이미
-    맞다). 여기서 그 빈 자리만 메운다.
+    사전에 읽기가 있어 이 문제가 없다. 여기서 그 빈 자리만 메운다. **화면에 아라비아 숫자가
+    그대로 남는 것**이 이 함수가 없을 때의 손상이다(실측: 「3分」→「3 훈」, 「1000回」→
+    「1000 카이」, 「10年後」→「10 넨고」).
 
-    바로 뒤 토큰이 ``_MEASURED_ARABIC_COUNTERS``에 있고 원문에서 숫자와 공백·기호 없이
-    바로 붙어 있을 때만 적용한다 — 실측 밖 조합(예: "1 秒"처럼 사이가 뜬 경우, 또는 分・回
-    같은 음변화 조수사)은 건드리지 않고 기존 동작(숫자 그대로)을 유지한다.
+    바로 뒤 토큰이 한자어 조수사이고(``_reads_arabic_digits`` — UniDic 태그 판정) 원문에서
+    숫자와 공백·기호 없이 붙어 있을 때만 적용한다. 사이가 뜨면("1 秒") 손대지 않는다.
+    음변화가 걸리는 조수사(分・回…)도 이제 함께 다룬다 — ``_adopt_counter_sandhi``가 규칙으로
+    촉음화·반탁음화를 얹기 때문이다. 그 규칙이 없던 시절에는 여기서 막는 것이 맞았다
+    (잘못된 음변화를 만드는 것이 숫자를 남기는 것보다 나빴다).
     """
     surface = words[i].surface
     if not _ARABIC_DIGITS_RE.match(surface):
@@ -229,7 +429,7 @@ def _numeral_override(words, i: int, text: str, idx: int) -> str | None:
     if i + 1 >= len(words):
         return None
     nxt = words[i + 1].surface
-    if nxt not in _MEASURED_ARABIC_COUNTERS:
+    if not _reads_arabic_digits(words[i + 1]):
         return None
     tail_start = idx + len(surface)
     if text[tail_start : tail_start + len(nxt)] != nxt:
@@ -237,41 +437,129 @@ def _numeral_override(words, i: int, text: str, idx: int) -> str | None:
     return digits_to_reading(surface)
 
 
-# 人(にん) 조수사의 불규칙 읽기. 1・2는 자릿수 읽기(いち・に)가 아니라 아예 다른 낱말
-# (히토리/후타리)이 되고, 끝자리가 4면 よん이 아니라 よ로 줄어든다(실측: 十四人→
-# 주우요닌, 4人→요닌 — 사용자가 노래를 듣고 확인). 3・5~9・10 이상(끝자리 4 제외)은
-# 자릿수 읽기 + にん을 그대로 이으면 맞다(실측: 3人→さんにん).
+# 특정 조수사 앞에서 **수사 자체가** 불규칙해지는 자리. 위의 촉음화·반탁음화는 조수사
+# 쪽 음운 규칙이라 이 부류를 못 메운다 — 여기서는 수사 읽기가 딴 낱말로 바뀌거나
+# (1人 ひとり) 다른 계열에서 끌어오기 때문이다(4時 よじ, 9時 くじ). 그래서 규칙이 아니라
+# 표다. 두 갈래로 적는다:
 #
-# 一人・二人은 UniDic 사전에 이미 통짜 표제어로 올라 있어(ひとり/ふたり, pos2=普通名詞)
-# 별개 토큰 一+人으로 쪼개지지 않는다 — 아래 함수는 그 표제어를 건드리지 않는다(surface가
-# "一人" 전체라 "1"/"2" 매칭에도, pos2=数詞 조건에도 안 걸린다). 十四人처럼 十 뒤에
-# 붙어 따로 토큰이 되는 한자 四(pos2=数詞, 읽기 よん)는 이 함수가 다룬다.
-_PERSON_COUNTER = "人"
-_PERSON_WHOLE_WORD: dict[str, str] = {"1": "ひとり", "2": "ふたり"}
+#   series …… 수사의 **값**(1~9)마다 읽기가 정해진 계열. 和語 수사 계열이 붙는 조수사가
+#             이 꼴이다(2つ→ふたつ). ``absorbs``가 참이면 그 읽기가 조수사까지 삼킨다
+#             (1人→ひとり 하나로 끝. 안 지우면 "히토리" + "닌"으로 두 번 읽힌다).
+#   tail  …… **끝자리 읽기**만 갈아 끼우는 것. 끝자리만 갈리므로 앞자리는 그대로 둔다
+#             — 十四人→じゅうよにん, 19時→じゅうくじ가 자동으로 따라온다.
+#
+# 실측 근거:
+#   人 — 사용자가 노래를 듣고 확인했다(たった1人 → 「탓타 히토리」, 우리 「탓타 1닌」).
+#        4는 よん이 아니라 よ다(十四人→주우요닌). 3·5~10은 자릿수 읽기+にん이 맞다.
+#   つ — 코퍼스 4줄(「どうしようもなく2つに裂けた心内環境を」 b_cuMcDWwsI)에서 아라비아
+#        숫자와 붙어 나왔다. 和語 조수사라 語種 조건에 걸려 자릿수 읽기를 못 받고
+#        「2츠」로 샜다. 계열이 1~9로 닫혀 있어 표가 완결된다(10 이상은 つ를 안 쓴다 —
+#        とお로 끝난다 — 그래서 표에 없고, 없으면 손대지 않는다).
+#        한자 표기 쪽 오독도 같이 사라진다(UniDic 실측: 四つ→よんつ, 六つ→むいつ,
+#        八つ→ようつ. 정답 よっつ・むっつ・やっつ).
+#   時 — 아라비아 숫자를 읽기 시작하면서 필요해졌다. 4時를 「욘지」로, 9時를 「큐우지」로
+#        읽는 것은 오류다(정답 よじ・くじ) — 즉 이 표가 없으면 ②를 고치는 것이 새 오류를
+#        만든다. 7은 しち가 표준이다(ななじ는 회화체).
+#   時間 — 4만 넣는다. よじかん이 표준이고(24時間→にじゅうよじかん) 7·9는 ななじかん・
+#        きゅうじかん도 통용되므로 건드리지 않는다.
+#
+# 一人・二人・一つ은 UniDic에 통짜 표제어로 올라 있어(ひとり/ふたり/ひと+つ) 이 표와
+# 무관하게 이미 맞다 — 아래 함수는 pos2=数詞인 토큰만 보므로 그 표제어를 건드리지 않는다.
+_IRREGULAR_COUNTER_NUMERALS: dict[str, tuple[dict[str, str], bool, dict[str, str]]] = {
+    # 조수사: (값→수사 읽기 계열, 그 읽기가 조수사까지 삼키는가, 끝자리 읽기 치환)
+    "人": ({"1": "ひとり", "2": "ふたり"}, True, {"よん": "よ"}),
+    "つ": (
+        {
+            "1": "ひと", "2": "ふた", "3": "みっ", "4": "よっ", "5": "いつ",
+            "6": "むっ", "7": "なな", "8": "やっ", "9": "ここの",
+        },
+        False,
+        {},
+    ),
+    "時": ({}, False, {"よん": "よ", "なな": "しち", "きゅう": "く"}),
+    "時間": ({}, False, {"よん": "よ"}),
+}
+
+# 수사 표면 → 값 문자열. 계열 표(``_IRREGULAR_COUNTER_NUMERALS``의 series)를 아라비아
+# 숫자와 한자 숫자 어느 표기로도 같이 찾기 위한 정규화다.
+_KANJI_DIGIT_VALUES = {
+    "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
+    "六": "6", "七": "7", "八": "8", "九": "9",
+}
 
 
-def _adopt_person_counter_readings(tokens: list[ReadingToken]) -> None:
-    """人 앞의 숫자 토큰 읽기를 조수사 관례에 맞게 고친다(제자리 수정).
+def _numeral_value(surface: str) -> str:
+    """수사 표면의 값 문자열("1"~"9"). 계열 표에서 찾을 수 없는 표면이면 빈 문자열."""
+    if _ARABIC_DIGITS_RE.match(surface):
+        return surface
+    return _KANJI_DIGIT_VALUES.get(surface, "")
 
-    대상은 品詞가 名詞-数詞인 토큰(아라비아 숫자는 ``_numeral_override``가 이미 자릿수
-    읽기를 매겨 둔 상태, 한자 숫자는 사전 읽기 그대로)뿐이다 — 何人의 何도 人 앞에서
-    名詞-数詞로 태깅되지만(``なん``, よん으로 안 끝남) 아래 조건에 걸리지 않아 그대로
-    남는다(실측 확인).
+
+def _replace_numeral_tail(reading: str, tail: dict[str, str]) -> str | None:
+    """수사 읽기의 **끝자리**를 표대로 갈아 끼운다. 걸리는 것이 없으면 ``None``.
+
+    앞자리는 건드리지 않는다 — 十四人→じゅうよにん, 十九時→じゅうくじ처럼 합성수의
+    끝자리만 불규칙해지기 때문이다.
+    """
+    for suffix, replacement in tail.items():
+        for variant in _long_vowel_variants(suffix):
+            if reading.endswith(variant):
+                return reading[: -len(variant)] + replacement
+    return None
+
+
+def _adopt_irregular_counter_numerals(tokens: list[ReadingToken]) -> None:
+    """조수사 앞에서 불규칙해지는 수사 읽기를 표대로 고친다(제자리 수정).
+
+    대상은 品詞가 名詞-数詞인 토큰뿐이다(아라비아 숫자는 ``_numeral_override``가 이미
+    자릿수 읽기를 매겨 둔 상태, 한자 숫자는 사전 읽기 그대로) — 何人의 何도 人 앞에서
+    名詞-数詞로 태깅되지만 값도 끝자리 읽기도 표에 없어 그대로 남는다(실측 확인).
     """
     for i, token in enumerate(tokens):
-        if i + 1 >= len(tokens) or tokens[i + 1].surface != _PERSON_COUNTER:
+        if i + 1 >= len(tokens) or token.pos != "名詞" or token.pos2 != _NUMERAL_POS2:
             continue
-        if token.pos != "名詞" or token.pos2 != "数詞":
+        entry = _IRREGULAR_COUNTER_NUMERALS.get(tokens[i + 1].surface)
+        if entry is None:
             continue
-        whole = _PERSON_WHOLE_WORD.get(token.surface)
+        series, absorbs, tail = entry
+        whole = series.get(_numeral_value(token.surface))
         if whole is not None:
-            # 1人・2人 — 읽기가 통째로 딴 낱말이 된다. 人 토큰의 읽기(にん)는 지운다:
-            # 안 지우면 "히토리니" + "응" 처럼 두 번 읽힌다.
             token.reading = token.surface_reading = whole
-            tokens[i + 1].reading = tokens[i + 1].surface_reading = ""
-        elif token.reading.endswith("よん"):
-            # 4人・14人・24人… — 끝자리 4만 よ로 줄이고 나머지 자리는 그대로 둔다.
-            token.reading = token.surface_reading = token.reading[:-2] + "よ"
+            if absorbs:
+                tokens[i + 1].reading = tokens[i + 1].surface_reading = ""
+            continue
+        # 읽기와 표층 읽기는 장음 표기가 갈릴 수 있어(きゅー / きゅう) 따로 치환한다
+        replaced = _replace_numeral_tail(token.reading, tail)
+        if replaced is not None:
+            token.reading = replaced
+        replaced = _replace_numeral_tail(token.surface_reading, tail)
+        if replaced is not None:
+            token.surface_reading = replaced
+
+
+def _adopt_counter_sandhi(tokens: list[ReadingToken]) -> None:
+    """수사 + 한자어 조수사 짝마다 촉음화·반탁음화를 적용한다 (제자리 수정).
+
+    토큰 열은 빈틈 없이 이어지므로(``_tokens_from_words`` 계약) 바로 다음 토큰이 곧
+    "원문에서 붙어 있는 조수사"다 — 사이에 공백·기호가 있으면 리터럴 토큰이 끼어
+    자동으로 걸리지 않는다(「1 秒」이 안 바뀌는 이유와 같다).
+
+    ``_adopt_irregular_counter_numerals`` 뒤에 돌려야 한다: 수사 읽기가 먼저 확정돼야
+    촉음화 판정(끝 모라)이 맞는다. 실제로 두 표가 겹치는 자리는 없다 — 불규칙 표의
+    조수사는 にん·じ·じかん·つ로 모두 음변화가 없는 쪽이다(탁음·和語).
+    """
+    for i, token in enumerate(tokens):
+        if token.pos != "名詞" or token.pos2 != _NUMERAL_POS2 or i + 1 >= len(tokens):
+            continue
+        nxt = tokens[i + 1]
+        if not _is_sino_counter(nxt.pos, nxt.pos2, nxt.pos3, nxt.goshu):
+            continue
+        changed = _counter_sandhi(token.reading, nxt.surface, nxt.reading)
+        if changed is not None:
+            token.reading, nxt.reading = changed
+        changed = _counter_sandhi(token.surface_reading, nxt.surface, nxt.surface_reading)
+        if changed is not None:
+            token.surface_reading, nxt.surface_reading = changed
 
 
 # 何(なに/なん) — UniDic 사전 표제어(代名詞)의 kana는 문맥과 무관하게 항상 なん으로
@@ -413,12 +701,15 @@ def _tokens_from_words(words, text: str, *, phonetic: bool = False) -> list[Read
                 pos=getattr(word.feature, "pos1", "") or "",
                 pos2=getattr(word.feature, "pos2", "") or "",
                 surface_reading=surface_reading,
+                pos3=getattr(word.feature, "pos3", "") or "",
+                goshu=getattr(word.feature, "goshu", "") or "",
             )
         )
         pos = idx + len(surface)
     if pos < len(text):
         tokens.append(ReadingToken(text[pos:], text[pos:], pos, len(text)))
-    _adopt_person_counter_readings(tokens)
+    _adopt_irregular_counter_numerals(tokens)
+    _adopt_counter_sandhi(tokens)
     return tokens
 
 

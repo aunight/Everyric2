@@ -66,6 +66,23 @@ _AUX_STEM_POS2 = "助動詞語幹"
 # 感動詞/フィラー로 잘라 놓는 경우가 있어(超ロックじゃん) 그대로 두면 "자 응"이 된다.
 _NON_INITIAL_MORAS = frozenset("んっー")
 
+# 수사 + 조수사(助数詞)는 한 문절이다 — 위키 사람 발음이 그렇게 적는다(실측,
+# tests/fixtures/wiki_pron_sample.json): 「1秒先だって」→「이치뵤오 사키닷테」,
+# 「ひとつふたつ白く」→「히토츠 후타츠 시로쿠」. 둘 다 수사와 조수사 사이가 붙어 있다.
+#
+# 그런데 조수사의 절반은 UniDic에서 접미사가 아니라 **名詞-普通名詞-助数詞可能**이다
+# (分・回・階・年・度・秒・時・歩). 名詞는 문절 머리 품사라 그대로 두면 수사와 갈라진다
+# — 「이치 뵤오」「난 훈」「이치 호」가 그렇게 나왔다(사용자 제보: 1秒 → 이치 뵤오).
+# 접미사로 태깅되는 조수사(本・歳・つ・人)는 이 문제가 없었다.
+#
+# 조건을 **직전 토큰이 数詞**로 좁힌 것이 중요하다. 助数詞可能은 "조수사로 쓰일 **수도**
+# 있는 명사"라는 뜻이어서(度·回·年·時間·分 전부 홀로 쓰는 명사이기도 하다) 이 품사만 보고
+# 붙이면 수사 뒤가 아닌 자리에서도 앞말에 붙어 정상 줄의 띄어쓰기가 무너진다 — 「夢 時間
+# 世界」의 時間이 앞 명사에 붙는 꼴이다. 語種(한자어/和語)은 보지 않는다 — 붙여 쓰는 것은
+# 음운이 아니라 통사의 문제라서 一組(이치쿠미)·1日(이치니치)에도 똑같이 적용된다.
+_NUMERAL_POS2 = "数詞"
+_COUNTER_POS3 = "助数詞可能"
+
 # ---------------------------------------------------------------------------
 # 표기 관례
 # ---------------------------------------------------------------------------
@@ -149,6 +166,8 @@ def _starts_phrase(token: ReadingToken, prev_pos: str, prev_pos2: str) -> bool:
     if token.pos not in _PHRASE_HEAD_POS or token.pos2 == _AUX_STEM_POS2:
         return False
     if prev_pos == _PREFIX_POS:
+        return False
+    if prev_pos2 == _NUMERAL_POS2 and token.pos3 == _COUNTER_POS3:
         return False
     if token.reading and all(ch in _NON_INITIAL_MORAS for ch in token.reading):
         return False

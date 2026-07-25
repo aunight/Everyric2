@@ -2,8 +2,9 @@
 
 여기서 검증하는 자릿수 읽기 자체(백/천의 촉음화·반탁음화, 만 단위 앞의 いち 유지 등)는
 어느 조수사가 뒤따르는지와 무관한 고정 문법이라 실측(코퍼스) 없이도 테스트한다.
-"조수사 앞에서 언제 이 모듈을 부르는가"의 실측 근거는 ``test_ja_reading.py``의
-``_numeral_override`` 관련 테스트에 있다(``ja_reading._MEASURED_ARABIC_COUNTERS`` 참조).
+"조수사 앞에서 언제 이 모듈을 부르는가"와 "그 뒤 조수사에 어떤 음변화가 걸리는가"는
+``test_ja_reading.py``에 있다(``_reads_arabic_digits``의 사전 태그 판정과 一~十 x 조수사
+대조표).
 """
 import pytest
 
