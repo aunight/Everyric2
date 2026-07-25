@@ -494,7 +494,18 @@ LYRICS:
 
     def _should_skip_pronunciation(self, text: str, source_lang: str) -> bool:
         """원문이 영어/한국어면 로마자/한글 발음표기가 무의미하므로 생략한다.
-        번역 자체는 그대로 수행되고 pronunciation 필드만 비운다."""
+        번역 자체는 그대로 수행되고 pronunciation 필드만 비운다.
+
+        **가나가 있으면 생략하지 않는다.** 이 함수의 전제는 "원문이 영어/한국어"인데,
+        `_detect_lang_heuristic`은 글자 수로 판정하므로 **영어가 많이 섞인 일본어 곡**을
+        영어로 오판한다. 실측: 라틴 7줄/일본어 3줄로 된 요청에서 판정이 "en"이 되어
+        10줄 전부 발음이 None으로 나갔다(번역은 정상, `failed=False`). 하필 라틴이 많은 곡이
+        정렬이 가장 나쁜 곡이라(라인 conf가 라틴 없는 줄의 1/10) 발음이 그 줄에서 가장
+        필요한데, 그 곡만 발음을 못 받고 있었다. 가나가 한 글자라도 있으면 원문은 영어가
+        아니고 한글 독음이 의미를 가지므로 전제가 성립하지 않는다.
+        """
+        if has_kana(text):
+            return False
         lang = source_lang
         if lang == "auto":
             lang = self._detect_lang_heuristic(text)

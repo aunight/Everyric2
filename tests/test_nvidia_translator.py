@@ -175,6 +175,43 @@ class TestPronunciationGateHeuristic:
         assert self.probe._detect_lang_heuristic(text) == "other"
         assert self.probe._should_skip_pronunciation(text, "auto") is False
 
+    def test_latin_heavy_japanese_still_gets_a_reading(self):
+        """영어가 많이 섞인 일본어 곡은 발음을 건너뛰면 안 된다.
+
+        `_detect_lang_heuristic`은 글자 수로 판정하므로 라틴이 가나보다 많으면 "en"을 낸다.
+        실측: 라틴 7줄 / 일본어 3줄 요청에서 판정이 "en"이 되어 **10줄 전부 발음이 None**으로
+        나갔다(번역은 정상, failed=False). 하필 라틴이 많은 곡이 정렬이 가장 나쁜 곡이라
+        (라인 conf가 라틴 없는 줄의 1/10) 발음이 그 줄에서 가장 필요한데 그 곡만 못 받았다.
+        가나가 한 글자라도 있으면 원문은 영어가 아니므로 이 게이트의 전제가 성립하지 않는다.
+        """
+        text = "\n".join([
+            "Approved Approved Approved Approved",
+            "ひらひら numb numb",
+            "おまえはATM",
+            "Catch my heart",
+            "LOVE STOP YEAH",
+            "エグいよ",
+            "縋って いつも縋って",
+        ])
+        assert self.probe._detect_lang_heuristic(text) == "en"  # 판정은 여전히 en이다
+        assert self.probe._should_skip_pronunciation(text, "auto") is False  # 그래도 건너뛰지 않는다
+
+    def test_a_single_kana_is_enough_to_keep_the_reading(self):
+        # 경계: 라틴이 압도적이어도 가나 한 글자가 있으면 유지한다
+        assert self.probe._should_skip_pronunciation("hello world さ", "auto") is False
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "hello world this is a song about love",   # 순수 영어
+            "오늘 밤 우리 함께 걸어요",                  # 순수 한국어
+            "오늘 밤 baby 우리 dance floor",            # 한국어+라틴(KPOP) — 가나 없음
+        ],
+    )
+    def test_kana_free_text_still_skips(self, text):
+        # 가나가 없으면 기존 판정 그대로 — 이 변경이 영어·한국어 곡을 건드리지 않는다
+        assert self.probe._should_skip_pronunciation(text, "auto") is True
+
 
 class TestPayloadExtras:
     """reasoning 모델별 추가 페이로드 — qwen은 thinking off, gpt-oss는 effort low.
