@@ -494,6 +494,7 @@ export type BgRequest =
 
 export type ContentMessage =
   | { type: 'TOGGLE_OVERLAY' }
+  | { type: 'TOGGLE_DEBUG' }
   | { type: 'SYNC_GENERATED'; payload: { videoId: string } };
 
 export interface MessageResponse<T = unknown> {

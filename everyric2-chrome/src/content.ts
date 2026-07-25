@@ -190,9 +190,29 @@ async function loadCss(): Promise<string> {
 function handleRuntimeMessage(message: ContentMessage): void {
   if (message.type === 'TOGGLE_OVERLAY') {
     void toggleOverlay();
+  } else if (message.type === 'TOGGLE_DEBUG') {
+    void toggleDebugInfo();
   } else if (message.type === 'SYNC_GENERATED' && message.payload.videoId === currentVideoId) {
     void searchLyrics();
   }
+}
+
+/**
+ * 디버그 정보 표시를 핫키로 켜고 끈다 (Alt+Shift+D — 키 선택 근거는 background.ts).
+ *
+ * **켤 때는 패널도 함께 연다.** 디버그 줄은 패널 안에 있고(`ey-debug`) `pushDebug`가 패널이
+ * 없으면 아무 것도 하지 않으므로, 패널이 닫힌 채로 켜면 눌렸는지조차 알 수 없다 — 핫키가
+ * 조용히 아무 일도 안 하는 것처럼 보이는 것이 이 기능에서 가장 나쁜 결과다.
+ *
+ * **끌 때는 패널을 건드리지 않는다.** 디버그만 끄려던 사람의 패널을 닫아 버리면 곤란하다.
+ *
+ * 설정 변경은 `handleSettingsChange`를 그대로 탄다 — 저장·패널·PiP 반영이 한 곳에 모여 있어
+ * 핫키 경로만 다르게 동작할 여지가 없다.
+ */
+async function toggleDebugInfo(): Promise<void> {
+  const next = !settings.debugInfo;
+  if (next) ensureOverlay().setVisible(true);
+  await handleSettingsChange({ debugInfo: next });
 }
 
 function observeNavigation(): void {
@@ -1340,15 +1360,38 @@ async function pruneVocaroRefs(): Promise<void> {
   } catch { /* 정리 실패는 무시 */ }
 }
 
+/**
+ * 후보 조회 순번 — **가장 최근에 발사한 조회의 응답만 화면에 그린다.**
+ *
+ * `searchSeq`(가사 검색·생성 흐름)와 **일부러 분리했다.** 그것을 올리면 진행 중인 가사
+ * 로딩까지 폐기되는데(handlePickCandidate가 그 목적으로 쓴다), 후보 목록을 새로 조회하는
+ * 것은 그런 뜻이 아니다.
+ *
+ * 왜 필요한가: `openSearch()`는 검색 시트를 열면 **즉시** 유튜브 원본 제목으로 자동 조회를
+ * 쏜다(overlay.ts). 원본 제목은 보통 지저분해서(`熱異常 / いよわ - むﾄ (cover)`) 어느
+ * 소스와도 매칭되지 않는다. 사용자가 그 직후 제목을 다듬어 다시 검색하면 — 패널이 바로
+ * 그렇게 하라고 권한다 — 두 조회가 독립적으로 날아가고, **늦게 도착한 쪽이 화면을 덮어쓴다.**
+ * LRCLIB 응답이 0.9~3.1초로 들쭉날쭉해 어느 쪽이 늦는지가 매번 달라진다.
+ *
+ * 실측: 8회 시도 중 7회가 "결과가 없어요"였고, 그중 사용자 쿼리는 실제로 맞는 후보를
+ * 찾아냈는데도(vocaro-match found:true) 자동 조회의 빈 결과가 화면에 남았다. 같은 코드가
+ * 타이밍에 따라 성공하기도 해서(늦게 끝난 회차는 정상 후보 3개로 안착) 순수 경쟁 조건이다.
+ * 백엔드는 44회 요청 전부 쿼리에 정확히 부합하는 응답을 줬다 — 잘못된 것은 이쪽뿐이다.
+ */
+let candidateSearchSeq = 0;
+
 /** 수동 검색: 소스별 후보 리스트를 모아 패널에 전달 */
 async function handleCandidateSearch(query: { title: string; artist: string }): Promise<void> {
   const videoId = currentVideoId;
   if (!videoId) return;
+  const seq = ++candidateSearchSeq;
   const res = await sendToBackground<SearchCandidate[]>({
     type: 'SEARCH_CANDIDATES',
     payload: { ...query, duration: currentSong?.duration ?? 0 },
   });
-  if (videoId !== currentVideoId) return;
+  // 낡은 조회의 응답은 성공이든 실패든 버린다 — 실패 알림도 마찬가지다. 사용자가 이미
+  // 다른 검색어로 넘어간 뒤에 옛 조회의 오류를 띄우면 방금 누른 검색이 실패한 것처럼 보인다.
+  if (videoId !== currentVideoId || seq !== candidateSearchSeq) return;
   // 실패를 빈 배열로 접으면 패널이 "결과가 없어요 — 제목을 줄여 보세요"를 띄운다. 서버가
   // 죽었거나 키가 틀린 것을 검색어 탓으로 돌리는 셈이고, 사용자는 틀린 행동을 반복한다.
   // 사용자가 직접 누른 버튼이니 실패는 실패라고 말한다.

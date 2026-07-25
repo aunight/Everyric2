@@ -55,6 +55,25 @@ chrome.action.onClicked.addListener(tab => {
   }
 });
 
+/**
+ * 핫키(Alt+Shift+D) → 해당 탭의 디버그 정보 표시 토글.
+ *
+ * 키 선택 근거: 유튜브가 알파벳 단일키를 거의 다 쓴다(k j l f t i m c o w, 0-9, , . < > /,
+ * Space, 화살표). 크롬은 Ctrl+Shift+{I J C M T W B O N **D** A}를 예약하므로 Ctrl+Shift+D는
+ * 쓸 수 없다(모든 탭 북마크). Alt+Shift 조합은 유튜브·크롬·OS 어디에도 겹치지 않고, 패널은
+ * 키 이벤트를 stopPropagation으로 끊으므로(overlay.ts) 패널 안 타이핑과도 충돌하지 않는다.
+ *
+ * macOS에서는 Alt가 Option으로 매핑돼 Option+Shift+D가 특수문자 입력과 겹칠 수 있다.
+ * commands가 먼저 가로채므로 실동작에는 문제가 없을 것으로 보지만 **실측하지 않았다** —
+ * 문제가 있으면 사용자가 chrome://extensions/shortcuts에서 재지정할 수 있다.
+ */
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== 'toggle-debug' || tab?.id === undefined) return;
+  chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_DEBUG' }).catch(() => {
+    /* content script가 없는 탭(비 YouTube)은 무시 */
+  });
+});
+
 async function handleMessage(message: BgRequest): Promise<MessageResponse> {
   switch (message.type) {
     case 'FETCH_LYRICS': {

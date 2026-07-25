@@ -46,6 +46,13 @@
     "default_title": "Everyric 가사 패널 열기/닫기"
   },
 
+  "commands": {
+    "toggle-debug": {
+      "suggested_key": { "default": "Alt+Shift+D" },
+      "description": "디버그 정보 표시 켜기/끄기"
+    }
+  },
+
   "web_accessible_resources": [{
     "resources": ["icons/*", "overlay.css"],
     "matches": ["https://www.youtube.com/*", "https://music.youtube.com/*"]
