@@ -651,6 +651,8 @@ async def run_pipeline(job: JobInput, hooks: PipelineHooks) -> PipelineResult | 
             job.line_meta,
             lambda name: stage_holder.__setitem__("stage", name),
             resolver,
+            # 자막 앵커 조달용 — 가사 출처와 무관하게 «이 영상»의 사람 자막 시각을 본다
+            job.video_id,
         )
     except JobCancelled:
         # line_meta 대기 중 취소 — 오디오는 _run_alignment의 finally가 이미 지웠다.
@@ -2567,8 +2569,67 @@ def _log_referee_decisions(decisions: list[dict]) -> None:
     )
 
 
+def _caption_forbidden_spans(video_id: str | None, lyric_lines, audio_sec: float, align_settings):
+    """사람이 만든 유튜브 자막에서 «가사 줄이 놓일 수 없는 구간»을 뽑는다 (블로킹 IO).
+
+    앵커는 **있으면 좋은** 신호다 — 자막 조달·매칭이 어떤 이유로든 실패하면 금지 구간 없이
+    (=기존 동작으로) 계속한다. 그래서 예외를 전부 삼키고 근거만 debug에 남긴다.
+
+    가사 출처와 무관하게 동작해야 한다는 점이 중요하다. 사고 곡의 가사는 자막이 아니라
+    위키에서 왔고, 앵커는 «타이밍 좌표계»로만 쓰이므로 자막 가사 경로와 독립이다.
+    """
+    from everyric2.alignment.caption_anchors import (
+        AnchorPlan,
+        derive_anchor_plan,
+        script_lang_hint,
+    )
+
+    if not getattr(align_settings, "caption_anchors", False) or not video_id:
+        return AnchorPlan(debug={"skipped": "disabled" if video_id else "no_video_id"})
+    texts = [ln.text for ln in lyric_lines]
+    try:
+        from everyric2.server.services.youtube_captions import iter_manual_caption_events
+
+        tracks = iter_manual_caption_events(
+            video_id,
+            script_lang_hint("\n".join(texts)),
+            align_settings.caption_anchor_max_tracks,
+        )
+        plan = derive_anchor_plan(
+            texts,
+            tracks,
+            min_match=align_settings.caption_anchor_min_match,
+            min_gap_sec=align_settings.caption_anchor_min_gap_sec,
+            margin_sec=align_settings.caption_anchor_margin_sec,
+            audio_sec=audio_sec,
+            max_forbidden_ratio=align_settings.caption_anchor_max_forbidden_ratio,
+            positive_min_match=align_settings.caption_anchor_positive_min_match,
+        )
+    except Exception:
+        logger.exception("Caption anchor derivation failed; aligning without anchors")
+        return AnchorPlan(debug={"skipped": "error"})
+    if plan.spans or plan.line_starts:
+        logger.info(
+            f"Caption anchors for {video_id}: track {plan.debug.get('track')} matched "
+            f"{plan.debug.get('matched')}/{plan.debug.get('matchable')} line(s) "
+            f"({plan.debug.get('rate')}); forbidding {plan.debug.get('spans')}, "
+            f"anchoring {len(plan.line_starts)} line start(s)"
+        )
+    else:
+        logger.info(
+            f"Caption anchors for {video_id}: not used ({plan.debug.get('skipped')}); "
+            f"{plan.debug}"
+        )
+    return plan
+
+
 def _align_with_pronunciation(
-    engine, audio, lyric_lines, by_text: dict[str, dict[str, Any]], align_settings=None
+    engine,
+    audio,
+    lyric_lines,
+    by_text: dict[str, dict[str, Any]],
+    align_settings=None,
+    anchor_kw: dict[str, Any] | None = None,
 ):
     """독음(ko) 텍스트로 CTC 정렬 후 원문 라인에 역매핑.
 
@@ -2613,6 +2674,7 @@ def _align_with_pronunciation(
         language="ko",
         line_candidates=referee_cands or None,
         referee_margins=referee_margins or None,
+        **(anchor_kw or {}),
     )
     # ko 정렬 직후에 포착한다 — 이후 ja 교차정렬이 엔진의 직전-정렬 기록을 덮는다
     # (pron_star_spans와 같은 사정).
@@ -2690,6 +2752,30 @@ def _align_with_pronunciation(
     return results, pron_data
 
 
+def _align_original(engine, audio, lyric_lines, language: str | None, anchor_kw=None):
+    """원문 텍스트 정렬 — 자막 앵커 제약을 독음 경로와 **똑같이** 걸어 준다.
+
+    ja 교차정렬·폴백까지 같은 제약을 받아야 아래 누출 가드(_leaked_runs)가 같은 좌표계의
+    두 정렬을 비교한다. 한쪽만 제약하면 가드가 «제약 때문에 생긴 차이»를 누출로 오독한다.
+
+    앵커가 없으면 앵커 인자를 **아예 넘기지 않는다**(``anchor_kw``가 빈 dict) — 기본 경로의 호출이
+    앵커 도입 전과 문자 그대로 같아야 한다(엔진 대역을 쓰는 호출부·테스트도 그대로 통과한다).
+    """
+    return engine.align(
+        audio, lyric_lines, language=language or "auto", **(anchor_kw or {})
+    )
+
+
+def _anchor_kwargs(forbidden_spans, line_starts=None) -> dict[str, Any]:
+    """앵커가 있을 때만 그 키워드를 만든다 (없으면 빈 dict = 앵커 도입 전과 같은 호출)."""
+    kwargs: dict[str, Any] = {}
+    if forbidden_spans:
+        kwargs["forbidden_spans"] = forbidden_spans
+    if line_starts:
+        kwargs["line_starts"] = line_starts
+    return kwargs
+
+
 def _run_alignment(
     audio_path: str,
     lyrics: str,
@@ -2697,10 +2783,15 @@ def _run_alignment(
     line_meta: list[dict[str, Any]] | None = None,
     on_stage: Any | None = None,
     line_meta_resolver: Any | None = None,
+    video_id: str | None = None,
 ) -> dict:
     """정렬 본체. line_meta_resolver를 주면 **보컬 분리·f0 착수 뒤, CTC 진입 직전에** 한 번
     불러 line_meta를 늦게 받아온다 (번역·독음을 클라이언트가 병렬로 만드는 경로).
-    리졸버가 None을 돌려주면(상한 초과) 원문 정렬로 그대로 진행한다."""
+    리졸버가 None을 돌려주면(상한 초과) 원문 정렬로 그대로 진행한다.
+
+    video_id를 주고 ``caption_anchors``가 켜져 있으면 사람이 만든 유튜브 자막의 타임스탬프에서
+    «가사 줄이 놓일 수 없는 구간»을 뽑아 정렬에 제약으로 넣는다 (``_caption_forbidden_spans``).
+    가사 출처와 무관한 별개 신호이므로 자막으로 만든 싱크가 아니어도 동작한다."""
     from everyric2.audio.loader import AudioLoader
     from everyric2.config.settings import get_settings
     from everyric2.inference.prompt import LyricLine
@@ -2719,6 +2810,8 @@ def _run_alignment(
 
     # WS2-B 병렬 f0 실행기 — 정렬 도중 예외가 나도 outer finally가 반드시 정리하도록 밖에 둔다
     f0_executor = None
+    # 자막 앵커 조달 실행기 — 같은 사정으로 밖에 둔다 (정렬 진입 전 예외 경로)
+    anchor_executor = None
 
     try:
         audio = loader.load(audio_path_obj)
@@ -2739,6 +2832,21 @@ def _run_alignment(
         engine = get_shared_ctc_engine(settings.alignment)
         if not engine.is_available():
             raise RuntimeError("CTC engine not available")
+
+        # 자막 앵커 조달은 네트워크 IO(트랙당 yt-dlp 1회)라 보컬 분리와 **겹쳐서** 돌린다 —
+        # 정렬 진입 전에만 있으면 되므로 분리 시간에 그대로 숨는다(f0 병렬과 같은 방식).
+        anchor_future = None
+        if settings.alignment.caption_anchors and video_id:
+            import concurrent.futures
+
+            anchor_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            anchor_future = anchor_executor.submit(
+                _caption_forbidden_spans,
+                video_id,
+                lyric_lines,
+                audio.duration,
+                settings.alignment,
+            )
 
         # 보컬 스템 1회 분리 — 원 설계(CLI --separate)대로 정렬 입력으로 쓰고, 아래 VAD
         # 라인 경계 보정과 멜로디 f0 추출에 재사용한다. 반주가 빠진 스템은 CTC emission이
@@ -2777,6 +2885,27 @@ def _run_alignment(
             report(LINE_META_WAIT_STAGE)
             line_meta = line_meta_resolver()
 
+        # 자막 앵커 결과 수거 — 여기서만 기다린다(보컬 분리와 겹쳐 돌았다). 조달 실패는
+        # 빈 계획이라 정렬은 기존 경로 그대로 간다.
+        anchor_plan = None
+        anchor_kw: dict[str, Any] = {}
+        if anchor_future is not None:
+            try:
+                anchor_plan = anchor_future.result()
+                # 양성 제약은 스위치가 따로다 — 실패 방향이 반대라 음성 제약과 함께 켜지지 않는다
+                anchor_kw = _anchor_kwargs(
+                    anchor_plan.spans,
+                    anchor_plan.line_starts
+                    if settings.alignment.caption_anchor_positive
+                    else None,
+                )
+            except Exception:
+                logger.exception("Caption anchor thread failed; aligning without anchors")
+            finally:
+                if anchor_executor is not None:
+                    anchor_executor.shutdown(wait=True)
+                    anchor_executor = None
+
         report("전사 정렬")
         # 독음(ko) 정렬 경로: 커버리지가 충분하면 한국어 발음 텍스트+kor adapter로 정렬하고
         # 원문 라인에 역매핑한다. 미달/실패 시 원문 정렬로 폴백 (회귀 0).
@@ -2791,20 +2920,31 @@ def _run_alignment(
         if settings.alignment.use_pronunciation and coverage >= 0.9:
             try:
                 results, pron_data = _align_with_pronunciation(
-                    engine, align_audio, lyric_lines, by_text, settings.alignment
+                    engine,
+                    align_audio,
+                    lyric_lines,
+                    by_text,
+                    settings.alignment,
+                    anchor_kw=anchor_kw,
                 )
                 alignment_text = "pronunciation"
                 logger.info(f"Pronunciation alignment used (coverage={coverage:.2f})")
             except Exception:
                 logger.exception("Pronunciation alignment failed; falling back to original text")
-                results = engine.align(align_audio, lyric_lines, language=language or "auto")
+                results = _align_original(
+                    engine, align_audio, lyric_lines, language, anchor_kw
+                )
                 pron_data = None
                 heard_by_line = dict(getattr(engine, "_last_heard", None) or {})
         else:
             if settings.alignment.use_pronunciation:
                 logger.info(f"Pronunciation coverage {coverage:.2f} < 0.9; using original text")
-            results = engine.align(align_audio, lyric_lines, language=language or "auto")
+            results = _align_original(engine, align_audio, lyric_lines, language, anchor_kw)
             heard_by_line = dict(getattr(engine, "_last_heard", None) or {})
+
+        # 자막 앵커 판정은 **ko 정렬 직후** 포착한다 — 아래 ja 교차정렬이 엔진의 직전-정렬
+        # 기록을 덮는다(pron_star_spans·심판 판정과 같은 사정).
+        anchor_decision = getattr(engine, "_last_caption_anchor", None)
 
         # 독음 정렬의 star span (아래 VAD 확보 후 '발성 삼킴' 게이트에 쓴다) — 이중정렬/가드
         # ja가 engine._last_star_spans를 덮으므로 어떤 재정렬보다 먼저 ko 정렬 직후 포착한다.
@@ -2839,8 +2979,8 @@ def _run_alignment(
                 settings.alignment.fuse_original_chars,
             ):
                 try:
-                    ja_alignment = engine.align(
-                        align_audio, lyric_lines, language=language or "auto"
+                    ja_alignment = _align_original(
+                        engine, align_audio, lyric_lines, language, anchor_kw
                     )
                     ja_adapter = getattr(engine, "_current_adapter", None)
                 except Exception:
@@ -2925,7 +3065,9 @@ def _run_alignment(
                         ja_candidate = (
                             ja_alignment
                             if ja_alignment is not None
-                            else engine.align(align_audio, lyric_lines, language=language or "auto")
+                            else _align_original(
+                                engine, align_audio, lyric_lines, language, anchor_kw
+                            )
                         )
                         # 1) 역방향 누출(모든 간주): ja가 간주 이후에 두는데 ko가 앞으로 뺀
                         #    라인들의 변위 런 중 크게(>= leak_min) 밀린 것만 골라 그 라인들의
@@ -3271,6 +3413,11 @@ def _run_alignment(
             # quality_norm은 여전히 **측정된 줄만의** 첨예도이므로, 이 값을 함께 봐야 해석된다.
             "align_coverage": coverage_meta,
         }
+        # 자막 앵커: 어떤 트랙이 몇 줄 매칭됐고 어느 구간을 금지했고 그 제약이 채택됐는지.
+        # 사후 감사가 안 되면 이 기능은 신뢰할 수 없다 — 앵커를 안 쓴 경우에도 «왜 안 썼는지»
+        # (skipped)를 남긴다. 앵커 스위치가 꺼져 있으면 키 자체가 없다(기존 debug와 동일).
+        if anchor_plan is not None:
+            debug_meta["caption_anchors"] = {**anchor_plan.debug, "decision": anchor_decision}
 
         return {
             "timestamps": timestamps,
@@ -3288,4 +3435,7 @@ def _run_alignment(
         # 여기로 빠졌을 때만 남은 f0 스레드를 정리한다(멱등, 실행 중 future는 기다리지 않음)
         if f0_executor is not None:
             f0_executor.shutdown(wait=False)
+        # 앵커 수거 지점을 지났으면 이미 None이다 — 그 전에 예외로 빠진 경우만 정리한다
+        if anchor_executor is not None:
+            anchor_executor.shutdown(wait=False)
         audio_path_obj.unlink(missing_ok=True)

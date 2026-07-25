@@ -8,7 +8,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable
-from typing import Literal
+from typing import Any, Literal, NamedTuple
 
 import torch
 import torchaudio
@@ -295,6 +295,189 @@ def _min_ctc_frames(ids: list[int]) -> int:
     return len(ids) + sum(1 for a, b in zip(ids, ids[1:]) if a == b)
 
 
+# 금지 프레임에서 실제 토큰 열에 덮어쓰는 값. **-inf가 아니라 유한값**인 이유는 실측이다
+# (torchaudio 2.8.0, CPU): 실행 가능한 마스크에서는 두 값이 완전히 같은 경로를 내고 NaN도
+# 없었지만, 마스크가 실행 불가능해질 때 갈렸다 — 전 구간을 -inf로 막으면 forced_align이
+# **토큰 순서를 지키지 않는 무효 경로**([0, 3, 3, 3, ...] — 토큰 1·2가 아예 배출되지 않음)를
+# 내놓고 score에 -inf를 실어 보낸다. -1e4는 같은 상황에서도 순서가 살아 있는 정상 경로를
+# 내고(그 경로는 아래 손실 판정에서 압도적으로 탈락한다), -inf가 char_info 역매핑을 조용히
+# 망가뜨릴 여지를 아예 없앤다. 크기 근거: 어떤 실제 log 확률보다 4자리 낮고(어댑터 글자당
+# 약 -3 nats), T=5만 프레임을 전부 곱해도 float32 범위(~3.4e38)에 한참 못 미친다.
+_FORBIDDEN_LOGP = -1.0e4
+
+# 설정을 못 읽을 때 쓰는 앵커 채택 상한 (AlignmentSettings.caption_anchor_max_token_loss와
+# 같은 값 — 근거는 그 필드 description에 있다).
+_DEFAULT_ANCHOR_MAX_TOKEN_LOSS = 0.3
+
+
+def _forbidden_frames(
+    spans: list[tuple[float, float]], num_frames: int, ratio: float
+) -> torch.Tensor:
+    """금지 구간(초) → 그 구간에 **완전히** 들어가는 프레임 인덱스 (1-D long 텐서).
+
+    경계 프레임은 ceil/floor로 잘라 버린다 — 반쯤 걸친 프레임까지 막으면 앞 앵커의 마지막
+    글자나 다음 앵커의 첫 글자를 밀어낼 수 있고, 이 기능의 기본자세는 «덜 막는다»다.
+    """
+    mask = torch.zeros(num_frames, dtype=torch.bool)
+    for start, end in spans:
+        f0 = max(0, math.ceil(start / ratio))
+        f1 = min(num_frames, math.floor(end / ratio))
+        if f1 > f0:
+            mask[f0:f1] = True
+    return mask.nonzero(as_tuple=True)[0]
+
+
+class _Span(NamedTuple):
+    """``F.merge_tokens``의 TokenSpan과 같은 인터페이스 (start/end/score).
+
+    창별 정렬 결과를 프레임 오프셋만큼 옮겨 전곡 위치 인덱스로 다시 늘어놓을 때 쓴다.
+    downstream(`char_info` 역매핑·라인 창·star 기록)은 이 세 필드만 본다.
+    """
+
+    start: int
+    end: int
+    score: float
+
+
+def _anchor_blocks(
+    line_starts: dict[int, float],
+    n_lines: int,
+    line_boundaries: list[tuple[int, int]],
+    n_tokens: int,
+    num_frames: int,
+    ratio: float,
+    window_sec: float,
+) -> list[tuple[int, int, int, int]]:
+    """앵커 줄을 칸막이로 삼아 (토큰 시작, 토큰 끝, 프레임 시작, 프레임 끝) 블록을 만든다.
+
+    각 블록은 «앵커 줄 하나 + 그 뒤의 매칭 안 된 줄들»이고, 프레임 창은 그 앵커의 자막 시각
+    ± ``window_sec``에서 다음 앵커의 자막 시각 + ``window_sec``까지다. 앵커 줄은 자기 창 밖에서
+    시작할 수 없고, 매칭 안 된 줄은 창 안에서 자유롭다.
+
+    프레임 시작은 «앞 블록이 실제로 끝난 프레임»과 «자막 시각 - 창» 중 늦은 쪽으로 잡히는데
+    그 순차화는 호출부가 한다(앞 블록의 정렬 결과를 알아야 한다). 여기서는 자막 기준값만 낸다.
+    """
+    anchored = sorted(line_starts)
+    if not anchored:
+        return []
+
+    def frame_of(t: float) -> int:
+        return max(0, min(num_frames, int(round(t / ratio))))
+
+    # 줄 구간 경계: [0, a_0), [a_0, a_1), ..., [a_m, n_lines)
+    edges = ([0] if anchored[0] > 0 else []) + anchored + [n_lines]
+    blocks: list[tuple[int, int, int, int]] = []
+    for k in range(len(edges) - 1):
+        lo_line, hi_line = edges[k], edges[k + 1]
+        if hi_line <= lo_line:
+            continue
+        p_lo = 0 if k == 0 and lo_line == 0 else line_boundaries[lo_line][0]
+        p_hi = n_tokens if hi_line >= n_lines else line_boundaries[hi_line - 1][1] + 1
+        # 이 블록의 왼쪽 시각 근거 — 선행 블록(앵커 없는 첫 줄들)은 0부터다
+        t_lo = line_starts.get(lo_line)
+        f_lo = 0 if t_lo is None else frame_of(t_lo - window_sec)
+        # 오른쪽은 다음 앵커의 자막 시각 + 창 (마지막 블록은 곡 끝)
+        t_hi = line_starts.get(hi_line)
+        f_hi = num_frames if t_hi is None else frame_of(t_hi + window_sec)
+        blocks.append((p_lo, p_hi, f_lo, f_hi))
+    return blocks
+
+
+def _span_bounds(path: torch.Tensor, blank_id: int) -> list[tuple[int, int]]:
+    """정렬 경로 → 타깃 토큰별 (시작, 끝) 프레임. k번째 스팬이 k번째 타깃 토큰이다.
+
+    ``F.merge_tokens``와 같은 경계를 내지만 점수를 요구하지 않는다. 마스킹된 emission 위에서
+    구한 경로의 **경계만** 먼저 알아야 하고(다음 블록의 하한 계산), 점수는 마스크를 되돌린 뒤
+    원본에서 매겨야 하기 때문이다. 같은 토큰이 연달아 오는 경우 CTC가 사이에 blank를 넣으므로
+    스팬은 타깃과 1:1로 대응한다 — 이 파일의 기존 코드가 이미 그 대응에 의존한다.
+    """
+    labels = path.tolist()
+    bounds: list[tuple[int, int]] = []
+    start = None
+    prev = blank_id
+    for t, lab in enumerate(labels):
+        if lab != prev:
+            if start is not None:
+                bounds.append((start, t))
+                start = None
+            if lab != blank_id:
+                start = t
+            prev = lab
+    if start is not None:
+        bounds.append((start, len(labels)))
+    return bounds
+
+
+def _spans_by_position(
+    emission: torch.Tensor,
+    tokens: list[int],
+    blank_id: int,
+    paths: list[tuple[int, int, torch.Tensor]],
+    n_tokens: int,
+) -> list:
+    """블록별 경로들을 전곡 토큰 위치 인덱스의 스팬 목록으로 되돌린다.
+
+    점수는 **원본 emission**에서 매긴다 — 마스크 바닥값이 섞이면 신뢰도가 오염되고 그 값이
+    quality_score까지 흘러간다. 스팬 안에서는 라벨이 상수이므로 그 열의 평균이 곧
+    ``merge_tokens``가 내는 점수다.
+    """
+    out: list = [None] * n_tokens
+    for p_lo, f_lo, path in paths:
+        for k, (s, e) in enumerate(_span_bounds(path, blank_id)):
+            pos = p_lo + k
+            if pos >= n_tokens:
+                break
+            gs, ge = f_lo + s, f_lo + e
+            out[pos] = _Span(gs, ge, float(emission[0, gs:ge, tokens[pos]].mean()))
+    return out
+
+
+def _token_peak_support(
+    emission: torch.Tensor,
+    spans_by_pos: list,
+    tokens: list[int],
+    char_positions: list[int],
+) -> float | None:
+    """글자 토큰이 자기 슬롯 안에서 얻은 **최고 로그확률**의 평균 (원본 emission 기준).
+
+    두 정렬 경로를 비교하는 척도다. 경로 전체 로그우도로 비교할 수 없는 이유:
+
+    ① star 열이 ``log(1.0)=0``이라 **star가 덮는 프레임 수가 점수를 지배한다.** 양성 제약은
+       star를 실제 가창 구간에서 걷어내므로 경로 총점이 크게 떨어지는데, 그 하락은 「배치가
+       나빠졌다」가 아니라 「공짜 채널을 덜 썼다」다. 실측(zyRt-nBM3dY): 금지 구간만으로도
+       총점 -4777 → -4831이었고, 그 차이는 음향 근거와 무관했다.
+    ② 스팬 길이에 흔들리지 않아야 한다. 1패스는 토큰 프레임 수를 최소화해 각 토큰이 1프레임만
+       갖는 경향이 있고, 제약이 걸린 2패스는 더 넓은 슬롯을 갖는다. 평균은 넓은 슬롯에
+       불리하지만 **최댓값은 슬롯 길이에 중립**이다.
+
+    묻는 것은 하나다: **각 글자가 자기 자리에서 음향 근거를 찾았는가.** 균일 바닥 posterior
+    (합성보컬)에서는 두 경로가 같은 값을 내고(= 제약이 아무것도 잃지 않는다), 봉우리가 있는
+    곡에서 글자를 봉우리 밖으로 끌어내면 즉시 벌어진다 — 정상 곡을 지키는 것이 이 척도다.
+    """
+    vals: list[float] = []
+    for pos in char_positions:
+        if pos >= len(spans_by_pos):
+            continue
+        span = spans_by_pos[pos]
+        if span is None:
+            continue
+        s, e = int(span.start), int(span.end)
+        if e <= s:
+            continue
+        vals.append(float(emission[0, s:e, tokens[pos]].max()))
+    return sum(vals) / len(vals) if vals else None
+
+
+def _path_frame_logprobs(emission: torch.Tensor, path: torch.Tensor) -> torch.Tensor:
+    """경로(프레임별 라벨)를 주어진 emission에서 재채점한 프레임별 로그확률.
+
+    두 정렬 경로를 **같은 목적함수**로 비교하는 유일한 방법이다. 마스킹된 emission의 경로
+    점수는 목적함수가 달라(금지 열이 -1e4) 서로 비교할 수 없다.
+    """
+    idx = torch.arange(path.shape[-1], device=emission.device)
+    return emission[0, idx, path.to(torch.long)]
+
+
 def _score_tokens(window: torch.Tensor, ids: list[int], blank_id: int):
     """창(emission 슬라이스)에 토큰열을 강제정렬하고 (프레임당 평균 로그확률, 스팬)을 낸다.
 
@@ -337,6 +520,9 @@ def _line_frame_windows(char_info: list[dict], token_spans) -> dict[int, tuple[i
             continue
         line_idx = ci["line_idx"]
         span = token_spans[idx]
+        # 창 정렬 경로는 위치별 목록이라 빈 자리가 있을 수 있다 (앵커 블록이 못 덮은 위치)
+        if span is None:
+            continue
         cur = windows.get(line_idx)
         windows[line_idx] = (
             int(span.start) if cur is None else cur[0],
@@ -388,6 +574,9 @@ class CTCEngine(BaseAlignmentEngine):
         self._last_match_stats = None
         # 직전 정렬에서 star 토큰이 흡수한 (start, end) 구간들 — 디버그/진단용
         self._last_star_spans: list[tuple[float, float]] = []
+        # 직전 정렬의 자막 앵커 판정 기록 (금지 구간·실행가능성·손실·채택) — 사후 감사용.
+        # 앵커를 주지 않은 정렬에서는 None이다.
+        self._last_caption_anchor: dict[str, Any] | None = None
         # 직전 정렬의 오디오 심판 판정 기록 (line_idx 오름차순). 워커가 로그·디버그 메타에
         # 실어 실오디오에서 판정 근거를 되짚을 수 있게 한다 — 조용히 바꾸면 사후 추적 불가.
         self._last_referee: list[dict] = []
@@ -698,6 +887,217 @@ class CTCEngine(BaseAlignmentEngine):
             ]
         return overrides, chosen
 
+    def _caption_anchor_pass(
+        self,
+        emission: torch.Tensor,
+        targets: torch.Tensor,
+        tokens: list[int],
+        blank_id: int,
+        star_id: int | None,
+        base_path: torch.Tensor,
+        base_spans: list,
+        forbidden_spans: list[tuple[float, float]],
+        ratio: float,
+        char_positions: list[int],
+        blocks: list[tuple[int, int, int, int]] | None = None,
+    ):
+        """금지 구간 프레임을 마스킹해 2패스 정렬을 돌리고, 이득이 있으면 그 결과를 쓴다.
+
+        **DP를 고치지 않는다.** ``F.forced_align``에는 구간 제약 API가 없으므로, 금지 프레임에서
+        blank와 star를 제외한 모든 열을 바닥값으로 눌러 DP가 그 프레임에서 실제 토큰을 배출할
+        수 없게 만든다 — 경로는 blank/star로 그 구간을 통과한다. 열을 붙여 DP를 조종하는 star
+        트릭, 같은 emission을 슬라이스해 DP만 다시 도는 심판과 같은 관용구다.
+
+        **양성 제약(``blocks``)은 마스킹으로 표현할 수 없다.** 「이 줄은 여기서 시작해야 한다」는
+        줄마다 다른 제약인데 emission의 축은 vocab이다 — 「の」의 열은 그 글자를 쓰는 모든 줄이
+        공유하므로 열을 눌러서 특정 줄만 막을 방법이 없다. 그래서 양성 제약은 **창을 쪼개** 건다:
+        앵커 줄을 칸막이로 삼아 전곡을 블록으로 나누고, 각 블록의 토큰열을 그 블록의 프레임
+        창(emission 슬라이스)에만 정렬한다. 창 안 정렬은 이 파일이 이미 하는 일이다(심판의
+        ``_score_tokens``). 두 제약은 함께 걸린다 — 마스크를 씌운 emission 위에서 창 정렬을 한다.
+
+        **왜 음성 제약만으로는 부족한가 (실측 zyRt-nBM3dY 2026-07-26).** 금지 구간은 지켜졌는데
+        (간주에 줄이 하나도 안 들어갔다) 앵커 줄 52개 중 **4개만** 자막 시각 ±5초 안에 들어왔고
+        중앙값이 **+29.6초** 밀렸다. 「여기 있을 수 없다」는 「여기 있어야 한다」를 함의하지 않고,
+        posterior가 균일 바닥이면 그 차이가 전부다.
+
+        **채택 판정의 방향이 심판과 반대다.** 1패스는 제약 없는 Viterbi 최적해이고 2패스는 같은
+        토큰열의 다른 경로이므로, 2패스가 이길 수는 없다. 물어야 할 것은 **제약을 지키느라
+        얼마를 포기했는가**이고, 척도는 ``_token_peak_support``(글자별 최고 로그확률의 평균)다 —
+        경로 총점은 star 커버리지에 지배되어 쓸 수 없다(그 함수 주석에 실측 근거가 있다).
+
+        반환: (채택한 위치별 스팬, 판정 기록). 포기했으면 기록의 ``skipped``에 이유가 들어가고
+        1패스 스팬이 그대로 나간다.
+        """
+        record: dict[str, Any] = {
+            "spans": [[round(s, 2), round(e, 2)] for s, e in forbidden_spans],
+            "tokens": len(char_positions),
+            "blocks": len(blocks or []),
+        }
+        num_frames = int(emission.shape[1])
+        frames = _forbidden_frames(forbidden_spans, num_frames, ratio).to(emission.device)
+        record["frames"] = int(frames.numel())
+        if frames.numel() == 0 and not blocks:
+            record["skipped"] = "no_constraint"
+            logger.info("Caption anchors constrain nothing here; alignment left untouched")
+            return base_spans, record
+
+        if frames.numel():
+            # 실행가능성: 금지되지 않은 프레임이 토큰열이 필요로 하는 최소 프레임 수보다 적으면
+            # 정렬 자체가 무의미해진다. star는 금지 프레임도 지나갈 수 있으므로 이 검사는 필요보다
+            # 크게 잡은 값이다(= 보수적으로 더 자주 포기한다).
+            free = num_frames - int(frames.numel())
+            need = _min_ctc_frames(tokens)
+            record["free_frames"] = free
+            record["need_frames"] = need
+            if free < need:
+                record["skipped"] = "infeasible"
+                logger.warning(
+                    f"Caption anchors would leave {free} free frame(s) for {need} token frame(s); "
+                    f"dropping the constraint and keeping the unconstrained alignment"
+                )
+                return base_spans, record
+
+        # 금지 프레임 블록만 저장해 두고 제자리에서 누른다 — emission 전체 복제는 긴 곡에서
+        # 수백 MB다(17분 곡 T≈5만 × vocab 1330 × 4B ≈ 271MB). 재채점은 원본에서 해야 하므로
+        # finally로 반드시 되돌린다.
+        saved = emission[0, frames, :].clone() if frames.numel() else None
+        # (위치, 프레임오프셋, 경로) — 마스크를 되돌린 뒤 원본 emission으로 점수를 매긴다
+        paths: list[tuple[int, int, torch.Tensor]] = []
+        try:
+            if saved is not None:
+                emission[0, frames, :] = _FORBIDDEN_LOGP
+                emission[0, frames, blank_id] = saved[:, blank_id]
+                if star_id is not None:
+                    emission[0, frames, star_id] = saved[:, star_id]
+            if blocks:
+                paths = self._align_in_blocks(
+                    emission, tokens, blank_id, blocks, num_frames, char_positions, record
+                )
+                if not paths:
+                    return base_spans, record
+            else:
+                path, _ = F.forced_align(emission, targets, blank=blank_id)
+                paths = [(0, 0, path[0])]
+        except Exception:
+            record["skipped"] = "align_failed"
+            logger.warning(
+                "Constrained (caption-anchored) alignment failed; keeping the unconstrained "
+                "alignment", exc_info=True,
+            )
+            return base_spans, record
+        finally:
+            if saved is not None:
+                emission[0, frames, :] = saved
+
+        # 여기서부터 emission은 원본이다 — 스팬 점수와 채택 판정 모두 원본으로 낸다.
+        new_spans = _spans_by_position(emission, tokens, blank_id, paths, len(tokens))
+        base_support = _token_peak_support(emission, base_spans, tokens, char_positions)
+        new_support = _token_peak_support(emission, new_spans, tokens, char_positions)
+        max_loss = float(
+            getattr(self.config, "caption_anchor_max_token_loss", None)
+            or _DEFAULT_ANCHOR_MAX_TOKEN_LOSS
+        )
+        loss = (
+            base_support - new_support
+            if base_support is not None and new_support is not None
+            else float("inf")
+        )
+        adopt = math.isfinite(loss) and loss <= max_loss
+        record.update(
+            {
+                "support": [
+                    None if base_support is None else round(base_support, 4),
+                    None if new_support is None else round(new_support, 4),
+                ],
+                "loss": round(loss, 4) if math.isfinite(loss) else None,
+                "max_loss": max_loss,
+                "adopted": adopt,
+            }
+        )
+        # 경로 총점도 함께 남긴다 — 채택 판정에는 쓰지 않지만(star 커버리지에 지배된다) 이전
+        # 실측치와 비교할 수 있어야 한다. 창 정렬은 전곡 경로가 아니므로 1패스만 낸다.
+        if not blocks:
+            record["path_score"] = [
+                round(float(_path_frame_logprobs(emission, base_path).sum()), 2),
+                round(float(_path_frame_logprobs(emission, paths[0][2]).sum()), 2),
+            ]
+        if not adopt:
+            logger.warning(
+                f"Caption-anchored alignment gives up {loss:.4f} nats/char of peak support "
+                f"(> {max_loss}); keeping the unconstrained alignment — the constraint "
+                f"(spans {record['spans']}, {record['blocks']} block(s)) probably disagrees "
+                f"with where this song is actually sung"
+            )
+            return base_spans, record
+
+        logger.info(
+            f"Caption-anchored alignment adopted: {record['frames']} frame(s) forbidden across "
+            f"{len(forbidden_spans)} span(s), {record['blocks']} anchored block(s); peak support "
+            f"{base_support:.4f} → {new_support:.4f} (loss {loss:.4f} <= {max_loss})"
+        )
+        return new_spans, record
+
+    def _align_in_blocks(
+        self,
+        emission: torch.Tensor,
+        tokens: list[int],
+        blank_id: int,
+        blocks: list[tuple[int, int, int, int]],
+        num_frames: int,
+        char_positions: list[int],
+        record: dict[str, Any],
+    ) -> list[tuple[int, int, torch.Tensor]]:
+        """블록별로 창 안 강제정렬. (토큰위치, 프레임오프셋, 경로) 목록 또는 빈 목록(포기).
+
+        **순차화**: 블록 k+1의 창 시작은 「자막 시각 - 창」과 「블록 k가 실제로 끝난 프레임」 중
+        늦은 쪽이다. 창이 겹치도록 잡혀 있어(양쪽 ±window) 그대로 두면 블록 k의 마지막 줄이
+        블록 k+1의 첫 줄보다 늦게 끝날 수 있고, 그러면 라인 시각의 순서가 깨진다.
+
+        「실제로 끝난 프레임」은 **마지막 글자 토큰의 끝**으로 잡는다. 블록 끝의 star는 점수가
+        0.0이라 남은 창 전부를 삼키므로(그것이 star의 일이다) 그것을 기준으로 삼으면 다음 블록의
+        창이 통째로 사라진다.
+
+        창이 토큰열에 필요한 최소 프레임보다 짧으면 창을 뒤로 늘린다. 늘림이 연쇄되면 제약이
+        점점 약해져 결국 제약 없는 배치로 수렴하는데, 그것이 안전한 실패 방향이다. 늘려도
+        모자라면 전체를 포기한다.
+        """
+        char_set = set(char_positions)
+        out: list[tuple[int, int, torch.Tensor]] = []
+        cursor = 0
+        widened = 0
+        for p_lo, p_hi, f_lo0, f_hi0 in blocks:
+            block_tokens = tokens[p_lo:p_hi]
+            if not block_tokens:
+                continue
+            need = _min_ctc_frames(block_tokens)
+            f_lo = max(int(f_lo0), cursor)
+            f_hi = min(num_frames, max(int(f_hi0), f_lo + need))
+            if f_hi > f_hi0:
+                widened += 1
+            if f_hi - f_lo < need:
+                record["skipped"] = "infeasible_block"
+                record["block_fail"] = [p_lo, p_hi, f_lo, f_hi, need]
+                logger.warning(
+                    f"Caption-anchored block [tokens {p_lo}:{p_hi}] needs {need} frame(s) but only "
+                    f"{f_hi - f_lo} are available at frames {f_lo}:{f_hi}; dropping the whole "
+                    f"anchored-block constraint and keeping the unconstrained alignment"
+                )
+                return []
+            targets = torch.tensor([block_tokens], dtype=torch.int32, device=emission.device)
+            path, _ = F.forced_align(
+                emission[:, f_lo:f_hi, :].contiguous(), targets, blank=blank_id
+            )
+            out.append((p_lo, f_lo, path[0]))
+            # 이 블록의 마지막 **글자** 토큰이 끝난 프레임 → 다음 블록의 하한
+            bounds = _span_bounds(path[0], blank_id)
+            last = max(
+                (e for k, (_s, e) in enumerate(bounds) if (p_lo + k) in char_set),
+                default=0,
+            )
+            cursor = f_lo + last
+        record["widened_blocks"] = widened
+        return out
+
     def _align_cjk(
         self,
         waveform: torch.Tensor,
@@ -706,6 +1106,8 @@ class CTCEngine(BaseAlignmentEngine):
         progress_callback: Callable[[int, int], None] | None = None,
         line_candidates: dict[int, list[str]] | None = None,
         referee_margins: dict[int, float] | None = None,
+        forbidden_spans: list[tuple[float, float]] | None = None,
+        line_starts: dict[int, float] | None = None,
     ) -> list[SyncResult]:
         device = self._get_device()
 
@@ -798,6 +1200,42 @@ class CTCEngine(BaseAlignmentEngine):
         except Exception as e:
             raise AlignmentError(f"CTC forced alignment failed: {e}")
 
+        num_frames = emission.shape[1]
+        audio_length = waveform.shape[0] / 16000
+        ratio = audio_length / num_frames
+
+        # 자막 앵커 2패스는 **이 안에** 둔다 — `_ctc_log_emission`은 `_align_cjk` 진입마다
+        # 모델 forward를 다시 돌리므로(캐시 없음, 4.7분 곡 ~9s) 바깥에서 align()을 다시 부르면
+        # 그 비용을 또 낸다. 안에서는 같은 emission을 재사용해 forward가 0이다.
+        if forbidden_spans or line_starts:
+            window_sec = float(getattr(self.config, "caption_anchor_window_sec", None) or 5.0)
+            blocks = (
+                _anchor_blocks(
+                    line_starts,
+                    len(lyrics),
+                    line_boundaries,
+                    len(tokens),
+                    num_frames,
+                    ratio,
+                    window_sec,
+                )
+                if line_starts
+                else None
+            )
+            token_spans, self._last_caption_anchor = self._caption_anchor_pass(
+                emission,
+                targets,
+                tokens,
+                blank_id,
+                star_id if use_star else None,
+                aligned_tokens[0],
+                token_spans,
+                forbidden_spans or [],
+                ratio,
+                [ci["token_idx"] for ci in char_info],
+                blocks=blocks,
+            )
+
         if progress_callback:
             progress_callback(4, 5)
 
@@ -816,14 +1254,10 @@ class CTCEngine(BaseAlignmentEngine):
             referee_margins,
         )
 
-        num_frames = emission.shape[1]
-        audio_length = waveform.shape[0] / 16000
-        ratio = audio_length / num_frames
-
         # star가 실제로 흡수한 구간 기록 (1프레임=20ms짜리 형식적 흡수는 제외)
         self._last_star_spans = []
         for idx in star_positions:
-            if idx < len(token_spans):
+            if idx < len(token_spans) and token_spans[idx] is not None:
                 span = token_spans[idx]
                 s, e = span.start * ratio, span.end * ratio
                 if e - s >= 0.1:
@@ -846,6 +1280,7 @@ class CTCEngine(BaseAlignmentEngine):
                     for ci in line_chars.get(line_idx, [])
                     if ci["token_idx"] < len(token_spans)
                     for span in (token_spans[ci["token_idx"]],)
+                    if span is not None
                 ]
             for char, start_frame, end_frame, score in items:
                 # emission이 log_softmax라 score는 평균 로그확률(음수) — 그대로
@@ -1066,10 +1501,22 @@ class CTCEngine(BaseAlignmentEngine):
         progress_callback: Callable[[int, int], None] | None = None,
         line_candidates: dict[int, list[str]] | None = None,
         referee_margins: dict[int, float] | None = None,
+        forbidden_spans: list[tuple[float, float]] | None = None,
+        line_starts: dict[int, float] | None = None,
     ) -> list[SyncResult]:
         """가사를 오디오에 강제정렬한다.
 
         Args:
+            forbidden_spans: **가사 줄이 놓일 수 없는 (start, end) 구간(초)** 목록. 주면 1패스
+                정렬 뒤 그 구간 프레임에서 blank·star 외 모든 열을 눌러 한 번 더 정렬한다.
+            line_starts: **line_idx → 그 줄이 시작해야 하는 시각(초)**. 주면 그 줄들을 칸막이로
+                전곡을 블록으로 나눠 각 블록을 자기 프레임 창 안에서만 정렬한다 — 「여기 있을 수
+                없다」(forbidden_spans)가 함의하지 못하는 「여기 있어야 한다」를 건다.
+                둘 다 주면 함께 걸린다. 두 경우 모두 제약을 지키느라 잃은 글자별 음향 근거가
+                ``caption_anchor_max_token_loss`` 이하일 때만 결과를 채택한다
+                (``_caption_anchor_pass``). 출처는 사람이 만든 유튜브 자막의 타임스탬프다
+                (``alignment.caption_anchors``). **둘 다 선택적 인자다** — 주지 않으면 기존
+                동작과 완전히 동일하다.
             line_candidates: 라인 인덱스 → 그 라인의 **대체 독음 후보 목록**(``[0]``이 기본값).
                 주면 1패스 정렬 뒤 라인 프레임 창 안에서 후보들을 같은 emission에 다시
                 강제정렬해, 기본값을 마진 이상 이기는 후보가 있을 때만 그 라인을 교체한다
@@ -1083,6 +1530,7 @@ class CTCEngine(BaseAlignmentEngine):
         # 정렬(ja) 뒤에 남아 있으면 호출부가 엉뚱한 라인 창의 텍스트를 보고한다.
         self._last_referee = []
         self._last_heard = {}
+        self._last_caption_anchor = None
         force_mms = False
         if language and language != "auto":
             resolved_lang = language
@@ -1120,6 +1568,8 @@ class CTCEngine(BaseAlignmentEngine):
                     progress_callback,
                     line_candidates=line_candidates,
                     referee_margins=referee_margins,
+                    forbidden_spans=forbidden_spans,
+                    line_starts=line_starts,
                 )
                 self._last_match_stats = self._calculate_match_stats(results)
                 return results
@@ -1130,6 +1580,13 @@ class CTCEngine(BaseAlignmentEngine):
                     logger.info(
                         f"Pronunciation referee skipped: MMS_FA path ({resolved_lang}) "
                         f"does not score per-line candidates"
+                    )
+                if forbidden_spans or line_starts:
+                    # 같은 사정으로 앵커 제약도 CJK 경로 전용이다 — 라틴 경로는 emission을
+                    # 이 함수 밖(bundle)에서 만들고 토큰 단위도 달라 마스킹 지점이 없다.
+                    logger.info(
+                        f"Caption anchors skipped: MMS_FA path ({resolved_lang}) has no "
+                        f"character-level emission to mask"
                     )
                 results = self._align_mms(waveform, lyrics, resolved_lang, progress_callback)
                 from everyric2.alignment.matcher import LyricsMatcher
@@ -1189,6 +1646,15 @@ class CTCEngine(BaseAlignmentEngine):
         ``scores``(후보별 토큰당 평균 로그확률). ``chosen != default``인 항목이 교체된 라인이다.
         """
         return list(self._last_referee)
+
+    def get_last_caption_anchor(self) -> dict[str, Any] | None:
+        """직전 정렬의 자막 앵커 판정 기록 — 앵커를 주지 않았으면 None.
+
+        항목: ``spans``(금지 구간), ``frames``/``free_frames``/``need_frames``(실행가능성),
+        ``score``([1패스, 2패스] 원본 emission 재채점 총점), ``loss``(글자당 포기액),
+        ``max_loss``, ``adopted``, 포기했으면 ``skipped``(no_frames|infeasible|align_failed).
+        """
+        return dict(self._last_caption_anchor) if self._last_caption_anchor else None
 
     def get_last_heard_lines(self) -> dict[int, str]:
         """직전 정렬에서 모델이 각 라인 프레임 창에서 「들은」 greedy 디코딩 텍스트."""

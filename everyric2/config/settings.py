@@ -399,6 +399,183 @@ class AlignmentSettings(BaseSettings):
         "MeCab n-best candidate list (measured: it is the 7th distinct rendering).",
     )
 
+    caption_anchors: bool = Field(
+        default=False,
+        description="OFF BY DEFAULT AND MEASURED TO MAKE THINGS WORSE — do not turn this on "
+        "without reading the measurement below. On the very song it was built for "
+        "(zyRt-nBM3dY, CPU, 2026-07-26) it DOUBLED the error: mean distance from the caption "
+        "timestamps went 11.22s -> 22.58s across the 14 lines that have a ground truth, with 0 "
+        "lines improved and 10 made worse. The forbidden spans were honoured (no line starts "
+        "inside them) — the problem is that the placement which honours them is even further from "
+        "the truth. Root cause is the blind spot documented under caption_anchor_max_loss: this "
+        "song's emission is floor-flat (quality_score 0.001), so every placement scores alike, "
+        "the loss test cannot tell a right anchor from a wrong one, and the DP just avoids the "
+        "forbidden frames and picks the rest arbitrarily. A NEGATIVE constraint ('a line cannot "
+        "start here') does not imply the POSITIVE one ('it starts there'), and when the posterior "
+        "is flat that gap is everything. What would be needed is using the matched anchor times "
+        "as a positive constraint (we already know 52 of 56 line times at 0.929 match rate, and "
+        "on the 4 lines before the interlude those times are within 0.03-0.36s of the alignment "
+        "we already produce) — that is not implemented. "
+        "A SECOND FINDING FROM THE SAME MEASUREMENT, unrelated to this switch but blocking any "
+        "future attempt: THE ALIGNMENT IS NOT DETERMINISTIC. Running the identical input twice on "
+        "GPU moved 52/78 lines by up to 12.87s on ba7YbGO2aq4 and 32/57 by up to 21.74s on "
+        "zyRt-nBM3dY, while this switch changed ba7YbGO2aq4 by at most 0.28s. The run-to-run "
+        "spread scales inversely with quality_score (OHcNQHbWrFY at 0.0068 moved 3 lines by 0.74s; "
+        "zyRt-nBM3dY at 0.0012 moved 32), i.e. on floor-flat emissions a float-level difference "
+        "reorders the Viterbi path. Any A/B of this feature therefore needs repeated runs and a "
+        "distribution, not one pair — a single pair mostly measures the noise. "
+        "Enable per deployment with EVERYRIC_ALIGNMENT_CAPTION_ANCHORS=true. Use the timestamps "
+        "of the video's HUMAN-WRITTEN "
+        "YouTube captions as a second coordinate system telling the aligner WHERE A LYRIC LINE "
+        "CANNOT START, then mask those frames in the CTC emission so the DP cannot emit real tokens "
+        "there (blank and <star> stay open, so the path still traverses them). "
+        "WHY A NEW COORDINATE SYSTEM IS NEEDED (zyRt-nBM3dY, measured 2026-07-26): the aligner "
+        "crammed 8 lyric lines into the 8.7-24.9s credits/interlude and left 25-58s empty for 33s. "
+        "Every existing interlude guard (_post_interlude_windows, _snap_post_interlude_leak, "
+        "_leaked_runs, _clamp_stretched_lines) anchors on ONE signal — a VAD silence gap — and this "
+        "song's first VAD region is [0.6, 45.2], swallowing the whole interlude (audio/vad.py gates "
+        "on a relative RMS percentile with no absolute floor), so the judgement frame did not even "
+        "contain the accident. A distribution gate cannot replace it either: the crammed block sings "
+        "at 4.97 chars/s, less than half of mass_leak_min_char_rate (11.0). The captions do contain "
+        "it: normalised substring matching anchors 45/57 of our lyric lines (79%), the 4 lines before "
+        "the interlude land within 0.2s, and only the 8 crammed lines are off (by 17-22s). "
+        "THE DERIVATION IS NOT 'a gap between anchors' — that rule misfired on a healthy song "
+        "(ba7YbGO2aq4) whose captions are shorter than our lines, turning a lyric-filled stretch into "
+        "an apparent void. Three gates now stand between an anchor gap and a forbidden span: the two "
+        "anchors must be ADJACENT in our lyric list, the gap must be interlude-length, and the "
+        "caption events inside it must not match ANY of our lyric lines (a global, order-free check "
+        "that separates 'nothing of ours belongs here' from 'our matching failed'). "
+        "See alignment/caption_anchors.py for the full derivation and its justification.",
+    )
+
+    caption_anchor_min_match: float = Field(
+        default=0.5,
+        description="Minimum fraction of our lyric lines that must match a caption track before its "
+        "timestamps are trusted as anchors. Guards the case that matters most: our lyrics and the "
+        "video's captions are DIFFERENT TEXT (a cover with rewritten lyrics, a different upload of "
+        "the same title, captions that are a translation). Below this the anchors would constrain a "
+        "song they do not describe. Measured reference: the accident song reaches 0.79 with the "
+        "correct track and 0.11 with the wrong one (zh-TW), because the matching is "
+        "substring-on-normalised-text, not fuzzy — the two regimes are far apart. This doubles as "
+        "the TRACK ACCEPTANCE bar: the search takes the first candidate track that clears it rather "
+        "than downloading every track to pick a maximum (see caption_anchor_max_tracks).",
+    )
+
+    caption_anchor_min_gap_sec: float = Field(
+        default=8.0,
+        description="Minimum caption gap (seconds, between one anchor's display end and the next "
+        "anchor's display start) before the gap is treated as a region no lyric line may start in. "
+        "Shorter gaps are just the song breathing, and a caption track that does not pre-roll the "
+        "next line opens a few seconds by habit alone. 8s is comfortably below the accident's 16s "
+        "interlude and above any within-verse rest; it is also the scale at which the existing "
+        "interlude machinery already operates (interlude_min_gap_sec).",
+    )
+
+    caption_anchor_margin_sec: float = Field(
+        default=1.0,
+        description="Safety margin (seconds) shaved off BOTH ends of every derived forbidden span. "
+        "Caption timestamps drift by a few hundred ms and a sung line can trail past the moment its "
+        "caption stops being displayed. The margin only ever SHRINKS the forbidden region, so a "
+        "larger value is strictly more conservative. At 1.0 the accident's 16s interlude still yields "
+        "~14s of forbidden frames — far more than the ~1.3s that 8 lines' worth of tokens would need, "
+        "so the cram cannot survive in the leftover slack.",
+    )
+
+    caption_anchor_positive: bool = Field(
+        default=False,
+        description="OFF BY DEFAULT, separate switch from caption_anchors. Also use the anchored "
+        "lines' caption timestamps as a POSITIVE constraint — each anchored line must start inside "
+        "its own caption time ± caption_anchor_window_sec — by partitioning the song into blocks at "
+        "the anchored lines and force-aligning each block inside its own frame window. "
+        "WHY THE NEGATIVE CONSTRAINT IS NOT ENOUGH (zyRt-nBM3dY, measured 2026-07-26 on real audio): "
+        "with caption_anchors alone the forbidden interlude was honoured perfectly — not one line "
+        "was placed inside it — and the song was still wrong. Only 4 of 52 anchored lines landed "
+        "within 5s of their caption time and the median residual was +29.6s: the DP avoided the "
+        "interlude and then chose, among the placements it was still free to make, one that parked "
+        "<star> over 24.9-58.8s and pushed everything 25-43s late. 'A line cannot be here' does not "
+        "imply 'a line must be here', and on a floor-posterior synthetic-vocal song that difference "
+        "is the entire outcome — every placement scores alike, so the DP's remaining freedom is "
+        "arbitrary. The 52 timestamps we had already matched were being spent on deriving forbidden "
+        "spans and then thrown away. "
+        "THE FAILURE DIRECTION IS INVERTED, which is why this is a separate switch with a stricter "
+        "match gate (caption_anchor_positive_min_match): a wrong forbidden span only fails to "
+        "constrain, but a wrong positive constraint DRAGS a correctly placed line somewhere else. "
+        "The adoption test (caption_anchor_max_token_loss) is the backstop and it works exactly "
+        "where it matters — on songs with a real posterior, moving a character off its acoustic peak "
+        "costs measurable support and the constraint is rejected.",
+    )
+
+    caption_anchor_window_sec: float = Field(
+        default=5.0,
+        description="Half-width (seconds) of the frame window an anchored line is aligned inside "
+        "when caption_anchor_positive is on. Caption timestamps drift by a few hundred ms and shift "
+        "with display habits, so the window must be far wider than that — but the error being "
+        "corrected is 25-43s (measured), so a window this loose still achieves the goal while "
+        "leaving the DP free to place the line where the audio actually supports it. Wider is safer "
+        "for healthy songs (the unconstrained answer stays inside the window, so the constrained "
+        "alignment reproduces it) and weaker for collapsed ones; 5s is the smallest value that "
+        "comfortably covers caption drift.",
+    )
+
+    caption_anchor_positive_min_match: float = Field(
+        default=0.85,
+        description="Match rate required before the caption timestamps are used as a POSITIVE "
+        "constraint — much stricter than caption_anchor_min_match (0.5) because the failure "
+        "direction is inverted (see caption_anchor_positive). At this bar the captions have to "
+        "describe nearly the whole song before they are allowed to place lines. Measured: the "
+        "target song reaches 0.929 with the correct track, and a wrong track sits at 0.11, so the "
+        "two regimes are nowhere near this threshold from either side.",
+    )
+
+    caption_anchor_max_token_loss: float = Field(
+        default=0.3,
+        description="How much per-character acoustic support the caption constraint may give up, in "
+        "nats, before the constrained alignment is rejected. The metric is the mean over lyric "
+        "characters of the HIGHEST log-probability that character reaches inside its own slot, "
+        "scored on the unmasked emission (_token_peak_support). "
+        "IT REPLACES THE FULL-PATH COMPARISON, which cannot be used once the constraint changes how "
+        "much of the song <star> covers: star scores log(1.0)=0, so a path that declines to park "
+        "star over a sung stretch loses likelihood for a reason that has nothing to do with "
+        "placement quality (measured on zyRt-nBM3dY: path total -4777 vs -4831 for the negative "
+        "constraint alone, a difference carrying no acoustic meaning). Taking the MAXIMUM inside "
+        "each character's slot rather than the mean also makes the metric neutral to slot length — "
+        "the unconstrained pass tends to give each character a single frame, the constrained one a "
+        "wider slot. "
+        "What it asks is the only question that matters: did each character still find acoustic "
+        "evidence where we put it. On a floor posterior both passes score alike and the constraint "
+        "costs nothing (so it is adopted); on a song with real peaks, dragging characters off their "
+        "peaks shows up immediately (so it is rejected). NOT CALIBRATED ON REAL AUDIO — the value is "
+        "reasoned from the gap between those two regimes, and every decision is written to the "
+        "segment debug (caption_anchors.decision.support / loss) so it can be re-measured.",
+    )
+
+    caption_anchor_max_tracks: int = Field(
+        default=6,
+        description="GIVE-UP BOUND on caption tracks downloaded while looking for one that matches "
+        "our lyrics — not a search budget. The search takes the FIRST candidate clearing "
+        "caption_anchor_min_match and stops, because each extra track is another yt-dlp download and "
+        "'download them all, keep the maximum' pushes a single song into double-digit requests. "
+        "Candidate ORDER carries the accuracy: our lyrics' own script first (kana/hangul/han → "
+        "ja/ko/zh), then detect_original_language, then the video's audio language, then alphabetical. "
+        "Both halves of that design are measured on zyRt-nBM3dY: its manual tracks are "
+        "[ar, zh-TW, en, fil, id, ja, ko, ms, es, th, tr, vi], so 'ja' is SIXTH alphabetically — a "
+        "cap of 5 over an alphabetical list picks zh-TW at 11% match and the anchors get discarded "
+        "(ja scores 79%). YouTube's own signals do not rescue it either: select_original_track "
+        "returns 'vi' for this video. With the script prior the right track is first and one request "
+        "settles it; the bound only matters when the prior is absent (Latin-script lyrics), and 6 "
+        "keeps even an alphabetical walk able to reach a 'ja'-shaped position.",
+    )
+
+    caption_anchor_max_forbidden_ratio: float = Field(
+        default=0.35,
+        description="Reject the anchors outright when the derived forbidden spans add up to more than "
+        "this fraction of the audio. This is the backstop for the one matching failure the ordered "
+        "forward scan cannot fully prevent — a repeated chorus line matched to a LATER caption "
+        "occurrence, which stretches the apparent gap and would forbid a region full of real singing. "
+        "A song whose interludes genuinely exceed a third of its runtime is rare enough that the "
+        "reading 'our matching is misaligned' is the better bet.",
+    )
+
     synth_all_lines_conf: float = Field(
         default=0.0,
         description="OPT-IN whole-song synth floor (default 0 = disabled). The DEFAULT intra-line "
@@ -642,6 +819,29 @@ class ServerSettings(BaseSettings):
         description="When set, every /api request must present this value (or the admin "
         "key) in X-API-Key. Empty = no auth (local single-user default).",
     )
+    caption_require_cjk: bool = Field(
+        default=True,
+        description="Refuse to build lyrics from a YouTube caption track that contains no kana, "
+        "hangul or han at all. This is a CONTAMINATION GATE for a measured bug in YouTube's "
+        "original-language signal, not a language policy: zyRt-nBM3dY is a Japanese Vocaloid song "
+        "whose video_language is 'vi' and whose only '-orig' ASR track is 'vi-orig', so "
+        "detect_original_language returns ('vi', 'asr_orig') and the caption path would store a "
+        "VIETNAMESE ASR transcript of Japanese audio as the song's lyrics (reproduced with 'th-orig' "
+        "on another song in the overnight batch rehearsal). The premise both of its rules rest on — "
+        "'YouTube only builds ASR for the original audio' — broke when auto-dubbing and multi-audio "
+        "tracks spread. A proper fix needs the AUDIO to settle the language and is a separate piece "
+        "of work; the selection rules in select_original_track are deliberately left untouched. "
+        "The anchor path's rule (pick the track that matches our lyrics) cannot help here either: "
+        "that path HAS lyrics to match against, this one is building them. Nor can script agreement "
+        "— a vi-orig track really does emit Vietnamese script, so 'does the caption match the "
+        "detected language' passes. So the gate is scope, not refutation: our corpus is "
+        "overwhelmingly Japanese and Korean. THE COST IS EXPLICIT — a genuinely English (or other "
+        "Latin-script) song loses its caption path and falls back to pasted lyrics, which is a far "
+        "smaller loss than wrong lyrics accumulating in the corpus. 'None at all' rather than a "
+        "percentage keeps that cost as small as possible: romaji-glossed Japanese, half-English "
+        "K-pop, and Latin-titled tracks all still pass. Set false to disable.",
+    )
+
     max_job_audio_sec: int = Field(
         default=1800,
         description="Maximum audio duration (seconds) accepted for sync generation. Longer "

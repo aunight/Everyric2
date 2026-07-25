@@ -52,6 +52,7 @@ HTTP_STATUS_BY_CODE = {
     "language_undetermined": 404,
     "empty_caption": 404,
     "too_short": 404,
+    "non_cjk_caption": 404,
 }
 
 
@@ -59,7 +60,7 @@ class CaptionUnavailable(Exception):
     """자막으로 가사를 만들 수 없을 때 — code로 실패 사유를 구분한다.
 
     code: listing_failed | no_captions | language_undetermined | download_failed |
-          empty_caption | too_short
+          empty_caption | too_short | non_cjk_caption
     """
 
     def __init__(self, code: str, message: str):
@@ -141,8 +142,14 @@ def extract_caption_info(video_id: str) -> dict[str, Any]:
     return info
 
 
-def download_track_lines(video_id: str, lang: str, auto: bool) -> list[dict[str, Any]]:
-    """선택한 트랙을 json3로 받아 [{start, end, text}]로 파싱한다."""
+def download_track_events(video_id: str, lang: str, auto: bool) -> list[dict[str, Any]]:
+    """선택한 트랙을 json3로 받아 [{start, end, text}]로 파싱한다 — **정리 전 원본**.
+
+    가사 정리(`_clean_line`)를 거치지 않은 이벤트 그대로다. 정렬 앵커 경로가 이것을 쓴다:
+    앵커는 «우리 가사와 매칭되는 이벤트»만 채택하므로 크레딧·효과음·화자 표기는 매칭에서
+    자연히 탈락하고, 그 판정을 정리 규칙에 앞세울 이유가 없다(정리 규칙이 텍스트를 바꾸면
+    매칭 키가 흔들린다). 표시·가사용 경로는 `download_track_lines`를 그대로 쓴다.
+    """
     import yt_dlp
 
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -168,20 +175,25 @@ def download_track_lines(video_id: str, lang: str, auto: bool) -> list[dict[str,
         if not files:
             raise CaptionUnavailable("empty_caption", f"이 영상에 {lang} 자막이 없어요")
         data = json.loads(files[0].read_text(encoding="utf-8"))
-        lines = json3_events_to_lines(data)
-        # 표시용 경로도 가사 생성 경로와 **같은 규칙**으로 정리한다 — 크레딧·효과음 표기가
-        # 확장 화면에는 가사인 양 보이는데 생성된 싱크에는 없으면 그 자체로 혼란이다.
-        # 타이밍은 표시에 필요하므로 줄을 버리거나 텍스트만 바꾸고 start/end는 보존한다.
-        cleaned: list[dict[str, Any]] = []
-        for line in lines:
-            text = _clean_line(line.get("text", ""))
-            if text:
-                cleaned.append({**line, "text": text})
-        if not cleaned:
-            raise CaptionUnavailable("empty_caption", "자막 트랙이 비어 있어요")
-        return cleaned
+        return json3_events_to_lines(data)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def download_track_lines(video_id: str, lang: str, auto: bool) -> list[dict[str, Any]]:
+    """선택한 트랙을 json3로 받아 정리까지 마친 [{start, end, text}]로 돌려준다."""
+    lines = download_track_events(video_id, lang, auto)
+    # 표시용 경로도 가사 생성 경로와 **같은 규칙**으로 정리한다 — 크레딧·효과음 표기가
+    # 확장 화면에는 가사인 양 보이는데 생성된 싱크에는 없으면 그 자체로 혼란이다.
+    # 타이밍은 표시에 필요하므로 줄을 버리거나 텍스트만 바꾸고 start/end는 보존한다.
+    cleaned: list[dict[str, Any]] = []
+    for line in lines:
+        text = _clean_line(line.get("text", ""))
+        if text:
+            cleaned.append({**line, "text": text})
+    if not cleaned:
+        raise CaptionUnavailable("empty_caption", "자막 트랙이 비어 있어요")
+    return cleaned
 
 
 # ── json3 → 라인 ──────────────────────────────────────────────────
@@ -457,6 +469,62 @@ def clean_caption_lines(
     return out
 
 
+# ── 원어 판정 오류로 인한 가사 오염 게이트 ────────────────────────
+
+# 이 게이트가 막는 것 (실측 2026-07-26):
+#
+#   zyRt-nBM3dY (시니컬 나이트 플랜 / 하츠네 미쿠 — 일본어 보카로 곡)
+#     video_language = 'vi'      ← 유튜브가 기본 오디오를 베트남어로 보고한다
+#     -orig 트랙     = ['vi-orig'] ← ASR도 베트남어
+#     detect_original_language → ('vi', 'asr_orig')
+#
+# `detect_original_language`의 규칙 ①(asr_orig)과 ③(video_language)이 함께 서 있는 전제 —
+# 「유튜브는 원어 오디오에 대해서만 ASR을 만든다」 — 가 자동 더빙·다중 오디오 트랙의 확산으로
+# 깨졌다. 그 결과 **일본어 오디오에 베트남어 ASR을 돌린 전사가 곡 가사로 저장된다**
+# (MoRef 야간 배치 예행에서 th-orig 태국어로도 재현됐다).
+#
+# 근본 수정은 오디오로 언어를 판정하는 것이고 별도 작업이다. 여기서는 **오염만 막는다.**
+# 판정 규칙(`select_original_track`)은 건드리지 않는다.
+#
+# 왜 앵커 쪽 판정(매칭률로 트랙 선택)을 쓸 수 없나: 그것은 **가사가 이미 있을 때만** 성립한다.
+# 이 경로는 가사가 없어서 자막으로 가사를 만드는 경로다 — 맞춰 볼 대상이 없다.
+# 문자 구성으로 「판정 언어와 자막 문자가 일치하는가」를 물어도 통과한다: vi-orig 자막은 실제로
+# 베트남어 문자를 낸다(ASR이 베트남어로 돌았으니 당연하다). 유튜브가 오디오를 베트남어라고
+# 믿는 것을 반박할 텍스트 근거는 없다.
+#
+# 그래서 반박이 아니라 **적용 범위**로 막는다: 우리가 다루는 곡은 압도적으로 일본어·한국어다.
+# 자막에 가나·한글·한자가 **하나도 없으면** 자막 경로를 포기한다.
+_CJK_SCRIPTS = ("kana", "hangul", "han")
+
+
+def caption_script_counts(lines: list[str]) -> dict[str, int]:
+    """자막 줄들의 문자 체계 구성. 판정 근거를 로그에 싣기 위해 개수까지 돌려준다."""
+    from everyric2.alignment.caption_anchors import script_counts
+
+    return script_counts("".join(lines))
+
+
+def has_cjk_script(counts: dict[str, int]) -> bool:
+    """가나·한글·한자가 하나라도 있는가.
+
+    비율 기준(«CJK가 몇 % 미만»)이 아니라 **하나도 없음**으로 둔 이유: 후자가 더 보수적이라
+    진짜 CJK 곡을 잘못 버릴 여지가 없다. 로마자 음차가 섞인 일본어 가사, 영어 후렴이 절반인
+    K-pop, 제목만 라틴인 자막이 모두 통과한다.
+    """
+    return any(counts.get(k, 0) for k in _CJK_SCRIPTS)
+
+
+def _require_cjk_enabled() -> bool:
+    """게이트 스위치 (기본 켜짐). 설정을 못 읽는 구성에서도 켜진 것으로 본다."""
+    try:
+        from everyric2.config.settings import get_settings
+
+        return bool(get_settings().server.caption_require_cjk)
+    except Exception:  # pragma: no cover - 설정 로드 실패는 게이트를 끄는 사유가 아니다
+        logger.warning("caption_require_cjk setting unreadable; keeping the gate ON")
+        return True
+
+
 # ── 한 번에: video_id → 가사 ──────────────────────────────────────
 
 
@@ -478,8 +546,100 @@ def fetch_lyrics_from_captions(video_id: str) -> CaptionLyrics:
             "too_short",
             f"자막에서 쓸 만한 가사 줄이 {len(lines)}줄뿐이라 가사로 쓸 수 없어요",
         )
+    counts = caption_script_counts(lines)
+    # 판정 근거를 항상 남긴다 — 오염 규모를 사후에 세는 유일한 자료다 (MoRef soak 집계용)
     logger.info(
         f"caption lyrics for {video_id}: lang={track.lang} auto={track.auto} "
-        f"reason={track.reason} lines={len(lines)}"
+        f"reason={track.reason} lines={len(lines)} script={counts}"
     )
+    if _require_cjk_enabled() and not has_cjk_script(counts):
+        logger.warning(
+            f"caption lyrics rejected for {video_id}: track {track.lang} (reason={track.reason}) "
+            f"has no kana/hangul/han in {counts['total']} char(s) (latin={counts['latin']}). "
+            f"YouTube's original-language signal is unreliable for dubbed/multi-audio uploads "
+            f"(measured: vi-orig and th-orig on Japanese songs), so a non-CJK caption is far more "
+            f"likely to be an ASR transcript in the wrong language than a genuine non-CJK song"
+        )
+        raise CaptionUnavailable(
+            "non_cjk_caption",
+            f"이 영상의 자막이 {track.label} 한 종류인데 일본어·한국어 문자가 전혀 없어요 — "
+            f"유튜브가 원어를 잘못 알려 주는 경우라 가사로 쓰면 엉뚱한 내용이 저장돼요",
+        )
     return CaptionLyrics(track=track, lines=lines)
+
+
+# ── 정렬 앵커용: 타임스탬프를 살린 수동 자막 트랙 ─────────────────
+
+
+def manual_track_keys(info: dict[str, Any]) -> list[str]:
+    """업로더가 직접 쓴(수동) 자막 트랙 키 목록. 자동 생성(ASR)은 절대 포함하지 않는다.
+
+    ASR 트랙은 롤링 병합으로 이벤트 시각이 «누적 표시» 시점이 되어 발성 시점과 구조적으로
+    어긋난다 — 앵커로 쓰면 없는 구조를 만들어낸다. 앵커는 «사람이 찍은 시각»만 쓴다.
+    """
+    return _usable_keys(info.get("subtitles"))
+
+
+def order_anchor_tracks(
+    info: dict[str, Any], lang_hint: str | None = None, limit: int = 5
+) -> list[str]:
+    """앵커 후보 수동 트랙을 «원어일 가능성이 높은 순»으로 정렬해 상한까지 자른다.
+
+    원어 판정은 **트랙을 받아 우리 가사와 맞춰 보는 것**이 가장 견고하다(실측: 어떤 곡은
+    수동 15종 중 원어가 ja인데 `select_original_track`이 vi를 골랐다 — asr 트랙이 없으면
+    `detect_original_language`의 근거가 전부 무너진다). 다만 트랙마다 yt-dlp 호출 1회라
+    전부 받을 수는 없으므로, 받아 볼 순서만 사전 정보로 정한다:
+
+      ① lang_hint — 우리 가사의 문자 체계에서 얻은 언어(가나가 있으면 ja 등). 가사 자체에서
+         나온 신호라 자막 목록 구성에 흔들리지 않는다.
+      ② detect_original_language — asr-orig 등 유튜브 쪽 신호 (있으면 강하다)
+      ③ info['language'] — 기본 오디오 트랙 언어
+      ④ 나머지는 키 알파벳순 (재현 가능한 순서)
+    """
+    keys = manual_track_keys(info)
+    if not keys:
+        return []
+    detected = detect_original_language(
+        info.get("subtitles"), info.get("automatic_captions"), info.get("language")
+    )
+    priors = [
+        base_lang(lang_hint) if lang_hint else None,
+        detected[0] if detected else None,
+        base_lang(info.get("language") or "") or None,
+    ]
+
+    def rank(key: str) -> tuple[int, str]:
+        b = base_lang(key)
+        for i, p in enumerate(priors):
+            if p and b == p:
+                return (i, key)
+        return (len(priors), key)
+
+    return sorted(keys, key=rank)[: max(0, limit)]
+
+
+def iter_manual_caption_events(video_id: str, lang_hint: str | None = None, limit: int = 5):
+    """앵커 후보 트랙을 (lang, events) 로 **게으르게** 내놓는다 (블로킹 IO, 트랙당 1회 다운로드).
+
+    제너레이터인 이유: 호출부가 매칭률을 보고 충분히 좋은 트랙에서 즉시 멈출 수 있어야
+    한다(첫 후보가 맞는 경우가 대부분이고, 트랙 하나가 yt-dlp 호출 1회다).
+
+    앵커는 «있으면 좋은» 신호라 실패는 전부 삼킨다 — 자막을 못 받는다고 정렬이 죽어선 안 된다.
+    """
+    if not VIDEO_ID_RE.match(video_id or ""):
+        return
+    try:
+        info = extract_caption_info(video_id)
+    except Exception:
+        logger.info(f"caption anchors: listing failed for {video_id}; continuing without anchors")
+        return
+    for lang in order_anchor_tracks(info, lang_hint, limit):
+        if not LANG_RE.match(lang):
+            continue
+        try:
+            events = download_track_events(video_id, lang, auto=False)
+        except Exception:
+            logger.info(f"caption anchors: track {lang} unavailable for {video_id}; skipping")
+            continue
+        if events:
+            yield lang, events

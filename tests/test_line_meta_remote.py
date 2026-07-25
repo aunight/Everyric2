@@ -158,7 +158,9 @@ def _mock_alignment(monkeypatch, tmp_path, captured: dict):
     """_run_alignment 대역 — 리졸버를 부르고 무엇을 받았는지 기록한다 (실제 계약과 동일)."""
     audio_file = _mock_audio(monkeypatch, tmp_path)
 
-    def fake(audio_path, lyrics, language, line_meta=None, on_stage=None, resolver=None):
+    def fake(
+        audio_path, lyrics, language, line_meta=None, on_stage=None, resolver=None, video_id=None
+    ):
         try:
             if on_stage is not None:
                 on_stage("보컬 분리")
