@@ -24,6 +24,7 @@ from everyric2.text.ja_reading import (
     tokenize_reading_nbest,
     tokenize_reading_pykakasi,
 )
+from everyric2.text.latin_hangul import transliterate_latin
 
 # ---------------------------------------------------------------------------
 # 문절(文節) 띄어쓰기
@@ -258,21 +259,37 @@ def _render_pronunciation(text: str, tokens: list[ReadingToken]) -> str:
             groups.append(tail)
 
     result = _ELLIPSIS_RE.sub("…", " ".join(groups)).replace("・", " ")
-    return " ".join(result.split())
+    # 라틴 음차는 **여기서** 한다 — 렌더가 끝난 문자열을 보면 형태소 분석기가 쪼갠 조각이
+    # 다시 붙어 있어(it / ' / s → "it' s") 낱말 단위로 표를 조회할 수 있다. 후보 독음
+    # (``pronunciation_candidates``)도 이 함수를 지나므로 모든 후보가 같은 음차를 공유한다 —
+    # 갈라지면 오디오 심판이 "독음 차이"가 아니라 "라틴 표기 차이"를 재게 된다.
+    return " ".join(transliterate_latin(result).split())
 
 
 def _has_japanese(text: str) -> bool:
     return bool(text) and (kana_hangul.has_kana(text) or kana_hangul.has_kanji(text))
 
 
-def wiki_pronunciation(text: str) -> str:
-    """일본어 라인의 위키식 한글 발음 표기. 일본어가 없으면 빈 문자열.
+_LATIN_RE = re.compile(r"[A-Za-z]")
 
-    라틴 문자·숫자는 **음차하지 않고 그대로 둔다**. 위키는 음차하지만(numb→넘,
-    Beat→비이토) 규칙화가 불가능하고(원어 발음 지식이 필요하다), 실측에서 라틴을 포함한
-    줄은 어느 경로로도 4.1%만 맞아 별도 문제로 남긴다.
+
+def wiki_pronunciation(text: str) -> str:
+    """라인의 한글 발음 표기 (위키 표기 관례 + 라틴 조밀 음차). 읽을 것이 없으면 빈 문자열.
+
+    **라틴 문자는 한글로 음차한다** (``latin_hangul``). 오래 유지했던 "라틴은 원문 그대로
+    둔다"는 방침은 실측으로 뒤집혔다: kor/jpn 어댑터에서 라틴 글자는 정렬되지 않아(라틴
+    많은 줄의 라인 conf가 라틴 없는 줄의 1/10, 라틴 글자 conf<0.01이 90~99%) 그 줄의
+    타이밍이 통째로 밀린다. 같은 emission에 표기만 바꿔 채점하면 원문 < 관습 음차 <
+    조밀 음차 순이고(관습 vs 조밀 7/7), 사람이 만든 일본어 자막 88 cue 대조에서도 잔차
+    중앙값 0.085s→0.056s / p90 0.629→0.170s / ±0.3s 80.0%→95.0%로 개선됐다. 표시도 같은
+    값을 쓰는 이유는 ``latin_hangul`` 문서에 적어 뒀다(발음 음절 스팬이 표시 발음과
+    일치해야 라틴 줄에서도 가라오케 채움이 동작한다).
+
+    라틴만 있는 라인도 음차한다 — 라틴 100% 줄이 바로 정렬이 가장 나쁜 줄이고, 발음이
+    비어 있으면 그 줄은 독음(ko) 정렬에 아예 들어가지 못한다. 숫자는 여전히 그대로 둔다
+    (1秒 → 「1뵤오」, 사람은 「이치뵤오」 — 별개 문제다).
     """
-    if not _has_japanese(text):
+    if not _has_japanese(text) and not _LATIN_RE.search(text or ""):
         return ""
     return _render_pronunciation(text, tokenize_reading(text, phonetic=True, adopt_ruby=True))
 
@@ -296,6 +313,11 @@ def pronunciation_candidates(text: str, *, max_candidates: int = 8, nbest: int =
 
     중복은 제거하고 순서를 보존한다. 반환이 1개면(또는 빈 목록이면) **후보 없음**이며
     호출부는 심판을 아예 돌리지 않는다 → 비용 0. 일본어가 없는 라인은 빈 목록.
+
+    일본어가 없는 라인(라틴만)은 ``wiki_pronunciation``이 음차를 내지만 여기서는 빈 목록을
+    준다 — 후보의 존재 이유는 **한자·조사 독음의 갈림**이고, 라틴만 있는 줄에는 갈릴 것이
+    없어 어느 파스로 렌더해도 같은 음차가 나온다. 빈 목록이면 호출부가 심판을 돌리지 않아
+    비용이 0이다.
 
     기본값 ``nbest=16``/``max_candidates=8``의 근거: 三日月の夜의 사람 표기(미카즈키)는
     nbest 얕은 깊이에서 안 나오고 16에서 7번째 후보로 들어온다(실측). 생성 비용은 60줄

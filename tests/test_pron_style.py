@@ -80,10 +80,15 @@ def test_output_carries_no_kana_or_kanji(wiki_pairs):
     assert leaked == []
 
 
-def test_non_japanese_text_yields_empty_string():
-    assert wiki_pronunciation("hello world") == ""
+def test_only_text_with_nothing_to_read_yields_an_empty_string():
+    # 이 테스트의 옛 이름은 test_non_japanese_text_yields_empty_string이었고 "hello world"가
+    # ""라고 단언했다. 그건 "라틴은 음차하지 않는다"는 옛 방침의 기록이다 — 그 방침이 실측으로
+    # 뒤집혀(라틴 줄의 정렬 conf가 1/10) 이제 라틴은 조밀 음차된다. 라틴 100% 줄까지 음차하는
+    # 이유는 발음이 비면 그 줄이 독음(ko) 정렬에 아예 들어가지 못하기 때문이다.
+    assert wiki_pronunciation("hello world") == "헬로 월"
     assert wiki_pronunciation("") == ""
-    assert wiki_pronunciation("오늘 밤") == ""
+    assert wiki_pronunciation("오늘 밤") == ""  # 한글은 읽을 것이 없다
+    assert wiki_pronunciation("1234 (56)") == ""  # 숫자·부호만 있는 줄도 마찬가지
 
 
 def test_output_is_reproducible(wiki_pairs):
@@ -240,11 +245,21 @@ def test_trailing_punctuation_is_not_dropped():
     assert wiki_pronunciation("「だめだ！」").endswith("!」")
 
 
-def test_latin_and_digits_are_kept_verbatim():
-    # 위키는 음차하지만(numb→넘) 규칙화가 불가능해 원문을 그대로 남긴다
+def test_latin_is_transliterated_and_digits_are_kept_verbatim():
+    """라틴은 음차하고 숫자는 그대로 둔다.
+
+    옛 기댓값은 ``"numb" in wiki_pronunciation("numb な僕")``였다 — "위키는 음차하지만
+    (numb→넘) 규칙화가 불가능하다"는 방침의 기록이다. 실측이 그 방침을 뒤집었다: 라틴을
+    남기면 그 줄이 정렬되지 않고(라틴 글자 conf<0.01이 90~99%), 사람 자막 대조에서 잔차
+    p90이 0.629s→0.170s로 줄었다. 자세한 수치는 ``everyric2.text.latin_hangul``에 있다.
+
+    숫자는 여전히 그대로다. 사람은 「1秒」를 「이치뵤오」로 읽지만 숫자 읽기는 조수사·문맥에
+    달려 있어 라틴 음차와 별개 문제이고, 흉내면 틀린 값을 박게 된다.
+    """
     got = wiki_pronunciation("---深刻なエラーが発生しました---")
-    assert got == "---신코쿠나 에라아가 핫세이시마시타---"
-    assert "numb" in wiki_pronunciation("numb な僕")
+    assert got == "---신코쿠나 에라아가 핫세이시마시타---"  # 부호만 있는 구간은 그대로
+    assert wiki_pronunciation("numb な僕") == "넘 나 보쿠"
+    assert "1" in wiki_pronunciation("1秒先")
 
 
 def test_sokuon_and_n_cross_token_boundaries():
