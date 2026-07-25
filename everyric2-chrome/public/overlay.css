@@ -1000,6 +1000,25 @@ body.ey-hide-pron .ey-pip-pron { display: none; }
 body.ey-lane-active .ey-pip-stage { display: none; }
 body.ey-lane-active .ey-pip-video { flex: 1 1 auto; max-height: none; }
 
+/* PiP 진행/알림 칩 — 푸터 위 얇은 줄. 메인 패널의 .ey-gen-chip / .ey-notice-chip과
+   같은 정보를 같은 색 규약(진행=강조 노랑 계열, 알림=초록 계열)으로 창 안에 띄운다.
+   창이 좁으므로 줄바꿈을 허용하고, 잘릴 때는 title에 전문이 있다. */
+.ey-pip-chip {
+  flex-shrink: 0;
+  margin: 0 12px 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--ey-accent-soft);
+  color: var(--ey-text);
+  font-size: 11px;
+  line-height: 1.35;
+  align-self: flex-start;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
+}
+
+.ey-pip-notice { background: rgba(80, 180, 140, 0.18); }
+
 .ey-pip-footer {
   display: flex;
   flex-direction: column;

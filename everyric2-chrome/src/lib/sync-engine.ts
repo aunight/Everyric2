@@ -9,6 +9,11 @@ export interface SyncHandlers {
  * video.currentTime을 가사 타임라인 인덱스로 변환하는 엔진.
  * rAF는 백그라운드 탭에서 스로틀되므로 timeupdate 이벤트를 병행해
  * PiP 창만 보이는 상황에서도 줄 단위 싱크가 유지되게 한다.
+ *
+ * 숨은 탭에서 남는 것은 timeupdate(~4Hz)뿐이라 이 엔진의 tick도 그 주기가 된다 —
+ * **프레임 단위 렌더(PiP 레인·가사 채움)를 여기에 얹으면 안 된다.** PiP는 별도 최상위
+ * 창이라 자기 rAF가 계속 돌므로, 이 tick은 상태 공급자로만 쓰고 그리기는 PiP가 한다
+ * (ui/pip.ts의 state 필드 주석 참조).
  */
 export class SyncEngine {
   private video: HTMLVideoElement | null = null;

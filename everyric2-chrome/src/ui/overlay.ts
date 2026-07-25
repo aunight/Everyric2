@@ -123,6 +123,21 @@ export class LyricsOverlay {
   private offsetSec: number;
   private visible = true;
   private fullscreenHidden = false;
+  /**
+   * 전체화면 동안 도착해 사용자가 볼 기회가 없던 알림 — 해제되는 순간 다시 띄운다.
+   *
+   * 전체화면에서는 브라우저가 전체화면 요소를 top layer에 그리므로, documentElement에 붙은
+   * 이 호스트는 z-index와 무관하게 영상 뒤로 가려진다 — 그래서 handleFullscreenChange가
+   * 아예 감춘다. 문제는 칩(진행·알림·서버 배너)도 그 안에 있다는 것이고, 특히 전사 완료
+   * 경고는 20초 타이머로 떴다가 아무것도 안 보인 채 만료됐다.
+   *
+   * 칩만 전체화면 위로 올리려면 호스트를 전체화면 요소 서브트리로 옮겨야 하는데, 유튜브가
+   * 자기 플레이어 DOM을 다시 그릴 때 우리 노드가 쓸려 나가는 위험을 안는다. 그 값을 치를
+   * 만한 이득이 아니므로 **타이머를 미뤄** 해제 직후 처음부터 보여 주는 쪽을 택했다.
+   * (PiP 창은 별도 최상위 창이라 페이지 전체화면과 무관하게 보인다 — content.showNotice가
+   *  같은 알림을 그쪽에도 밀어넣으므로 PiP를 켠 사용자는 전체화면 중에도 바로 본다.)
+   */
+  private pendingNotice: { text: string; autoHideMs: number } | null = null;
   private serverStatus: ServerStatus = unknownStatus();
   private generateButtons: HTMLButtonElement[] = [];
   private plainTextForGenerate = '';
@@ -643,6 +658,25 @@ export class LyricsOverlay {
     this.body.append(buildErrorState(this.panelContext(), message, detail));
   }
 
+  /**
+   * 이 화면을 오류 화면으로 덮으면 사용자가 잃는 것이 있는가.
+   *
+   * showError는 resetBody()를 타서 본문을 통째로 버린다 — 보고 있던 가사·검색 시트·**방금
+   * 붙여넣던 본문**까지. 잡 실패·요청 실패·500줄 초과가 전부 그 경로였고, 특히 500줄 초과는
+   * 실패 문구 한 줄을 주면서 사용자가 옮겨 적은 가사를 날렸다. 실패는 알리되 화면 상태는
+   * 보존해야 하므로, 호출부(content.reportFailure)는 이 판정이 참이면 알림 칩만 쓴다.
+   *
+   * 반대로 가사도 입력도 없는 화면(검색 중·조회 실패 직후)에서는 잃을 것이 없고, 그때는
+   * 본문 오류 화면이 '다시 시도' 버튼까지 함께 줄 수 있어 더 낫다.
+   */
+  hasPreservableContent(): boolean {
+    if (this.stateKind === 'synced' || this.stateKind === 'plain' || this.stateKind === 'search') return true;
+    // 빈 상태·오류 화면에도 붙여넣기 칸이 열려 있다(panels.buildEmptyState는 펼친 채로 만든다) —
+    // 타이핑한 본문이 있으면 그것이 이 화면에서 가장 값진 것이다
+    return [...this.body.querySelectorAll<HTMLTextAreaElement>('textarea')]
+      .some(t => t.value.trim().length > 0);
+  }
+
   showPipPlaceholder(): void {
     this.stateKind = 'pip';
     this.resetBody();
@@ -885,20 +919,25 @@ export class LyricsOverlay {
    */
   setNoticeChip(text: string | null, autoHideMs?: number): void {
     clearTimeout(this.noticeTimer);
+    this.pendingNotice = null;
     if (!text) {
-      this.noticeChip.style.display = 'none';
-      this.noticeChip.replaceChildren();
+      this.hideNoticeChip();
       return;
     }
     this.noticeChip.replaceChildren(icon(ICONS.sparkle), text);
     this.noticeChip.title = text; // 칩이 좁아 잘려도 전문을 볼 수 있게
     this.noticeChip.style.display = '';
     if (autoHideMs !== undefined) {
-      this.noticeTimer = window.setTimeout(() => {
-        this.noticeChip.style.display = 'none';
-        this.noticeChip.replaceChildren();
-      }, autoHideMs);
+      // 전체화면 중에는 이 칩이 화면에 나갈 수 없다(pendingNotice 주석의 top layer 근거) —
+      // 타이머를 걸어 두면 사용자가 아무것도 못 본 채 만료된다. 해제될 때 처음부터 센다.
+      if (this.fullscreenHidden) this.pendingNotice = { text, autoHideMs };
+      else this.noticeTimer = window.setTimeout(() => this.hideNoticeChip(), autoHideMs);
     }
+  }
+
+  private hideNoticeChip(): void {
+    this.noticeChip.style.display = 'none';
+    this.noticeChip.replaceChildren();
   }
 
   /** 내 생성 대기열 목록 데이터 갱신 — 진행 칩 클릭으로 펼친다.
@@ -1465,8 +1504,15 @@ export class LyricsOverlay {
   };
 
   private handleFullscreenChange = (): void => {
+    const wasHidden = this.fullscreenHidden;
     this.fullscreenHidden = document.fullscreenElement !== null;
     this.updateHostVisibility();
+    // 전체화면 동안 도착해 못 본 알림을 해제 직후 다시 띄운다 — 타이머도 여기서 처음부터.
+    // 칩은 이미 DOM에 그려져 있으므로 문구가 바뀌지 않고 표시 시간만 새로 주어진다.
+    if (wasHidden && !this.fullscreenHidden && this.pendingNotice) {
+      const { text, autoHideMs } = this.pendingNotice;
+      this.setNoticeChip(text, autoHideMs);
+    }
   };
 
   private clampX(x: number): number {

@@ -117,6 +117,53 @@ const FIND_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" st
 const MIN_VIDEO_RATIO = 0.15;
 const MAX_VIDEO_RATIO = 0.75;
 
+/**
+ * 재생 상태가 이 시간보다 오래 갱신되지 않으면 시간 보간을 멈춘다(마지막 시각에 정지).
+ *
+ * 메인 창이 tick을 끊는 상황은 정상적으로 존재한다 — 내비게이션, 싱크 없는 곡, engine.stop().
+ * 그때도 paused=false인 마지막 상태로 계속 보간하면 레인이 혼자 끝없이 흘러간다.
+ * 숨은 탭의 timeupdate는 ~250ms 간격이라 이 상한에 걸리지 않는다.
+ */
+const STATE_STALE_MS = 1000;
+
+/**
+ * PiP 창의 rAF 콜백이 이보다 오래 돌지 않았으면 **메인 창 tick이 대신 그린다** (자기치유 안전망).
+ *
+ * 왜 있나: 이 클래스는 "PiP 창은 숨은 탭에서도 자기 rAF가 계속 돈다"는 전제 위에 렌더를
+ * 옮겼는데, **그 전제를 실측으로 확인하지 못했다.** 보이는 상태에서 PiP rAF가 120/s로 돌고
+ * 레인이 그것으로 갱신되는 것은 확인됐지만(실측), 진짜로 숨겨진 탭은 자동화로 만들 수
+ * 없었다 — Playwright가 백그라운드 스로틀링을 끄는 플래그를 기본으로 넣고, 그 플래그를
+ * 제거하고 다른 탭을 앞으로 가져와도 `document.hidden`이 계속 false였다.
+ *
+ * 전제가 거짓이면 숨은 탭에서 렌더가 **0**이 되어 예전(tick 4Hz)보다 나빠진다. 확인할 수
+ * 없는 전제 위에 하한을 두지 않으려고 이 안전망을 둔다. 판단 근거는 "칠했나"가 아니라
+ * **"rAF가 살아 있나"**(lastFrameAt)다 — 그래서 결과가 두 갈래로 깔끔하게 갈린다:
+ *   - rAF가 살아 있으면 lastFrameAt이 매 프레임(~8~16ms) 갱신돼 이 조건이 절대 성립하지
+ *     않는다 → **이중 렌더 없음** (tick이 60Hz로 와도 마찬가지)
+ *   - rAF가 죽어 있으면 lastFrameAt이 영원히 낡아 **매 tick** 발동한다 → 렌더 주기가 정확히
+ *     예전으로 되돌아간다(보이는 탭 60Hz, 숨은 탭 ~4Hz). 즉 **최악이 예전과 같다.**
+ *
+ * 200ms의 근거: 숨은 탭 timeupdate 간격(실측 3.7/s ≈ 270ms)보다 작아 rAF가 죽었을 때 매
+ * tick 발동하고, 살아 있을 때의 프레임 간격(~8~16ms, 30fps로 떨어져도 33ms)보다 한참 커서
+ * 정상 동작 중 오발동이 없다.
+ *
+ * **지우지 마라.** 중복처럼 보이지만 전제가 확인되기 전까지 이것이 렌더 주기의 유일한
+ * 하한이다. 숨은 탭에서 PiP rAF가 유지된다는 것이 실측되면 그때 함께 지워도 된다.
+ */
+const RENDER_FALLBACK_MS = 200;
+
+/**
+ * 곡 시간이 멈춰 있을 때(일시정지·내비게이션 후 상태 정지)의 최소 재그리기 간격(ms).
+ *
+ * 시각이 그대로면 레인 내용이 바뀔 이유가 거의 없는데 60~120Hz로 캔버스를 다시 칠하는 것은
+ * 낭비다. 다만 **아예 건너뛰지는 않고 늦추기만** 한다: 멈춘 동안에도 설정(마디 ±·글자
+ * 크기·발음 위치·신뢰도 색)은 바뀔 수 있고 그것들이 화면에 반영되는 유일한 경로가 다음
+ * 렌더다. 완전히 건너뛰려면 남은 setter 스무 개마다 dirty 표시를 달아야 하고, 하나만
+ * 빠뜨리면 레인이 낡은 채로 영구히 멈춘다 — 눈에 잘 안 띄는 대신 치명적인 실패다.
+ * 100ms면 설정을 바꾼 사람 눈에는 즉시이고, 재그리기 비용은 6분의 1 이하로 준다.
+ */
+const IDLE_REDRAW_MS = 100;
+
 // PiP 창 크기 기억 — 비정상적으로 작거나 큰 값이 저장/전달돼 창이 못 쓰게 되지 않도록 클램프
 const MIN_PIP_WIDTH = 280;
 const MAX_PIP_WIDTH = 960;
@@ -272,6 +319,29 @@ export class PipController {
   private pitchPointer: { id: number; startX: number; startT0: number; moved: boolean } | null = null;
   private paused = false;
   private lastTime = 0;
+  /**
+   * 메인 창이 밀어넣는 최신 재생 상태 — PiP는 이것을 **보간해 자기 rAF로** 그린다.
+   *
+   * 왜: 메인 창의 rAF(sync-engine)는 탭이 숨으면 멈추고 timeupdate(~4Hz)만 남는다.
+   * PiP 렌더가 그 tick에 실려 있으면, **탭을 떠나 보는 것이 존재 이유인 이 창이** 초당
+   * 4프레임으로 끊긴다(레인·가사 채움 전부). PiP는 별도 최상위 창이라 자기 rAF는 계속
+   * 돌므로, 메인 창은 상태(시각·재생 여부·배속)만 공급하고 그리기는 이 창이 한다.
+   * 그리는 곳이 rAF 한 곳뿐이라 메인 창이 보일 때도 같은 프레임을 두 번 그리지 않는다.
+   *
+   * at은 상태를 받은 시각(메인 창 performance.now() — 이 클래스는 content script에서
+   * 돌므로 rAF 콜백에서 읽는 값과 같은 시계다).
+   */
+  private state = { time: 0, duration: 0, paused: true, at: 0 };
+  /** PiP 창의 rAF 핸들 — pagehide에서 반드시 취소한다(창이 닫힌 뒤 도는 루프 = 누수) */
+  private rafId = 0;
+  /**
+   * PiP 창의 rAF 콜백이 마지막으로 **돈** 시각 — 안전망의 판단 근거는 "rAF가 살아 있나"다.
+   * 실제로 칠했는지가 아니라 콜백이 돌았는지를 기록한다(일시정지 간격에 걸려 안 칠한
+   * 프레임도 rAF가 산 증거다) — 두 기준을 한 필드로 겸하면 임계값이 서로를 흔든다.
+   */
+  private lastFrameAt = 0;
+  /** renderFrame이 마지막으로 실제로 칠한 시각 — 일시정지 재그리기 간격(IDLE_REDRAW_MS) 기준 */
+  private lastPaintAt = 0;
   /** RAW f0 곡선 상시 표시 (설정 pitchF0Curve) — 디버그 언더레이와 독립 */
   private showF0 = true;
   private pitchDividerEl: HTMLDivElement | null = null;
@@ -333,6 +403,10 @@ export class PipController {
   private serverBarEl: HTMLDivElement | null = null;
   /** 전사 진행 칩 — 메인 패널의 .ey-gen-chip과 같은 정보를 창 안에 작게 */
   private chipEl: HTMLDivElement | null = null;
+  /** 한 줄 알림 칩 — 메인 패널의 .ey-notice-chip과 같은 소식을 창 안에도.
+   *  pipKeepPanel=false로 PiP만 보고 있으면 메인 패널의 칩은 볼 기회가 아예 없다 */
+  private noticeEl: HTMLDivElement | null = null;
+  private noticeTimer = 0;
 
   // ── 재생 컨트롤 (유튜브 DOM 조작 — lib/yt-player.ts) ─────────────
   private prevBtn: HTMLButtonElement | null = null;
@@ -588,6 +662,10 @@ export class PipController {
     // 전사 진행 칩 — 창을 점유하지 않고 진행률만
     this.chipEl = h('div', { className: 'ey-pip-chip' });
     this.chipEl.style.display = 'none';
+    // 알림 칩 — 진행 칩과 같은 자리·다른 색(메인 패널의 두 칩과 같은 규약).
+    // 전사 진행과 알림은 동시에 일어날 수 있어 한 엘리먼트를 공유하면 서로를 지운다
+    this.noticeEl = h('div', { className: 'ey-pip-chip ey-pip-notice' });
+    this.noticeEl.style.display = 'none';
 
     // 서버 오류 배너 — 메인 패널과 같은 조각을 쓴다. 패널(가사 찾기)이 닫혀 있어도
     // 보이도록 body 흐름에 두어, 가라오케 화면에서도 사유 한 줄이 사라지지 않는다
@@ -612,6 +690,7 @@ export class PipController {
       this.pitchCanvas,
       this.serverBarEl,
       this.chipEl,
+      this.noticeEl,
       this.playlistEl,
       this.footerEl,
       h('div', { className: 'ey-pip-corner' }, this.cornerKaraokeBtn, this.cornerVideoBtn, this.cornerPanelBtn),
@@ -651,6 +730,13 @@ export class PipController {
         const size = clampPipSize(win.innerWidth, win.innerHeight);
         opts.onSizeChange(size.width, size.height);
       }
+      // 프레임 루프를 먼저 끊는다 — 닫힌 창의 rAF가 남으면 누수이고, 아래에서 null로
+      // 비우는 엘리먼트를 그 루프가 계속 만지려 한다
+      win.cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+      this.lastFrameAt = 0;
+      this.lastPaintAt = 0;
+      this.state = { time: 0, duration: 0, paused: true, at: 0 };
       this.stopMirror();
       this.win = null;
       this.index = -1;
@@ -684,6 +770,8 @@ export class PipController {
       this.panelResultsEl = null;
       this.generateButtons = [];
       this.chipEl = null;
+      clearTimeout(this.noticeTimer);
+      this.noticeEl = null;
       this.serverBarEl = null;
       this.prevBtn = null;
       this.nextBtn = null;
@@ -695,6 +783,13 @@ export class PipController {
       opts.onClosed();
     });
     this.renderLines();
+    // 첫 tick이 오기 전에는 0초 상태 — 정지로 두어 보간이 앞서 나가지 않게 한다
+    this.state = { time: 0, duration: 0, paused: true, at: performance.now() };
+    // 첫 프레임은 지연 없이 그린다(일시정지 간격 가드 통과). lastFrameAt도 0이라 첫 tick이
+    // rAF보다 먼저 오면 안전망이 한 번 그리는데, 그것이 이 창의 첫 그림이라 옳다.
+    this.lastFrameAt = 0;
+    this.lastPaintAt = 0;
+    this.startFrameLoop(win); // 이제부터 렌더는 이 창의 rAF가 맡는다 (state 주석 참조)
     return true;
   }
 
@@ -1048,11 +1143,58 @@ export class PipController {
     this.applyPanelVisibility();
   }
 
-  /** 전사 진행 칩 — null이면 숨김 */
+  /** 전사 진행 칩 — null이면 숨김. 창이 닫혀 있으면(chipEl=null) 아무 일도 하지 않는다 */
   setGenerationChip(text: string | null): void {
     if (!this.chipEl) return;
     this.chipEl.textContent = text ?? '';
     this.chipEl.style.display = text ? '' : 'none';
+  }
+
+  /**
+   * 한 줄 알림 칩 — null이면 숨김. 메인 패널 setNoticeChip과 같은 규약(마지막 호출이 이긴다).
+   *
+   * 왜 PiP에도 있어야 하나: pipKeepPanel=false면 메인 패널은 placeholder로 접혀 있어,
+   * 거절 사유("자동 생성 자막은…")·완료 경고·표기 필터 결과가 전부 사용자가 보지 않는
+   * 창으로만 갔다. PiP만 보며 '싱크 생성'을 누르면 완전한 무반응이었던 원인의 절반이다.
+   */
+  setNoticeChip(text: string | null, autoHideMs?: number): void {
+    clearTimeout(this.noticeTimer);
+    const el = this.noticeEl;
+    if (!el) return; // 창이 닫혀 있으면 알릴 자리가 없다
+    if (!text) {
+      el.textContent = '';
+      el.style.display = 'none';
+      return;
+    }
+    el.textContent = text;
+    el.title = text; // 창이 좁아 잘려도 전문을 볼 수 있게
+    el.style.display = '';
+    if (autoHideMs !== undefined) {
+      this.noticeTimer = window.setTimeout(() => {
+        // 그 사이 창이 닫혔거나 다른 칩으로 교체됐을 수 있다 — 지금 엘리먼트만 건드린다
+        if (this.noticeEl !== el) return;
+        el.textContent = '';
+        el.style.display = 'none';
+      }, autoHideMs);
+    }
+  }
+
+  /**
+   * 이 창을 오류 화면으로 덮으면 사용자가 잃는 것이 있는가 (overlay.hasPreservableContent와 같은 규약).
+   *
+   * showPanelError는 setPanelContent를 타서 패널 내용을 통째로 교체한다 — 창 안에서
+   * 붙여넣던 가사나 열어 둔 검색 시트가 그대로 사라진다.
+   */
+  hasPreservableContent(): boolean {
+    if (this.lines.length > 0) return true; // 스테이지·레인에 이 곡 가사가 떠 있다
+    if (this.panelResultsEl) return true; // 검색 시트가 살아 있다
+    const panel = this.panelEl;
+    if (!panel) return false;
+    // 타임싱크 없는 가사 목록(showPanelPlain)도 지금 읽고 있는 가사다 — 이때 this.lines는
+    // 비어 있으므로(스테이지에 그릴 타이밍이 없다) 패널 안을 직접 확인해야 한다
+    if (panel.querySelector('.ey-lines-plain')) return true;
+    return [...panel.querySelectorAll<HTMLTextAreaElement>('textarea')]
+      .some(t => t.value.trim().length > 0);
   }
 
   /** SEARCH_CANDIDATES 응답 — 패널의 검색 시트가 살아 있을 때만 반영 (stale 방지) */
@@ -1319,12 +1461,86 @@ export class PipController {
     return divider;
   }
 
-  /** 매 tick 호출: 카라오케 필 + 진행 바 + 시간/재생 상태 */
+  /**
+   * 메인 창이 주는 재생 상태를 받아 둔다 — **평소에는 그리지 않는다.**
+   *
+   * 시간에 따라 변하는 렌더(가사 채움·진행 바·시간 라벨·레인)는 전부 이 창의 rAF
+   * (startFrameLoop → renderFrame)가 맡는다. 근거는 state 필드 주석 참조: 이 함수는
+   * 숨은 탭에서 ~4Hz로만 불리므로, 여기서 그리면 PiP가 초당 4프레임이 된다.
+   * 상태 변화로만 바뀌는 것(재생/정지 아이콘)은 값이 실제로 바뀔 때 여기서 처리한다.
+   *
+   * 예외는 아래 안전망 하나뿐이다 — PiP rAF가 돌지 않는 환경에서도 최악이 예전과
+   * 같도록(4Hz) 보장한다. 근거는 RENDER_FALLBACK_MS 주석.
+   */
   tick(time: number, duration: number, paused: boolean): void {
     if (!this.win) return;
     this.paused = paused;
-    this.lastTime = time;
+    // 상태를 **먼저** 갱신한다 — 아래 안전망이 그릴 때 sampleTime()이 방금 받은 시각을
+    // 쓰도록(갱신 전에 그리면 STATE_STALE_MS에 걸린 낡은 시각으로 그린다)
+    this.state = { time, duration, paused, at: performance.now() };
     if (!paused) this.manualT0 = null; // 재생 재개 → 수동 스크롤 해제, 오토스크롤 복귀
+    if (this.playBtn && paused !== this.lastPaused) {
+      this.lastPaused = paused;
+      this.playBtn.replaceChildren(icon(paused ? PLAY_SVG : PAUSE_SVG));
+    }
+    // 자기치유 안전망: PiP rAF가 살아 있으면 이 조건은 성립하지 않아 아무 일도 없다.
+    // 죽어 있으면 lastFrameAt이 갱신되지 않아 **매 tick** 여기서 그린다 — 즉 렌더 주기가
+    // 정확히 예전(tick 주기: 보이면 60Hz, 숨으면 ~4Hz)으로 되돌아간다.
+    // (tick 자체가 끊긴 경우엔 이 함수가 안 불리므로 발동하지 않고 마지막 프레임에서
+    //  정지한다 — sampleTime의 STATE_STALE_MS와 같은 결론이다.)
+    if (performance.now() - this.lastFrameAt > RENDER_FALLBACK_MS) {
+      this.renderFrame(this.sampleTime());
+    }
+  }
+
+  /**
+   * PiP 창 자신의 rAF 루프 — 이 창이 열려 있는 동안만 돈다.
+   *
+   * win을 클로저로 잡고 매 프레임 `this.win !== win`을 확인한다: 창이 닫히거나(pagehide가
+   * win을 null로 만든다) 새 창으로 교체되면 그 프레임에서 스스로 끝난다. pagehide도
+   * cancelAnimationFrame으로 즉시 끊는다 — 닫힌 창의 루프가 남으면 그게 누수다.
+   */
+  private startFrameLoop(win: Window): void {
+    const loop = (): void => {
+      if (this.win !== win) return;
+      this.rafId = win.requestAnimationFrame(loop);
+      // 콜백이 돌았다는 사실을 먼저 남긴다 — 이것이 안전망의 "rAF 살아 있음" 근거다.
+      // renderFrame이 일시정지 간격에 걸려 안 칠하고 돌아와도 rAF는 산 것이다.
+      this.lastFrameAt = performance.now();
+      this.renderFrame(this.sampleTime());
+    };
+    this.rafId = win.requestAnimationFrame(loop);
+  }
+
+  /**
+   * 마지막으로 받은 상태를 벽시계로 보간한 현재 곡 시간.
+   * 숨은 탭에서는 상태가 ~4Hz로만 오므로 그 사이를 배속만큼 이어 붙인다 —
+   * 250ms마다 실측값으로 교정되므로 어긋남이 누적되지 않는다.
+   */
+  private sampleTime(): number {
+    const s = this.state;
+    const age = performance.now() - s.at;
+    // 일시정지 중이거나 상태가 낡았으면(메인 창이 tick을 끊었다) 마지막 시각에 멈춘다
+    if (s.paused || age > STATE_STALE_MS) return s.time;
+    return s.time + (age / 1000) * this.playbackRate;
+  }
+
+  /**
+   * 한 프레임의 시간 의존 렌더 — 가사 채움 + 진행 바 + 시간 라벨 + 레인.
+   * 이 창의 rAF가 매 프레임 부르고, rAF가 죽은 환경에서는 메인 창 tick이 대신 부른다.
+   */
+  private renderFrame(time: number): void {
+    if (!this.win) return;
+    const at = performance.now();
+    // 곡 시간이 멈춰 있으면 재그리기를 늦춘다 — 건너뛰지는 않는다(IDLE_REDRAW_MS 주석).
+    // `paused`를 보지 않고 **시각이 같은지**만 보는 이유: 멈추는 경우가 일시정지 하나가
+    // 아니다 — 메인 창이 tick을 끊으면(내비게이션) sampleTime이 STATE_STALE_MS에 걸려
+    // 같은 시각을 계속 돌려주는데, 그때도 같은 그림을 60~120Hz로 다시 칠할 이유가 없다.
+    // 재생 중에는 프레임마다 보간값이 달라 이 조건이 성립하지 않는다.
+    if (time === this.lastTime && at - this.lastPaintAt < IDLE_REDRAW_MS) return;
+    this.lastPaintAt = at;
+    this.lastTime = time;
+    const duration = this.state.duration;
     for (const { start, el } of this.wordEls) {
       el.classList.toggle('sung', start <= time);
     }
@@ -1332,11 +1548,9 @@ export class PipController {
       this.progressEl.style.width = `${Math.min(100, (time / duration) * 100)}%`;
     }
     if (this.timeEl && duration > 0) {
-      this.timeEl.textContent = `${formatTime(time)} / ${formatTime(duration)}`;
-    }
-    if (this.playBtn && paused !== this.lastPaused) {
-      this.lastPaused = paused;
-      this.playBtn.replaceChildren(icon(paused ? PLAY_SVG : PAUSE_SVG));
+      // 초 단위 문구는 프레임마다 같다 — 바뀔 때만 써서 불필요한 리플로우를 피한다
+      const label = `${formatTime(time)} / ${formatTime(duration)}`;
+      if (this.timeEl.textContent !== label) this.timeEl.textContent = label;
     }
     this.renderPitch(time);
   }
@@ -2047,7 +2261,7 @@ export class PipController {
 
     this.wordEls = [];
     // 발음도 음절 타이밍(pronSegments)이 있으면 패널처럼 부른 만큼 색이 차오르게 —
-    // 음절 span을 wordEls에 합류시켜 tick의 sung 토글을 그대로 태운다
+    // 음절 span을 wordEls에 합류시켜 프레임 렌더(renderFrame)의 sung 토글을 그대로 태운다
     if (this.pronEl) {
       this.pronEl.replaceChildren();
       const pron = current?.pronunciation ?? '';
