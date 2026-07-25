@@ -3,7 +3,9 @@ import hashlib
 import logging
 import math
 import re
+import shutil
 import statistics
+import subprocess
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -18,12 +20,33 @@ logger = logging.getLogger(__name__)
 # **키의 존재 여부가 "도착 확정" 신호를 겸한다**: 키가 없으면 아직 안 온 것이고, 빈
 # 리스트는 "붙일 메타가 없음이 확정"이다. 병렬 경로(_wait_for_line_meta)가 이 구분으로
 # 무한 대기 없이 진행 여부를 정한다 — 별도 플래그 집합을 두지 않아 정리 지점이 늘지 않는다.
+#
+# **갱신은 단조적이다**: 값이 있는 메타가 이미 들어와 있으면 나중에 온 빈 리스트로 지우지
+# 않는다 (stash_line_meta 참고). 빈 리스트의 "확정 신호" 계약은 그대로 유지되고, 비우는
+# 방향만 막힌다.
 _PENDING_LINE_META: dict[str, list[dict[str, Any]]] = {}
 # 강제 재생성 잡 — 동일 (audio_hash, lyrics_hash) 재사용을 건너뛰고 정렬을 다시 돌린다
 _PENDING_FORCE: set[str] = set()
 
 
 def stash_line_meta(job_id: str, line_meta: list[dict[str, Any]]) -> None:
+    """잡의 라인 메타(발음/번역)를 스태시한다 — **이미 있는 값을 빈 리스트로 지우지 않는다.**
+
+    재현(무조건 덮어쓰던 예전 규칙): ``line_meta_pending=true``로 잡 생성 → 확장이 번역에
+    성공해 35줄을 attach → 클라이언트 재시도 로직이 같은 잡에 ``line_meta: []``를 재전송 →
+    워커가 발음·번역 없이 원문만 정렬. 이번 세션에 고친 "자막 경로 0줄"과 결과가 같다.
+
+    빈 리스트 자체는 거부할 수 없다 — 그것이 "붙일 메타가 없음 확정"이라는 도착 신호이고
+    (_PENDING_LINE_META 주석, _wait_for_line_meta), 거부하면 번역 실패 잡이 상한까지
+    120초를 헛되게 기다린다. 그래서 **비어 있지 않은 것을 비우는 방향만** 막는다. 반대 방향
+    (빈 것 → 값 있는 것)과 값 있는 것끼리의 갱신은 그대로 허용한다.
+    """
+    if not line_meta and _PENDING_LINE_META.get(job_id):
+        logger.info(
+            f"Job {job_id}: ignored an empty line_meta re-send; keeping the "
+            f"{len(_PENDING_LINE_META[job_id])} line(s) already stashed"
+        )
+        return
     _PENDING_LINE_META[job_id] = line_meta
 
 
@@ -279,6 +302,12 @@ def _attach_pron_segments(seg: dict[str, Any]) -> None:
 
 
 def compute_audio_hash(file_path: Path) -> str:
+    """확보한 오디오 파일의 md5 — 캐시 키(SyncResult.audio_hash, String(32))다.
+
+    **파일 바이트 해시라 확보 경로에 의존한다** — 같은 영상이라도 미디어 캐시 경로(m4a
+    스트림카피)와 yt-dlp 경로(wav 트랜스코드)는 다른 해시가 된다. 아래 `_acquire_audio`에
+    이 비대칭을 왜 그냥 두는지(내용 기반 해시로 못 고치는 이유) 실측과 함께 적어 뒀다.
+    """
     md5 = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -286,15 +315,65 @@ def compute_audio_hash(file_path: Path) -> str:
     return md5.hexdigest()
 
 
+# 길이 프로브(ffprobe) 상한(초) — 헤더만 읽는 작업이라 정상이면 수십 ms다. 상한은 손상
+# 파일/네트워크 경로에서 프로세스가 매달리는 것만 막는 안전판이고, 초과하면 None으로 떨어져
+# 예전과 같은 "검사 생략" 동작이 된다 (과길이 검사는 있으면 좋은 가드지 필수 경로가 아니다).
+_FFPROBE_TIMEOUT_SEC = 10.0
+
+
 def _audio_duration_sec(file_path: str) -> float | None:
-    """다운로드된 오디오 길이(초) — 헤더만 읽어 즉시 반환. 실패 시 None(상한 검사 생략)."""
+    """오디오 길이(초) — 헤더만 읽어 즉시 반환. 실패 시 None(상한 검사 생략).
+
+    soundfile(libsndfile) 먼저, 실패하면 ffprobe로 폴백한다. **libsndfile은 m4a/AAC를 못
+    읽는다** — 실측(libsndfile 1.2.2, ffmpeg AAC 5초 파일):
+        sf.info('t.wav')  → OK
+        sf.info('t.m4a')  → LibsndfileError: Error opening 't.m4a': Format not recognised.
+    미디어 캐시 경로는 ``-acodec copy``로 **m4a**를 만들어 넘기므로(media_cache._run_ffmpeg),
+    soundfile만 쓰던 예전 구현은 그 경로에서 항상 None을 돌려줬고 호출부가 ``if duration and``
+    이라 **과길이 검사가 통째로 생략**됐다. 캐시 lookup이 ``duration_sec``를 안 주면
+    프리플라이트(media_cache.prepare_cached_audio)도 건너뛰므로 상한이 완전히 사라져, 장시간
+    영상이 GPU 슬롯을 점유할 수 있었다. ffprobe는 ffmpeg와 함께 설치되고 다운로더가 이미
+    ffmpeg를 필수 의존성으로 검사하므로(downloader._check_dependencies) 새 의존성이 아니다.
+    """
     try:
         import soundfile as sf
 
         info = sf.info(file_path)
         return float(info.frames) / float(info.samplerate or 1)
     except Exception:
+        pass
+    return _ffprobe_duration_sec(file_path)
+
+
+def _ffprobe_duration_sec(file_path: str) -> float | None:
+    """ffprobe로 컨테이너 길이(초)를 읽는다 — libsndfile이 못 읽는 포맷(m4a/AAC)용 폴백."""
+    if not shutil.which("ffprobe"):
         return None
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            capture_output=True,
+            timeout=_FFPROBE_TIMEOUT_SEC,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        # 스트림 길이를 못 아는 컨테이너는 'N/A'를 뱉는다 → float()이 실패해 None
+        duration = float(proc.stdout.decode("utf-8", "replace").strip())
+    except ValueError:
+        return None
+    return duration if duration > 0 else None
 
 
 async def process_job(job_id: str) -> None:
@@ -362,11 +441,18 @@ async def _complete_from_cache_db(
                 title=title,
                 artist=artist,
             )
+            # 이 로그는 **복사가 실제로 일어난 이 분기**에 있어야 한다 — 예전에는 복사가 없는
+            # else(같은 영상 재사용)에 붙어 있어, 과거에 복구 불가 사고를 낸 교차 영상 복사
+            # 경로가 정작 로그에 한 줄도 남지 않았다(사고 재발 시 추적 불가).
+            logger.info(
+                f"Job {job_id}: copied sync {existing.id} from video {existing.video_id} "
+                f"(same audio+lyrics) into new row {target.id} for video {job.video_id}"
+            )
         else:
             await sync_repo.set_title_if_missing(target, title, artist)
             logger.info(
-                f"Job {job_id}: copied sync from video {existing.video_id} "
-                f"(same audio+lyrics) into {job.video_id}"
+                f"Job {job_id}: reusing this video's own sync {target.id} "
+                f"(same audio+lyrics, no copy needed)"
             )
         updated = dict(target.timestamps)
         changed = False
@@ -419,7 +505,8 @@ class JobInput:
 
     오디오 확보 우선순위(_acquire_audio): audio_path(인프로세스가 미디어 캐시에서 추출해 둔
     로컬 파일) > audio_url(원격 워커가 서버 캐시 파일을 HTTP로 받음) > yt-dlp 다운로드.
-    앞의 두 경로가 실패하면 yt-dlp로 폴백하고, audio_hash는 어느 경로든 받은 파일로 동일 계산.
+    앞의 두 경로가 실패하면 yt-dlp로 폴백한다. audio_hash는 어느 경로든 **받은 파일 바이트**로
+    계산하므로 경로가 다르면 같은 영상도 다른 해시가 된다 (_acquire_audio의 실측 주석 참고).
     """
 
     job_id: str
@@ -762,9 +849,25 @@ async def _stage_monitor(report, stage_holder: dict[str, str], start: int, inter
 def _acquire_audio(job: "JobInput") -> dict:
     """오디오 확보 — audio_path(로컬 캐시 추출) > audio_url(서버 캐시 HTTP) > yt-dlp.
 
-    앞선 캐시 경로가 실패하면 조용히 yt-dlp로 폴백한다(INFO 로그 1줄). audio_hash는 어느
-    경로든 확보한 파일로 동일하게 계산한다 — 캐시/다운로드가 같은 원본이면 해시도 같아
-    교차 영상 캐시 재사용이 그대로 동작한다."""
+    앞선 캐시 경로가 실패하면 조용히 yt-dlp로 폴백한다(INFO 로그 1줄).
+
+    **audio_hash는 확보 경로에 의존한다** — 예전 독스트링은 "같은 원본이면 해시도 같다"고
+    단언했지만 성립하지 않는다. 미디어 캐시 경로는 ``-acodec copy``로 m4a를 만들고
+    (media_cache._run_ffmpeg) yt-dlp 경로는 wav로 트랜스코드하므로, 같은 영상도 바이트가
+    달라 다른 해시가 된다. 그래서 같은 영상을 두 경로로 처리하면 캐시가 미스해 GPU 정렬을
+    다시 돌린다(교차 영상 재사용도 경로가 갈리면 못 잡는다).
+
+    **내용 기반 해시로 고치지 않는 이유 (실측)**: 디코딩 PCM을 정규화해(16k mono s16) md5를
+    떠도 경로 독립이 되지 않는다. 같은 AAC 스트림을 두고
+        AAC → 16k mono            : pcm md5 = a235c4d8da8f5bc736db2329a6cc35db
+        AAC → 44.1k wav → 16k mono: pcm md5 = 7f46eea06d76b9b1897c7b2e4f251de5
+    로 갈렸다 (ffmpeg 실측, 5초 사인파). 중간 wav가 이미 s16으로 양자화돼 리샘플 순서가
+    달라지기 때문이다. 컨테이너만 바꾸는 스트림카피는 안정적이었지만(``-acodec copy`` 전후
+    pcm md5 동일), 실제 두 경로는 애초에 **서로 다른 인코딩**(yt-dlp bestaudio는 보통 opus,
+    미디어 캐시는 원본 컨테이너의 스트림)에서 출발하므로 어떤 정확 해시로도 일치시킬 수 없다.
+    일치시키려면 지문(chromaprint류)이 필요한데, 그것은 새 의존성이고 **오탐(다른 곡을 같다고
+    보는 것)** 을 들여온다 — 미스는 GPU 재정렬(무해)이고 오탐은 남의 가사를 붙이는 사고라
+    비대칭이 크다. 그래서 미스를 감수하고 바이트 해시를 유지한다."""
     # 인프로세스: 서버가 미디어 캐시에서 추출해 넘긴 로컬 파일 직사용
     if job.audio_path:
         p = Path(job.audio_path)
@@ -1398,6 +1501,60 @@ def _scale_free_quality(conf: float | None, adapter: str | None) -> float | None
     """
     alpha = _conf_alpha(conf, adapter)
     return None if alpha is None else math.exp(-alpha)
+
+
+# ── 정렬 커버리지: "정렬이 아예 안 됐는데 경고도 안 뜨는" 실패 차단 ──────
+#
+# 정렬된 글자가 0개인 줄은 ctc_engine이 [None, None, None]으로 남기고
+# ``_interpolate_unaligned``가 앞뒤 줄 사이로 보간해 채우며, **전 줄이 실패하면 전체 구간에
+# 균등 분배**한다 (ctc_engine.py의 "OOV 등으로 정렬된 글자가 0개 → 아래에서 이웃 사이로 보간"
+# / "전부 실패면 전체 구간에 균등 분배"). 결과 타이밍은 그럴듯하게 생겼지만 오디오 근거가 0이다.
+#
+# 그런데 그 줄들은 ``word_segments=None``이라 라인 conf가 하나도 없어 avg_confidence=None →
+# ``quality_score=None``이 되고, 확장의 저신뢰 경고는
+#     data.qualityScore != null && data.qualityScore < 0.001
+#     (everyric2-chrome/src/content.ts:649, 1197)
+# 을 요구하므로 **발화하지 않는다**. 사용자는 균등 타이밍 + 무경고 + "생성 성공"을 본다 —
+# 안 된 것을 됐다고 말하는, 이 프로젝트에서 가장 해로운 실패 형태다. 그래서 정렬이 실질적으로
+# 실패했다는 사실을 결과(quality_score + debug)에 실어 보낸다.
+#
+# 판정은 conf 크기가 아니라 **정렬이 성립한 줄이 몇 개인가**로만 한다 — 곡 단위 conf 임계로
+# 정상 곡을 오폭한 과거 사고(_ADAPTER_VOCAB_SIZE 위 주석 참고)를 되풀이하지 않기 위해서다.
+#
+# 하한 0.5는 튜닝값이 아니라 "표시 타이밍의 **과반**이 실측이 아니라 보간 산물"이라는 구조적
+# 진술이다. 정상 곡은 커버리지가 1.0에 붙어 있어 이 값에 닿지 않는다.
+# (설정으로 뺄 후보지만 settings.py는 이 작업 범위 밖이라 모듈 상수로 둔다.)
+ALIGNED_LINE_RATIO_MIN = 0.5
+
+# 커버리지 미달 곡에 싣는 quality_score. 0.0은 확장의 `< 0.001` 조건을 확실히 통과하고,
+# `qualityScore: sync.quality_score ?? undefined`(background.ts:271)와 `!= null` 어느 쪽에도
+# 걸려 사라지지 않는다(0은 null/undefined가 아니다). None으로 두면 경고가 죽는다.
+FAILED_ALIGNMENT_QUALITY = 0.0
+
+
+def _quality_with_coverage(
+    measured_conf: float | None, aligned_lines: int, total_lines: int
+) -> tuple[float | None, dict[str, Any]]:
+    """(저장할 quality_score, 근거 메타) — 정렬 커버리지가 하한 미만이면 저신뢰로 확정한다.
+
+    ``measured_conf``는 **정렬된 줄만의** 평균 conf다(실패 줄은 conf가 없어 분모에서 빠진다).
+    그래서 40줄 중 2줄만 정렬돼도 그 2줄의 평균이 곡 점수로 올라가 실패가 감춰진다.
+    커버리지가 ``ALIGNED_LINE_RATIO_MIN`` 미만이면 quality_score를 확정 저신뢰
+    (``FAILED_ALIGNMENT_QUALITY``)로 덮고, 원래 측정값은 근거 메타에 남겨 버리지 않는다.
+    하한 이상이면 측정값을 그대로 돌려준다 — 정상 곡의 저장값은 한 치도 바뀌지 않는다.
+    """
+    ratio = (aligned_lines / total_lines) if total_lines else 0.0
+    meta: dict[str, Any] = {
+        "aligned_lines": aligned_lines,
+        "total_lines": total_lines,
+        "ratio": round(ratio, 4),
+        # 커버리지 미달로 quality_score를 덮었을 때 원래 측정값(정렬된 줄만의 평균)
+        "measured_conf": None if measured_conf is None else round(measured_conf, 6),
+    }
+    if total_lines and ratio >= ALIGNED_LINE_RATIO_MIN:
+        return measured_conf, meta
+    meta["failed"] = True
+    return FAILED_ALIGNMENT_QUALITY, meta
 
 
 def _rescale_conf(conf: float | None, from_adapter: str | None, to_adapter: str | None):
@@ -2993,6 +3150,20 @@ def _run_alignment(
         if confidences:
             avg_confidence = sum(confidences) / len(confidences)
 
+        # 정렬이 실제로 성립한 줄 수 = conf가 실린 줄 수. 정렬 글자가 0개인 줄은 보간으로만
+        # 채워져 conf가 없다(_quality_with_coverage 위 주석의 재현 경로 참고). 커버리지가
+        # 과반 미만이면 quality_score를 확정 저신뢰로 덮어 확장 경고에 걸리게 한다.
+        quality_score, coverage_meta = _quality_with_coverage(
+            avg_confidence, len(confidences), len(timestamps)
+        )
+        if coverage_meta.get("failed"):
+            logger.warning(
+                f"Alignment coverage too low: only {coverage_meta['aligned_lines']}/"
+                f"{coverage_meta['total_lines']} line(s) have measured char timing "
+                f"(the rest are interpolated); reporting quality_score="
+                f"{quality_score} instead of {coverage_meta['measured_conf']}"
+            )
+
         detected_lang = language
         if hasattr(engine, "_current_lang"):
             detected_lang = engine._current_lang
@@ -3024,12 +3195,15 @@ def _run_alignment(
             # quality_score 자체는 확장의 0.001 고정 임계 호환 때문에 원본 그대로 둔다.
             "quality_adapter": final_adapter,
             "quality_norm": None if quality_norm is None else round(quality_norm, 6),
+            # 정렬이 실제로 성립한 줄 수/전체 — quality_score를 저신뢰로 덮었는지의 근거.
+            # quality_norm은 여전히 **측정된 줄만의** 첨예도이므로, 이 값을 함께 봐야 해석된다.
+            "align_coverage": coverage_meta,
         }
 
         return {
             "timestamps": timestamps,
             "language": detected_lang,
-            "quality_score": avg_confidence,
+            "quality_score": quality_score,
             "debug": debug_meta,
             "alignment_text": alignment_text,
             # 가라오케 레인의 마디 단위 고정 창·비트 격자용 — 실패해도 None으로 계속
