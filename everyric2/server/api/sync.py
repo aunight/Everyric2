@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import re
 from typing import Annotated, Any
 
@@ -18,6 +19,8 @@ from everyric2.server.db.repository import (
     VideoOffsetRepository,
     hash_lyrics,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def _check_destructive_limit(session, action: str, video_id: str, api_key: str | None):
@@ -56,19 +59,67 @@ def _validate_video_id(video_id: str) -> None:
         raise HTTPException(status_code=422, detail="invalid video_id")
 
 
-async def _dispatch_job(job_id: str, background_tasks: BackgroundTasks) -> None:
+async def _dispatch_job(
+    job_id: str, background_tasks: BackgroundTasks, await_line_meta: bool = False
+) -> None:
     """생성 잡을 처리 경로에 넘긴다.
 
     local_worker면 기존처럼 인프로세스로 처리(add_task → process_job)한다. False면 GPU
     없는 API 전용 서버로 보고, add_task 없이 status=queued로만 마킹해 원격 워커가 클레임
-    하도록 둔다 (스태시 적재는 호출부가 이미 마쳤고, queue_position 표시도 그대로 동작)."""
-    if get_settings().server.local_worker:
-        from everyric2.server.worker import process_job
+    하도록 둔다 (스태시 적재는 호출부가 이미 마쳤고, queue_position 표시도 그대로 동작).
 
+    await_line_meta는 "번역·독음(line_meta)이 잡 생성 뒤에 따로 온다"는 예고다. 인프로세스
+    워커는 다운로드·보컬 분리를 먼저 돌리고 정렬 진입 직전에 기다리므로 그 시간이 번역과
+    겹친다. 원격 워커는 클레임 시점의 스태시만 받아 도중에 line_meta를 받을 수 없으니,
+    대신 **큐 진입 자체를 line_meta 도착까지 늦춰** 조용히 원문 정렬로 떨어지는 것을 막는다
+    (병렬 이득은 없고 기존과 동일한 총 소요 — 품질 회귀가 없는 쪽을 고른다)."""
+    if get_settings().server.local_worker:
+        from everyric2.server.worker import process_job, stash_line_meta_wait
+
+        if await_line_meta:
+            stash_line_meta_wait(job_id)
         background_tasks.add_task(process_job, job_id)
+    elif await_line_meta:
+        background_tasks.add_task(_queue_after_line_meta, job_id)
     else:
         async with get_session() as session:
             await JobRepository(session).update_status(job_id, "queued", progress=0)
+
+
+async def _queue_after_line_meta(job_id: str) -> None:
+    """line_meta가 도착(또는 상한 초과)한 뒤에 잡을 원격 워커 큐에 올린다.
+
+    대기 중에는 status=processing + stage="번역 대기"로 둔다 — 확장이 무엇을 기다리는지
+    보이고, queued가 아니라 워커의 get_oldest_queued에도 잡히지 않는다. 대기 중 취소되면
+    큐에 올리지 않고 끝낸다. 상한은 유한하므로(LINE_META_WAIT_SEC) 확장이 아무것도 보내지
+    않아도 잡은 결국 큐로 올라가 원문 정렬로 완주한다."""
+    from everyric2.server.worker import (
+        LINE_META_WAIT_SEC,
+        LINE_META_WAIT_STAGE,
+        JobCancelled,
+        _consume_cancel,
+        await_line_meta_arrival,
+    )
+
+    async with get_session() as session:
+        await JobRepository(session).update_status(
+            job_id, "processing", progress=48, stage=LINE_META_WAIT_STAGE
+        )
+    try:
+        arrived = await await_line_meta_arrival(job_id, LINE_META_WAIT_SEC)
+    except JobCancelled:
+        await _consume_cancel(job_id)
+        return
+    if await _consume_cancel(job_id):
+        return
+    if not arrived:
+        logger.info(
+            "Job %s: line_meta did not arrive within %.0fs; queueing for original-text alignment",
+            job_id,
+            LINE_META_WAIT_SEC,
+        )
+    async with get_session() as session:
+        await JobRepository(session).update_status(job_id, "queued", progress=0)
 
 
 class SyncLookupResponse(BaseModel):
@@ -122,12 +173,23 @@ class GenerateRequest(BaseModel):
     # 선택 필드라 예전 클라이언트 요청도 그대로 동작한다(제목 없이 저장).
     title: str | None = Field(default=None, max_length=256)
     artist: str | None = Field(default=None, max_length=128)
+    # "line_meta는 아직이고 나중에 POST /api/sync/jobs/{job_id}/line-meta로 붙인다"는 예고.
+    # 서버는 line_meta 없이 잡을 만들어 다운로드·보컬 분리를 즉시 시작하고, 정렬 진입 직전에
+    # 상한을 둔 대기를 한 번 넣는다 — 클라이언트의 번역·독음 시간과 그만큼이 겹친다.
+    # line_meta를 본문에 함께 실어 보내면 이 플래그는 무시된다(기다릴 것이 없다).
+    line_meta_pending: bool = False
 
 
 class GenerateResponse(BaseModel):
     job_id: str
     status: str
     estimated_time: int = 15
+    # 이 잡이 정렬 진입 전에 늦은 line_meta를 기다려 주는 상한(초) — 상한이지 보장은 아니다.
+    # 0이면 나중에 붙여도 정렬에는 반영되지 않는다: line_meta를 본문에 이미 실어 보냈거나,
+    # 플래그를 안 켰거나, status="completed"(이 경우 job_id는 잡이 아니라 완성된 싱크의 id라
+    # /jobs/{id}/line-meta를 쓸 수 없다 — 번역이 끝나면 line_meta를 실어 /generate를 다시
+    # 호출하면 기존 싱크에 병합된다).
+    line_meta_wait_sec: float = 0.0
 
 
 class SearchByAudioRequest(BaseModel):
@@ -149,19 +211,26 @@ class RegenerateRequest(BaseModel):
     attribution: Attribution | None = None
     title: str | None = Field(default=None, max_length=256)
     artist: str | None = Field(default=None, max_length=128)
+    # GenerateRequest.line_meta_pending과 동일 — 재생성도 번역과 병렬로 돌릴 수 있다
+    line_meta_pending: bool = False
 
 
 def _merge_meta_into_sync(
     sync_result, line_meta: list[LineMeta] | None, attribution: Attribution | None = None
-) -> None:
-    """이미 존재하는 싱크에 발음/번역 메타·출처를 병합 (세션 커밋은 호출부의 컨텍스트가 수행)."""
+) -> int:
+    """이미 존재하는 싱크에 발음/번역 메타·출처를 병합 (세션 커밋은 호출부의 컨텍스트가 수행).
+
+    반환값은 메타가 붙은 세그먼트 수 — 늦게 붙이는 경로(attach_line_meta)가 얼마나 매칭됐는지
+    호출자에게 알려 주는 데 쓴다."""
     from everyric2.server.worker import merge_line_meta
 
     updated = dict(sync_result.timestamps)
     changed = False
+    merged = 0
     if line_meta:
         segs = [dict(s) for s in updated.get("segments", [])]
-        if merge_line_meta(segs, [m.model_dump() for m in line_meta]):
+        merged = merge_line_meta(segs, [m.model_dump() for m in line_meta])
+        if merged:
             updated["segments"] = segs
             changed = True
     if attribution is not None:
@@ -170,6 +239,7 @@ def _merge_meta_into_sync(
     if changed:
         # JSON 컬럼은 재할당해야 변경이 감지된다
         sync_result.timestamps = updated
+    return merged
 
 
 # ── 싱크 링크 (inst/커버 영상이 다른 영상의 전사를 오프셋과 함께 재사용) ───────────
@@ -597,7 +667,18 @@ async def reset_video_syncs(video_id: str, x_api_key: str | None = Header(defaul
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTasks):
+    """가사로 싱크 생성 잡을 만든다 (기존 싱크가 있으면 즉시 completed).
+
+    line_meta(발음/번역)는 **선택**이다. 본문에 실어 보내는 기존 경로가 그대로 동작하고,
+    아직 번역이 안 끝났으면 line_meta_pending=true로 잡을 먼저 만들어 다운로드·보컬 분리를
+    선행시킨 뒤 POST /api/sync/jobs/{job_id}/line-meta로 붙일 수 있다 (응답의
+    line_meta_wait_sec이 서버가 실제로 기다려 주는 상한)."""
+    from everyric2.server.worker import LINE_META_WAIT_SEC
+
     lyrics_hash_value = hash_lyrics(request.lyrics)
+    # 본문에 line_meta가 이미 있으면 기다릴 것이 없다 — 플래그보다 실제 값이 우선
+    await_line_meta = request.line_meta_pending and not request.line_meta
+    wait_sec = LINE_META_WAIT_SEC if await_line_meta else 0.0
 
     # 확인(기존 싱크/활성 잡)→생성 사이에 다른 요청이 끼면 중복 잡이 생긴다 — 직렬화
     async with _CREATE_LOCK, get_session() as session:
@@ -632,7 +713,14 @@ async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTa
             if request.attribution:
                 stash_attribution(active.id, request.attribution.model_dump())
             stash_title(active.id, request.title, request.artist)
-            return GenerateResponse(job_id=active.id, status="processing", estimated_time=15)
+            # 합류한 잡이 이미 정렬에 들어갔을 수도 있으니 상한은 어디까지나 상한이다 —
+            # line-meta 붙이기는 받아 주고(늦으면 완성된 싱크에 병합된다) 값은 그대로 알린다
+            return GenerateResponse(
+                job_id=active.id,
+                status="processing",
+                estimated_time=15,
+                line_meta_wait_sec=wait_sec,
+            )
         job = await job_repo.create(
             video_id=request.video_id,
             lyrics=request.lyrics,
@@ -647,13 +735,90 @@ async def generate_sync(request: GenerateRequest, background_tasks: BackgroundTa
     if request.attribution:
         stash_attribution(job_id, request.attribution.model_dump())
     stash_title(job_id, request.title, request.artist)
-    await _dispatch_job(job_id, background_tasks)
+    await _dispatch_job(job_id, background_tasks, await_line_meta=await_line_meta)
 
     return GenerateResponse(
         job_id=job_id,
         status="processing",
         estimated_time=15,
+        line_meta_wait_sec=wait_sec,
     )
+
+
+class LineMetaAttachRequest(BaseModel):
+    """진행 중인 생성 잡에 나중에 붙이는 번역·독음.
+
+    **line_meta를 빈 배열로 보내면 "붙일 것이 없음"이 확정**돼 워커가 즉시 원문 정렬로
+    진행한다 — 클라이언트가 번역에 실패했을 때 반드시 이걸 한 번 보내야 잡이 대기 상한까지
+    헛되게 서 있지 않는다.
+    """
+
+    line_meta: list[LineMeta] = Field(default_factory=list)
+    attribution: Attribution | None = None
+    title: str | None = Field(default=None, max_length=256)
+    artist: str | None = Field(default=None, max_length=128)
+
+
+class LineMetaAttachResponse(BaseModel):
+    job_id: str
+    # 잡의 현재 상태 (pending | queued | processing | completed | failed)
+    status: str
+    # stashed = 잡이 아직 진행 중 → 정렬(또는 최소한 결과 저장)에 반영된다
+    # merged  = 잡이 이미 완료돼 완성된 싱크에 직접 병합했다
+    # dropped = 잡이 실패/취소됐거나 완료 싱크를 찾지 못해 아무것도 하지 않았다
+    applied: str
+    # merged일 때 메타가 붙은 세그먼트 수
+    merged_segments: int = 0
+
+
+@router.post("/jobs/{job_id}/line-meta", response_model=LineMetaAttachResponse)
+async def attach_line_meta(job_id: str, request: LineMetaAttachRequest):
+    """생성 잡에 번역·독음(line_meta)을 나중에 붙인다 — 번역을 다운로드·분리와 겹치는 경로.
+
+    호출 순서: POST /api/sync/generate (line_meta_pending=true, line_meta 없이) → job_id 확보
+    → 클라이언트가 번역·독음을 만드는 동안 서버는 다운로드·보컬 분리를 진행 → 이 엔드포인트
+    → GET /api/job/{job_id} 폴링.
+
+    잡이 아직 정렬 전이면 그 발음 텍스트로 정렬이 이뤄지고(독음 정렬), 대기 상한을 넘겨 이미
+    원문으로 정렬됐거나 잡이 끝났으면 발음·번역 텍스트만 결과에 병합된다. 어느 쪽이든 호출은
+    성공하며 applied가 무엇이 일어났는지 알린다 — 클라이언트는 분기할 필요가 없다.
+    """
+    from everyric2.server.api.job import _validate_job_id
+    from everyric2.server.worker import stash_attribution, stash_line_meta, stash_title
+
+    _validate_job_id(job_id)
+    async with get_session() as session:
+        job = await JobRepository(session).get_by_id(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="잡을 찾을 수 없어요")
+
+        if job.status == "completed":
+            # 이미 끝난 잡 (캐시 히트로 몇 초 만에 완료된 경우가 대표적) — 정렬은 다시 하지
+            # 않고 완성된 싱크에 발음·번역만 병합한다
+            sync_repo = SyncRepository(session)
+            existing = await sync_repo.get_by_video_and_hash(job.video_id, job.lyrics_hash)
+            if existing is None:
+                return LineMetaAttachResponse(
+                    job_id=job_id, status=job.status, applied="dropped"
+                )
+            merged = _merge_meta_into_sync(existing, request.line_meta, request.attribution)
+            await sync_repo.set_title_if_missing(existing, request.title, request.artist)
+            return LineMetaAttachResponse(
+                job_id=job_id, status=job.status, applied="merged", merged_segments=merged
+            )
+
+        if job.status == "failed":
+            # 취소·실패한 잡 — 스태시를 남기면 정리 지점 없이 새므로 아무것도 하지 않는다
+            return LineMetaAttachResponse(job_id=job_id, status=job.status, applied="dropped")
+
+        job_status = job.status
+
+    # 빈 배열도 그대로 넣는다 — 스태시 키의 존재 자체가 워커에게 "도착 확정" 신호다
+    stash_line_meta(job_id, [m.model_dump() for m in request.line_meta])
+    if request.attribution:
+        stash_attribution(job_id, request.attribution.model_dump())
+    stash_title(job_id, request.title, request.artist)
+    return LineMetaAttachResponse(job_id=job_id, status=job_status, applied="stashed")
 
 
 class GenerateFromCaptionRequest(BaseModel):
@@ -823,7 +988,11 @@ async def regenerate_sync(
     background_tasks: BackgroundTasks,
     x_api_key: str | None = Header(default=None),
 ):
+    from everyric2.server.worker import LINE_META_WAIT_SEC
+
     lyrics_hash_value = hash_lyrics(request.lyrics)
+    await_line_meta = request.line_meta_pending and not request.line_meta
+    wait_sec = LINE_META_WAIT_SEC if await_line_meta else 0.0
 
     # 확인(기존 싱크/활성 잡)→생성 사이에 다른 요청이 끼면 중복 잡이 생긴다 — 직렬화
     async with _CREATE_LOCK, get_session() as session:
@@ -847,7 +1016,12 @@ async def regenerate_sync(
         # 재생성도 같은 잡 진행 중이면 합류 — 연타가 동시 다운로드(WinError 32)를 만들지 않게
         active = await job_repo.get_active_by_video(request.video_id, lyrics_hash_value)
         if active:
-            return GenerateResponse(job_id=active.id, status="processing", estimated_time=15)
+            return GenerateResponse(
+                job_id=active.id,
+                status="processing",
+                estimated_time=15,
+                line_meta_wait_sec=wait_sec,
+            )
         job = await job_repo.create(
             video_id=request.video_id,
             lyrics=request.lyrics,
@@ -870,10 +1044,11 @@ async def regenerate_sync(
     if request.attribution:
         stash_attribution(job_id, request.attribution.model_dump())
     stash_title(job_id, request.title, request.artist)
-    await _dispatch_job(job_id, background_tasks)
+    await _dispatch_job(job_id, background_tasks, await_line_meta=await_line_meta)
 
     return GenerateResponse(
         job_id=job_id,
         status="processing",
         estimated_time=15,
+        line_meta_wait_sec=wait_sec,
     )

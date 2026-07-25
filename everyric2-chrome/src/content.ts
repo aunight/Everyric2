@@ -2,6 +2,7 @@ import { detectSong, getCurrentVideoId, getVideoElement } from './lib/song-detec
 import { SyncEngine, type SyncHandlers } from './lib/sync-engine';
 import { KaraokeAudio, collectMelodyNotes } from './lib/karaoke-audio';
 import { parseTriLineLyrics } from './lib/tri-line';
+import { describeRemoved, stripPartMarkers } from './lib/lyrics-clean';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
 import { LyricsOverlay } from './ui/overlay';
@@ -20,10 +21,13 @@ import type {
   ContentMessage,
   GenerateResponse,
   JobStatusResponse,
+  LinkCandidatesResponse,
+  LinkJobStatusResponse,
   LyricLine,
   LyricsData,
   MessageResponse,
   PanelGeometry,
+  LineMeta,
   SearchCandidate,
   ServerLogEntry,
   ServerStatus,
@@ -61,6 +65,22 @@ const generatingJobs = new Map<string, {
 const preparingGenerate = new Set<string>();
 // 진행 중 잡을 탭 간 공유하는 storage 키 — 다른 탭/새 탭에서도 진행 칩이 이어진다
 const JOBS_STORAGE_KEY = 'activeJobs';
+/**
+ * 진행 중인 커버 자동 연결(반주 상관 검증) 잡 — videoId 키.
+ *
+ * 전사 잡(generatingJobs)과 달리 storage로 탭 간 공유하지 않는다: 검증은 사용자가 시킨
+ * 작업이 아니라 서버가 알아서 낸 것이고(사용자에게 진행 책임이 없다), 잃어도 다음에 그
+ * 영상을 열 때 서버가 다시 판단한다. 세션 안에서만 추적해 배지를 띄우면 충분하다.
+ */
+const linkJobs = new Map<string, { linkJobId: string; title?: string; started: number }>();
+/** 검증 잡을 이 시간까지만 지켜본다 — 워커가 비어 큐에 계속 머무는 잡을 무한 폴링하지 않기
+ *  위한 상한. 포기해도 서버 작업은 계속되며, 다음에 그 영상을 열면 링크가 이미 반영돼 있다. */
+const LINK_JOB_WATCH_MS = 10 * 60 * 1000;
+/** 이 세션에서 후보 탐색을 이미 물어본 영상 — 같은 영상을 다시 열 때 중복 질의를 막는다 */
+const linkProbed = new Set<string>();
+const LINK_PROBE_CHIP = '동일 곡 추정 — 자동 연결 확인 중…';
+/** 알림 칩이 현재 어느 영상의 것인가 — 영상이 바뀔 때만 칩을 비우기 위한 표식 */
+let noticeVideoId: string | null = null;
 // 현재 영상의 사용자 싱크 오프셋(초) — 영상마다 서버에 저장·복원된다 (전역 설정 아님)
 let videoOffset = 0;
 let offsetSaveTimer: number | undefined;
@@ -246,6 +266,10 @@ function cleanupForPage(): void {
   currentSourceUrl = null;
   videoOffset = 0;
   clearTimeout(offsetSaveTimer);
+  // 알림은 영상별 사건이라 페이지를 떠나면 지운다 (검증 잡 추적 자체는 계속 살아 있고,
+  // 그 영상으로 돌아오면 searchLyrics가 배지를 다시 세운다)
+  overlay?.setNoticeChip(null);
+  noticeVideoId = null;
   // 전사 잡은 서버에서 계속 돌므로 추적을 유지한다 (완료 시 해당 영상으로 돌아오면 반영)
   engine.stop();
   pip.close();
@@ -440,6 +464,85 @@ async function handleUnlinkSync(): Promise<void> {
   }
   ensureOverlay().setLinked(null);
   void searchLyrics();
+}
+
+// ── 커버 자동 연결 (같은 곡의 다른 영상 싱크를 서버가 찾아 붙인다) ──────
+//
+// 사용자 증상이었던 것: 원곡을 싱크한 뒤 같은 곡의 다른 영상을 처음 열면 매번 손으로
+// 연결해야 했다. 서버에는 이미 후보 탐색 + 반주 상관 검증 + 자동 링크 생성이 다 있고,
+// 빠져 있던 것은 **클라이언트가 그 경로를 부르지 않는다**는 것뿐이었다.
+//
+// 여기서 하는 일은 세 가지다:
+//   1) 싱크가 없을 때만 후보를 물어본다 (있는 다수 케이스에 지연을 주지 않는다).
+//   2) 검증 잡이 제출되면 기다리지 않고 배지만 띄우고 백그라운드로 넘긴다.
+//   3) 폴링해서 링크가 생기면 다시 조회해 가사를 띄우고, 아니면 조용히 원래대로 둔다.
+// 판정(같은 곡인가)은 전부 서버 몫이다 — 제목이 맞았다는 이유로 링크가 생기지 않는다.
+
+/**
+ * 같은 곡의 다른 영상 후보 탐색 — **서버 싱크가 없는 영상에서만** 부른다.
+ *
+ * 실패는 모두 조용하다: 엔드포인트가 없는 구버전 서버(404)·오프라인·오류 어느 경우든
+ * 아무 표시 없이 기존 "가사 없음" 상태 그대로 남는다. 이 기능은 없으면 없는 대로
+ * 동작해야 하고, 사용자가 요청하지도 않은 배경 작업의 실패로 화면을 어지럽히면 안 된다.
+ * (그래서 noteFailure로 전역 서버 상태를 건드리지도 않는다 — 바로 앞의 싱크 조회가
+ * 이미 같은 서버를 찔러 상태를 갱신했다.)
+ */
+async function probeLinkCandidates(videoId: string, song: SongInfo): Promise<void> {
+  if (!song.title.trim()) return; // 제목 없이는 서버가 후보를 찾을 수 없다 (422)
+  if (linkProbed.has(videoId) || linkJobs.has(videoId)) return;
+  // 서버가 고장난 걸 이미 아는 상태면 찔러 볼 이유가 없다 (오류 배너가 이미 떠 있다)
+  if (serverKnownBad(serverStatus)) return;
+  linkProbed.add(videoId);
+
+  const res = await sendToBackground<LinkCandidatesResponse>({
+    type: 'LINK_CANDIDATES',
+    payload: { videoId, title: song.title, artist: song.artist ?? undefined },
+  });
+  const data = res.data;
+  if (!data) return;
+
+  // submitted·pending만 사용자에게 알린다. cooldown(최근에 이미 시도)·none(후보 없음)·
+  // disabled(서버 설정 off)·has_sync·linked는 사용자가 할 수 있는 일이 없어 소음이다.
+  if ((data.status === 'submitted' || data.status === 'pending') && data.job_id) {
+    linkJobs.set(videoId, { linkJobId: data.job_id, title: song.title, started: Date.now() });
+    if (videoId === currentVideoId) overlay?.setNoticeChip(LINK_PROBE_CHIP);
+    ensurePolling();
+  }
+}
+
+/**
+ * 진행 중인 검증 잡 폴링 — 전사 잡과 같은 타이머(pollJobs)에 얹혀 돈다.
+ *
+ * done+match면 서버가 이미 SyncLink를 만들었으므로 재조회만 하면 가사가 내려온다.
+ * 미매치·실패는 **조용히** 추적만 정리한다 (기대하지 않았던 것이 안 됐을 뿐이다).
+ */
+async function pollLinkJobs(): Promise<void> {
+  for (const [videoId, job] of [...linkJobs]) {
+    // 워커가 없어 큐에 머무는 잡을 영원히 찔러 보지 않는다 — 조용히 지켜보기를 그만둔다
+    if (Date.now() - job.started > LINK_JOB_WATCH_MS) {
+      linkJobs.delete(videoId);
+      if (videoId === currentVideoId) overlay?.setNoticeChip(null);
+      continue;
+    }
+    const res = await sendToBackground<LinkJobStatusResponse>({
+      type: 'LINK_JOB_STATUS', payload: { linkJobId: job.linkJobId },
+    });
+    if (linkJobs.get(videoId)?.linkJobId !== job.linkJobId) continue; // 그 사이 정리됨
+    const status = res.data;
+    if (!status) continue; // 일시적 실패 — 다음 폴링에서 재시도
+    if (status.status !== 'done' && status.status !== 'failed') continue; // queued·processing
+
+    linkJobs.delete(videoId);
+    const linked = status.status === 'done' && status.match === true;
+    if (videoId !== currentVideoId) continue; // 다른 영상 결과는 알리지 않는다 (돌아오면 조회에 반영된다)
+    if (!linked) {
+      overlay?.setNoticeChip(null); // 미매치·실패는 조용히 원래 상태로
+      continue;
+    }
+    const conf = status.confidence != null ? ` (반주 일치 ${Math.round(status.confidence * 100)}%)` : '';
+    overlay?.setNoticeChip(`자동 연결됨 — 같은 곡의 싱크를 가져왔어요${conf}`, 12000);
+    void searchLyrics(); // 링크된 싱크를 즉시 불러온다
+  }
 }
 
 async function handleRequestSyncList(): Promise<void> {
@@ -828,6 +931,14 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   panel.showLoading();
   if (pip.isOpen()) pip.showPanelLoading(); // PiP도 같은 검색 상태를 따라간다
   updateGenChip(); // 이 영상(또는 다른 영상)의 전사 진행 칩은 검색과 무관하게 유지
+  // 알림 칩은 영상별 사건이다 — **영상이 바뀔 때만** 지난 알림을 지우고, 이 영상의 검증이
+  // 아직 돌고 있으면 배지를 되살린다(돌아왔을 때도 진행 중임을 알 수 있게).
+  // 같은 영상의 재조회에서 지우면 안 된다: 자동 연결 성공은 "알림 → 재조회" 순서라
+  // 여기서 무조건 지우면 방금 띄운 '자동 연결됨'을 스스로 삭제한다.
+  if (noticeVideoId !== videoId) {
+    noticeVideoId = videoId;
+    panel.setNoticeChip(linkJobs.has(videoId) ? LINK_PROBE_CHIP : null);
+  }
   engine.stop();
 
   void refreshServerStatus();
@@ -913,6 +1024,15 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
     if (seq !== searchSeq || videoId !== currentVideoId) return;
   }
   applyLyricsData(data);
+
+  // 서버 싱크가 없는 영상(=조회가 found:false였던 경우)에서만 같은 곡 후보를 물어본다.
+  // 이미 싱크가 있는 다수 케이스에는 요청이 아예 나가지 않아 지연이 없다. 화면을 먼저
+  // 그린 뒤에 부르므로 후보 탐색이 가사 표시를 늦추지도 않는다.
+  // (LRCLIB 일반 가사·자막 폴백으로 화면이 차 있어도 부른다 — 원곡의 싱크·발음·음정을
+  //  빌려오는 것이 더 나은 결과이고, 서버가 아니라고 판단하면 아무 일도 일어나지 않는다.)
+  if (!(data?.source === 'everyric' && data.synced)) {
+    void probeLinkCandidates(videoId, song);
+  }
 }
 
 /** 위키 조회 결과를 LyricsData로 변환하고 출처·재병합 캐시를 채운다 */
@@ -1121,14 +1241,19 @@ async function waitForSongInfo(seq: number, maxRetries = 6, delayMs = 700): Prom
 async function handleGenerate(lyricsText: string, attributionName?: string): Promise<void> {
   const videoId = currentVideoId;
   const seq = searchSeq;
+  // 파트 표기·주석 줄을 먼저 걷어낸다 — 모든 생성 경로가 지나는 한 지점.
+  // 붙여넣기 UI는 자기 화면에서 이미 같은 필터를 통과시키고 무엇을 걸렀는지 보여줬으므로
+  // (panels.buildPasteSection) 여기서는 보통 아무것도 남지 않는다(멱등). 배너의 'AI 전사
+  // 생성'처럼 붙여넣기 UI를 거치지 않은 경로만 아래 칩으로 알린다.
+  const cleaned = stripPartMarkers(lyricsText);
   // 검색 복사 가사(원문/독음/번역 3줄 반복) 감지 — 원문만 정렬에 쓰고
   // 독음·번역은 line_meta로 재활용한다 (LLM 번역 호출도 생략)
-  const tri = parseTriLineLyrics(lyricsText);
+  const tri = parseTriLineLyrics(cleaned.text);
   // 빈 줄·앞뒤 공백을 걷어낸 실제 라인만 서버로 — LLM line_meta도 같은 배열로
   // 만들어 인덱스가 어긋나지 않게 한다 (서버 병합은 텍스트 매칭)
   const srcLines = tri
     ? tri.map(t => t.text)
-    : lyricsText.split('\n').map(s => s.trim()).filter(Boolean);
+    : cleaned.text.split('\n').map(s => s.trim()).filter(Boolean);
   if (!videoId || srcLines.length === 0) return;
   if (srcLines.length > 500) {
     ensureOverlay().showError(`가사가 너무 길어요 (${srcLines.length}줄) — 500줄 이하로 줄여 주세요`);
@@ -1141,6 +1266,9 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
   if (generatingJobs.has(videoId) || preparingGenerate.has(videoId)) return;
   preparingGenerate.add(videoId);
   updateGenChip(); // 버튼을 누르자마자 "준비 중" 칩으로 즉시 반응을 보여준다
+  // 걸러낸 줄이 있으면 반드시 알린다 — 조용히 지우면 가사가 사라진 것처럼 보인다
+  const removedNote = describeRemoved(cleaned);
+  if (removedNote) ensureOverlay().setNoticeChip(removedNote, 12000);
 
   try {
     // 유튜브 자막을 보다가 생성을 누른 경우엔 가사 텍스트를 보내지 않는다 — video_id만
@@ -1169,9 +1297,13 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
     // 위키 발음이 없으면(수동 붙여넣기·LRCLIB 등) LLM 번역·한글 독음을 먼저 받아
     // line_meta로 넘긴다 — 서버가 독음(ko) 정렬 경로를 타고 발음/번역도 싱크에 저장된다.
     // 실패해도 싱크 생성 자체는 계속한다 (원문 정렬 폴백).
-    if (!fromCaption && (!lineMeta || lineMeta.length === 0)) {
-      lineMeta = tri ?? await fetchLlmLineMeta(videoId, srcLines);
-    }
+    // 3줄 붙여넣기(tri)는 이미 로컬에 발음·번역이 있어 LLM을 부를 필요가 없다
+    if (!fromCaption && tri && (!lineMeta || lineMeta.length === 0)) lineMeta = tri;
+
+    // LLM 번역·독음이 필요한 경우(수동 붙여넣기·LRCLIB 등)에는 잡을 **먼저** 만들어
+    // 다운로드·보컬 분리를 번역과 겹친다. 직렬로 두면 번역이 끝날 때까지 다운로드조차
+    // 시작하지 못한다 — 실측(4.7분 곡)으로 번역 63초가 체감 85초의 74%였다.
+    const needsLlmMeta = !fromCaption && (!lineMeta || lineMeta.length === 0);
 
     const panel = ensureOverlay();
     const res = fromCaption
@@ -1184,7 +1316,12 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           videoId,
           lyrics: text,
           lineMeta: lineMeta && lineMeta.length > 0 ? lineMeta : undefined,
+          lineMetaPending: needsLlmMeta,
           attribution,
+          // 제목·아티스트를 싱크에 새겨 둔다 — 나중에 다른 영상이 이 곡의 커버 후보를
+          // 찾을 때 서버가 대조할 유일한 단서다 (없으면 후보 탐색이 영원히 빈손)
+          title: currentSong?.title,
+          artist: currentSong?.artist ?? undefined,
         },
       });
     if (res.error || !res.data) {
@@ -1194,15 +1331,39 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
       }
       return;
     }
-    if (res.data.status === 'completed') {
-      if (videoId === currentVideoId) void searchLyrics();
-      return;
+    const jobId = res.data.job_id;
+    const alreadyDone = res.data.status === 'completed';
+    if (!alreadyDone) {
+      // 패널을 점유하지 않는다 — 현재 화면(가사/검색)은 그대로 두고 작은 칩으로 진행률만 표시.
+      // 다른 영상으로 이동해도 잡은 계속 추적되고, 완료 후 돌아오면 조회 시 자동 반영된다.
+      generatingJobs.set(videoId, { jobId, progress: 0, title: currentSong?.title });
+      void persistActiveJobs();
+      ensurePolling();
     }
-    // 패널을 점유하지 않는다 — 현재 화면(가사/검색)은 그대로 두고 작은 칩으로 진행률만 표시.
-    // 다른 영상으로 이동해도 잡은 계속 추적되고, 완료 후 돌아오면 조회 시 자동 반영된다.
-    generatingJobs.set(videoId, { jobId: res.data.job_id, progress: 0, title: currentSong?.title });
-    void persistActiveJobs();
-    ensurePolling();
+
+    if (needsLlmMeta) {
+      // 서버가 다운로드·보컬 분리를 진행하는 동안 번역·독음을 만든다.
+      // 실패해도 **빈 배열로 반드시 한 번 보낸다** — 안 보내면 서버가 정렬 직전에 이 메타를
+      // 대기 상한까지 기다려 잡이 헛되게 서 있다(빈 배열 = "붙일 것 없음" 확정 신호).
+      let meta: LineMeta[] = [];
+      try {
+        meta = (await fetchLlmLineMeta(videoId, srcLines)) ?? [];
+      } catch {
+        meta = []; // 번역 실패 — 서버는 원문 정렬로 폴백한다
+      }
+      await sendToBackground({
+        type: 'ATTACH_LINE_META',
+        payload: {
+          jobId,
+          lineMeta: meta,
+          attribution,
+          title: currentSong?.title,
+          artist: currentSong?.artist ?? undefined,
+        },
+      });
+    }
+    // 캐시 히트로 이미 끝난 잡은 위 첨부가 완성된 싱크에 메타를 병합한 뒤 다시 조회한다
+    if (alreadyDone && videoId === currentVideoId) void searchLyrics();
   } finally {
     preparingGenerate.delete(videoId);
     updateGenChip();
@@ -1240,6 +1401,9 @@ async function handleRegenerate(): Promise<void> {
         lyrics,
         lineMeta: lineMeta.length > 0 ? lineMeta : undefined,
         attribution: data.attribution,
+        // 재생성도 제목을 함께 새긴다 — 제목 없이 만들어진 옛 싱크가 이 기회에 채워진다
+        title: currentSong?.title,
+        artist: currentSong?.artist ?? undefined,
       },
     });
     if (res.error || !res.data) {
@@ -1301,11 +1465,15 @@ async function handleCancelGenerate(): Promise<void> {
 }
 
 async function pollJobs(): Promise<void> {
-  if (generatingJobs.size === 0) {
+  // 커버 자동 연결 검증 잡도 같은 타이머에 얹혀 돈다 — 둘 다 비어야 타이머를 멈춘다
+  if (generatingJobs.size === 0 && linkJobs.size === 0) {
     stopPolling();
     updateGenChip();
     return;
   }
+  // 폴링 간격 백오프는 **전사 잡** 응답만 근거로 한다 (아래 for 루프가 도는 경우).
+  // 전사 잡이 없는데 anyResponse=false로 읽히면 멀쩡한 서버에서 간격이 늘어난다.
+  const hadSyncJobs = generatingJobs.size > 0;
   let anyResponse = false;
   for (const [videoId, job] of [...generatingJobs]) {
     const res = await sendToBackground<JobStatusResponse>({ type: 'JOB_STATUS', payload: { jobId: job.jobId } });
@@ -1338,12 +1506,15 @@ async function pollJobs(): Promise<void> {
     }
   }
   // 서버가 계속 무응답이면 폴링 간격을 늘려 무의미한 요청을 줄인다 (응답 오면 즉시 복귀)
-  if (anyResponse) {
-    pollFailStreak = 0;
-    setPollInterval(POLL_MS_NORMAL);
-  } else if (++pollFailStreak >= 5) {
-    setPollInterval(POLL_MS_SLOW);
+  if (hadSyncJobs) {
+    if (anyResponse) {
+      pollFailStreak = 0;
+      setPollInterval(POLL_MS_NORMAL);
+    } else if (++pollFailStreak >= 5) {
+      setPollInterval(POLL_MS_SLOW);
+    }
   }
+  await pollLinkJobs();
   updateGenChip();
 }
 

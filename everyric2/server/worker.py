@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import statistics
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 # 잡별 라인 메타(발음/번역) 임시 저장소 — BackgroundTasks가 같은 프로세스에서 돌므로
 # 인메모리로 충분하다 (프로세스가 죽으면 잡 실행 자체가 사라지므로 내구성 손해도 없음).
+#
+# **키의 존재 여부가 "도착 확정" 신호를 겸한다**: 키가 없으면 아직 안 온 것이고, 빈
+# 리스트는 "붙일 메타가 없음이 확정"이다. 병렬 경로(_wait_for_line_meta)가 이 구분으로
+# 무한 대기 없이 진행 여부를 정한다 — 별도 플래그 집합을 두지 않아 정리 지점이 늘지 않는다.
 _PENDING_LINE_META: dict[str, list[dict[str, Any]]] = {}
 # 강제 재생성 잡 — 동일 (audio_hash, lyrics_hash) 재사용을 건너뛰고 정렬을 다시 돌린다
 _PENDING_FORCE: set[str] = set()
@@ -20,6 +25,74 @@ _PENDING_FORCE: set[str] = set()
 
 def stash_line_meta(job_id: str, line_meta: list[dict[str, Any]]) -> None:
     _PENDING_LINE_META[job_id] = line_meta
+
+
+# ── line_meta 지연 도착 (번역·독음을 다운로드·분리와 병렬로) ─────────
+
+# line_meta 도착 대기 상한(초)과 폴링 간격. 확장이 번역·독음을 만드는 동안 서버가
+# 다운로드·보컬 분리·f0를 먼저 돌리는 병렬 경로에서 정렬 진입 직전에 쓴다.
+# **상한은 반드시 유한하다** — 확장이 번역에 실패해 아무것도 보내지 않아도 잡이 영구히
+# 걸리면 안 되고, 상한 초과는 line_meta 없는 원문 정렬(기존 동작)로 조용히 떨어진다.
+LINE_META_WAIT_SEC = 120.0
+LINE_META_POLL_SEC = 0.25
+# 대기 구간의 사용자 표시 단계명 (STAGE_WINDOWS에 창을 함께 등록해야 진행률이 튀지 않는다)
+LINE_META_WAIT_STAGE = "번역 대기"
+
+# line_meta를 나중에 붙일 잡 — 확장이 잡 생성 시 line_meta_pending으로 예고하고,
+# _dispatch_job(인프로세스 경로)이 넣는다. _process_job_inner가 JobInput으로 캡처하며
+# 즉시 비우므로(_PENDING_FORCE와 같은 관례) 남아 새는 항목이 없다.
+_PENDING_META_WAIT: set[str] = set()
+
+
+def stash_line_meta_wait(job_id: str) -> None:
+    _PENDING_META_WAIT.add(job_id)
+
+
+class JobCancelled(Exception):
+    """대기 중 취소 요청 감지 — 코어가 잡아 취소 마감 경로로 넘긴다."""
+
+
+def _wait_for_line_meta(job_id: str, timeout: float) -> list[dict[str, Any]] | None:
+    """늦게 오는 line_meta를 상한을 두고 기다린다 (정렬 스레드에서 동기 호출).
+
+    도착했으면 그 값을, 상한을 넘었으면 None(원문 정렬 폴백)을 돌려준다. 빈 리스트로
+    도착한 경우(확장이 번역 실패를 알린 경우)도 즉시 None으로 진행한다.
+    폴링 간격마다 취소 요청을 확인해 대기 중에도 취소가 먹는다 (JobCancelled).
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if job_id in _CANCEL_REQUESTED:
+            raise JobCancelled(job_id)
+        meta = _PENDING_LINE_META.get(job_id)
+        if meta is not None:
+            return meta or None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.info(
+                f"Job {job_id}: line_meta did not arrive within {timeout:.0f}s; "
+                f"aligning on the original text"
+            )
+            return None
+        time.sleep(min(LINE_META_POLL_SEC, remaining))
+
+
+async def await_line_meta_arrival(job_id: str, timeout: float) -> bool:
+    """line_meta 도착을 상한을 두고 비동기로 기다린다 (도착 True / 상한 초과 False).
+
+    _wait_for_line_meta의 이벤트 루프 버전 — GPU 없는 API 전용 서버가 원격 워커 큐 진입을
+    늦출 때 쓴다. 취소 요청이면 JobCancelled.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + max(0.0, timeout)
+    while True:
+        if job_id in _CANCEL_REQUESTED:
+            raise JobCancelled(job_id)
+        if job_id in _PENDING_LINE_META:
+            return True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(LINE_META_POLL_SEC, remaining))
 
 
 # 잡별 가사 출처 표기 (예: 보카로 가사 위키) — 완성된 싱크에 함께 저장된다
@@ -79,6 +152,10 @@ STAGE_WINDOWS: dict[str, tuple[int, int]] = {
     "다운로드": (10, 34),
     "캐시 확인": (34, 36),
     "보컬 분리": (36, 50),
+    # 번역·독음(line_meta) 지연 도착 대기 — 보컬 분리 뒤, 전사 정렬 앞의 좁은 창.
+    # 창을 등록하지 않으면 _stage_monitor의 기본 창(36,88)이 걸려 진행률이 대기 중에
+    # 88까지 치솟는다. 전사 정렬의 시작(50) 바로 앞에 둬 진행률이 되돌아가지 않게 한다.
+    LINE_META_WAIT_STAGE: (48, 50),
     "전사 정렬": (50, 72),
     "타이밍 보정": (72, 80),
     "멜로디 분석": (80, 88),
@@ -218,6 +295,7 @@ async def process_job(job_id: str) -> None:
 
         if not job:
             logger.error(f"Job not found: {job_id}")
+            _PENDING_META_WAIT.discard(job_id)
             return
 
         # 슬롯이 다 차 있으면 대기열 — job API가 queue_position을 계산해 내려준다
@@ -229,6 +307,7 @@ async def process_job(job_id: str) -> None:
     async with slot:
         # 대기열에 있는 동안 취소된 잡은 슬롯을 잡자마자 놓아준다
         if await _consume_cancel(job_id):
+            _PENDING_META_WAIT.discard(job_id)
             return
         await _process_job_inner(job_id, job)
 
@@ -343,6 +422,10 @@ class JobInput:
     audio_path: str | None = None
     audio_url: str | None = None
     audio_url_headers: dict[str, str] | None = None
+    # line_meta(번역·독음)가 잡 생성 뒤에 따로 도착하는 병렬 경로인지. True면 코어가 정렬
+    # 진입 직전에 인메모리 스태시를 다시 확인하고 상한을 둔 대기를 한 번 넣는다.
+    # 스태시는 서버 프로세스에만 있으므로 원격 워커 경로는 항상 False다 (기존 동작).
+    await_line_meta: bool = False
 
 
 @dataclass
@@ -443,6 +526,18 @@ async def run_pipeline(job: JobInput, hooks: PipelineHooks) -> PipelineResult | 
         Path(audio_path).unlink(missing_ok=True)
         return None
 
+    # line_meta 지연 도착 경로: 정렬 스레드가 CTC 진입 직전에 부르는 리졸버를 넘긴다.
+    # 그 앞의 오디오 로드·CTC 모델 웜업·보컬 분리·f0 전곡 추론은 line_meta 없이 돌 수
+    # 있으므로 클라이언트의 번역 시간과 그만큼이 겹친다. 리졸버가 무엇을 물어 왔는지는
+    # 아래 재병합·출처 조립에서 다시 필요하니 상자에 담아 밖으로 꺼낸다.
+    meta_box: dict[str, list[dict[str, Any]] | None] = {"line_meta": job.line_meta}
+
+    def _resolve_line_meta() -> list[dict[str, Any]] | None:
+        meta_box["line_meta"] = _wait_for_line_meta(job.job_id, LINE_META_WAIT_SEC)
+        return meta_box["line_meta"]
+
+    resolver = _resolve_line_meta if (job.await_line_meta and not job.line_meta) else None
+
     # 정렬(CTC+분리+보정+멜로디)은 수십 초 걸리는 단일 블록 — 정렬 스레드가 단계명을
     # stage_holder에 쓰고, 모니터가 단계 창 안에서 진행률을 차오르게 하며 보고한다
     stage_holder: dict[str, str] = {"stage": "보컬 분리"}
@@ -456,7 +551,14 @@ async def run_pipeline(job: JobInput, hooks: PipelineHooks) -> PipelineResult | 
             job.language,
             job.line_meta,
             lambda name: stage_holder.__setitem__("stage", name),
+            resolver,
         )
+    except JobCancelled:
+        # line_meta 대기 중 취소 — 오디오는 _run_alignment의 finally가 이미 지웠다.
+        # 경계 progress로 취소를 소진해 다른 취소 경계와 동일하게 마감한다
+        # (_set_progress는 취소 대기 중이면 쓰기를 건너뛰므로 failed가 되돌려지지 않는다).
+        await hooks.progress(48, LINE_META_WAIT_STAGE)
+        return None
     finally:
         monitor.cancel()
 
@@ -464,9 +566,18 @@ async def run_pipeline(job: JobInput, hooks: PipelineHooks) -> PipelineResult | 
     if not await hooks.progress(90, "저장"):
         return None
 
+    line_meta = meta_box["line_meta"]
+    attribution = job.attribution
+    if job.await_line_meta:
+        # 상한을 넘겨 원문으로 정렬한 뒤에 도착한 line_meta도 표시용으로는 살린다 —
+        # 정렬 텍스트는 이미 원문이지만 발음·번역 텍스트를 버릴 이유는 없다.
+        # (스태시는 서버 프로세스에만 있고 await_line_meta는 그 경로에서만 True다)
+        line_meta = _PENDING_LINE_META.get(job.job_id) or line_meta
+        attribution = _PENDING_ATTRIBUTION.get(job.job_id) or attribution
+
     # 독음 정렬 경로는 발음/번역/pron_segments를 이미 세그먼트에 붙였으므로 재병합 생략
-    if job.line_meta and result.get("alignment_text") != "pronunciation":
-        merged = merge_line_meta(result["timestamps"], job.line_meta)
+    if line_meta and result.get("alignment_text") != "pronunciation":
+        merged = merge_line_meta(result["timestamps"], line_meta)
         logger.info(f"Line meta merged on {merged} segments")
 
     return PipelineResult(
@@ -474,7 +585,7 @@ async def run_pipeline(job: JobInput, hooks: PipelineHooks) -> PipelineResult | 
         language=result.get("language"),
         quality_score=result.get("quality_score"),
         audio_hash=audio_hash,
-        extra=_build_extra(result, job.attribution),
+        extra=_build_extra(result, attribution),
     )
 
 
@@ -488,6 +599,9 @@ async def _process_job_inner(job_id: str, job) -> None:
     # 코어 입력으로 캡처했으니 여기서 discard한다.
     force = job_id in _PENDING_FORCE
     _PENDING_FORCE.discard(job_id)
+    # line_meta 지연 도착 예고도 같은 관례로 캡처 후 즉시 비운다
+    await_meta = job_id in _PENDING_META_WAIT
+    _PENDING_META_WAIT.discard(job_id)
     max_audio_sec = _get_settings().server.max_job_audio_sec
 
     # 슬롯 획득 직후 = 잡이 이 프로세스로 넘어오는 순간 → 미디어 캐시 조회(있으면 추출 사용).
@@ -514,6 +628,7 @@ async def _process_job_inner(job_id: str, job) -> None:
         force=force,
         max_audio_sec=max_audio_sec,
         audio_path=cache_path,
+        await_line_meta=await_meta,
     )
     try:
         result = await run_pipeline(job_input, InProcessHooks(job_id, job))
@@ -1225,6 +1340,69 @@ def _original_align_needed(ko_conf: float | None, dual_conf: float, fuse_enabled
     return bool(fuse_enabled) or _dual_align_should_run(ko_conf, dual_conf)
 
 
+# ── 어댑터 vocab 크기와 conf 스케일 보정 ──────────────────────────────
+#
+# CTC 라인 conf는 프레임별 posterior의 기하평균이라 **어댑터 vocab 크기에 직접 의존한다** —
+# vocab이 크면 확률 질량이 더 많은 토큰으로 흩어져 같은 정렬 품질에서도 conf가 낮아진다.
+# 실측(dQw4w9WgXcQ, 같은 오디오·같은 가사, 어댑터만 교체):
+#     eng(vocab 154)  conf 0.1289, match_rate 0.9979
+#     kor(vocab 1330) conf 0.0492, match_rate 1.0000   ← 잔차는 **동일**, 매칭률은 오히려 상승
+# 즉 2.6배 하락은 품질 저하가 아니라 순수한 스케일 차이다.
+#
+# 스케일 모델: conf ≈ V^(-α)로 보면 α = -ln(conf)/ln(V)가 vocab에 무관한 "첨예도" 지표다.
+# 위 실측에서 α_eng = 2.0490/5.0370 = 0.4068, α_kor = 3.0119/7.1929 = 0.4187 — 2.9% 차이로
+# 일치한다. 반면 선형 모델(conf ∝ 1/V)은 kor conf를 0.0149로 예측해 실측 0.0492와 3.3배
+# 틀린다. 그래서 로그 스케일 보정을 쓴다. (근거는 실측 1쌍이므로 **판정을 뒤집는 새 임계를
+# 도입하지 않고**, 어댑터가 같을 때 항등이 되는 보정으로만 쓴다 — 이번 세션에 이미 "곡 단위
+# conf 임계로 정상 곡을 오폭한" 사고가 있었다.)
+#
+# vocab 크기는 facebook/mms-1b-all tokenizer vocab.json 실측값이며
+# tests/fixtures/mms_adapter_script_census.json이 원본, test_gloss_and_conf_scale.py가 고정한다.
+_ADAPTER_VOCAB_SIZE: dict[str, int] = {
+    "eng": 154,
+    "kor": 1330,
+    "jpn": 2268,
+    "cmn-script_simplified": 4495,
+}
+
+
+def _conf_alpha(conf: float | None, adapter: str | None) -> float | None:
+    """어댑터 스케일에 무관한 첨예도 α = log_V(1/conf). 작을수록 좋다 (α=1이면 균일=우연 수준).
+
+    vocab 크기를 모르는 어댑터거나 conf가 없으면 None (호출부는 원래 값으로 폴백한다).
+    """
+    size = _ADAPTER_VOCAB_SIZE.get(adapter or "")
+    if conf is None or conf <= 0 or not size or size <= 1:
+        return None
+    return -math.log(conf) / math.log(size)
+
+
+def _scale_free_quality(conf: float | None, adapter: str | None) -> float | None:
+    """곡 간 비교가 가능한 스케일 무관 품질 e^(-α) (0~1, 클수록 좋다). 보고 전용.
+
+    저장되는 ``quality_score``는 **원본 conf 그대로 유지한다** — 확장이 0.001 고정 임계로
+    저신뢰 경고를 띄우고 있어 스케일을 갈아끼우면 그 경고가 조용히 죽는다. 대신 이 값을
+    debug 메타로 함께 내려보내 어댑터가 다른 곡끼리도 비교할 수 있게 한다.
+    """
+    alpha = _conf_alpha(conf, adapter)
+    return None if alpha is None else math.exp(-alpha)
+
+
+def _rescale_conf(conf: float | None, from_adapter: str | None, to_adapter: str | None):
+    """``from_adapter``로 측정한 conf를 ``to_adapter`` 스케일로 옮긴다 (α 보존).
+
+    어댑터가 같거나 vocab 크기를 모르면 **항등** — 어댑터가 일치하는 경우(영어 곡은 이제
+    ko/ja 양쪽이 kor 어댑터다)의 동작은 한 치도 바뀌지 않는다.
+    """
+    alpha = _conf_alpha(conf, from_adapter)
+    to_size = _ADAPTER_VOCAB_SIZE.get(to_adapter or "")
+    if alpha is None or not to_size or to_size <= 1:
+        return conf
+    if _ADAPTER_VOCAB_SIZE.get(from_adapter or "") == to_size:
+        return conf
+    return math.exp(-alpha * math.log(to_size))
+
+
 def _dual_align_prefers_original(ko_conf: float, ja_conf: float | None, min_ratio: float) -> bool:
     """ja 평균 신뢰도가 ko의 min_ratio배 이상이면 True(원문 채택). 바닥 근처 노이즈로
 
@@ -1780,6 +1958,203 @@ def _mark_leak_ghosts(
                 labels.insert(0, "leak")
 
 
+# ── 번역·독음 병기 시트 감지 (정렬 입력에서만 제외, 표시용은 유지) ─────────
+#
+# 사용자가 가사 사이트에서 복사해 붙여넣을 때 원문만 넣지 않고 「원문 / 한글 독음 / 한국어
+# 번역」이 병기된 시트를 통째로 넣는 경우가 있다. 노래하지 않는 줄에 타이밍을 맞추려 들면
+# 한 보컬에 몇 배 길이의 토큰 열을 억지로 맞추게 되어 **가창 줄의 타이밍까지** 망가진다.
+# 코퍼스 73곡 실측:
+#   FxOfDVyITak — (가나, 한글, 한글) 3줄 블록이 74/74회 완벽히 반복. 입력의 2/3가 비가창.
+#                 quality_score 0.0135로 코퍼스 최저권.
+#   ba7YbGO2aq4 — 한글 8줄이 전부 직전 일본어 줄의 번역(ゆらゆら numb numb → 아스라이해
+#                 numb numb), 8/8이 바로 뒤에 붙는 패턴. quality_score 0.0072.
+#
+# 확장에도 lib/tri-line.ts(3줄 묶음 파서)가 있어 클라이언트에서 걸러지는 경로가 이미 있다.
+# 여기는 그게 통과된 입력·과거 데이터·외부 호출자를 위한 **독립 안전망**이라 중복돼도 무해하다.
+# 원문 줄 판정("가나/한자를 포함하고 한글은 거의 없음")은 tri-line.ts의 isJa와 같다. 한글 줄
+# 판정은 의도적으로 **다르다**: tri-line.ts의 isKo는 한글 비율 0.5를 요구하는데, 실측
+# ba7YbGO2aq4의 번역 줄 "아스라이해 numb numb"는 0.38(라틴 차용어가 그대로 남는다)이라 그
+# 기준으로는 잡히지 않는다. 여기서는 "한글을 담고 있고 가나가 없다"를 기준으로 삼는다.
+
+_RE_KANA = re.compile(r"[぀-ヿ]")
+_RE_HAN = re.compile(r"[一-鿿]")
+_RE_HANGUL = re.compile(r"[가-힣]")
+
+# 주기 반복(규칙 A) 게이트. period는 3만 본다 — (원문, 독음, 번역)처럼 원문 한 줄 뒤에
+# **한글 두 줄이 연속으로** 규칙적으로 붙는 구조는 실제 곡에 존재하지 않는다. 반면 period 2
+# (원문, 한글)의 완전 교대는 한·일 병창 곡이라는 실재 구조와 텍스트만으로 구분이 불가능하고,
+# 오폭하면 곡의 절반을 잃는다 — 그 형태는 훨씬 엄격한 규칙 B가 소수 조건에서만 잡는다.
+_GLOSS_CYCLE_PERIOD = 3
+_GLOSS_MIN_CYCLES = 3  # 최소 3주기(9줄) — 두 세트짜리 우연 일치를 배제
+_GLOSS_MIN_CONFORM = 0.9  # 주기 중 패턴 일치 비율 (실측 FxOfDVyITak은 1.0)
+_GLOSS_MIN_COVER = 0.9  # 주기 구조가 전체 입력의 이 비율 이상을 덮어야 한다
+# 인접 종속(규칙 B) 게이트 — 소수 한글 줄이 **전부** 원문 줄 바로 뒤에 붙는 경우만.
+_GLOSS_MIN_ADJACENT = 4  # 최소 개수 (실측 ba7YbGO2aq4는 8)
+_GLOSS_MAX_MINORITY = 0.45  # 한글 줄이 이 비율을 넘으면 '소수 주석'이 아니다 → 미발동
+# 한글 줄로 인정하는 최소 한글 비율. 실측 번역 줄 "아스라이해 numb numb"가 0.38이라 0.5로는
+# 놓친다. 0.2까지 낮춰도 영어 줄에 한글 한 단어가 섞인 정도는 걸러진다.
+_GLOSS_MIN_HANGUL_RATIO = 0.2
+# **원문 줄은 'ja'(가나/한자)만 인정한다.** 'other'(라틴)까지 원문으로 허용하면
+# (영어 훅, 한국어, 한국어) 반복 = 실제로 존재하는 한국어 곡 구조가 3줄 주기에 걸려 곡의
+# 2/3를 잃는다. 실측된 오염 형태는 전부 일어 원문 + 한글 주석이고, 클라이언트 tri-line도
+# isJa로 원문을 요구하므로 두 경로의 범위가 일치한다. (영어 원문 + 한글 병기 시트는 서버에서
+# 잡지 않는다 — 정상 곡 오폭 비용이 미검출 비용보다 훨씬 크다.)
+_GLOSS_ANCHOR_CLASS = "ja"
+
+
+def _line_script_class(text: str) -> str:
+    """라인을 스크립트 계열로 분류: 'ja'(가나/한자 위주) / 'ko'(한글 있음) / 'other'.
+
+    비율은 모두 공백 제외 글자 수 기준. 'ja'는 tri-line.ts의 isJa와 같은 규칙이고, 'ko'는
+    라틴 차용어가 섞인 실측 번역 줄("아스라이해 numb numb", 한글 0.38)을 놓치지 않도록
+    비율 문턱을 낮게 둔다. 대신 한자보다 한글이 많을 것을 요구해, 한자 줄에 한글 한 글자가
+    섞인 원문이 한글 줄로 넘어가지 않게 한다.
+    """
+    dense = re.sub(r"\s", "", text)
+    if not dense:
+        return "other"
+    hangul = len(_RE_HANGUL.findall(dense))
+    han = len(_RE_HAN.findall(dense))
+    has_kana = bool(_RE_KANA.search(text))
+    hangul_ratio = hangul / len(dense)
+    if (has_kana or han) and hangul_ratio < 0.15:
+        return "ja"
+    if hangul and not has_kana and hangul >= han and hangul_ratio >= _GLOSS_MIN_HANGUL_RATIO:
+        return "ko"
+    return "other"
+
+
+def detect_gloss_lines(texts: list[str]) -> dict[int, tuple[str, int]]:
+    """번역·독음 병기 시트의 **비가창 줄**을 찾아 {줄 인덱스: (역할, 원문 줄 인덱스)}로 반환.
+
+    역할은 ``"pronunciation"`` 또는 ``"translation"`` — 호출부가 그 텍스트를 원문 줄의
+    표시용 메타로 접어 넣어 화면에서 사라지지 않게 한다.
+
+    **보수적으로 설계했다.** 정상 곡의 라인을 하나라도 잘못 빼면 그 줄이 타이밍을 잃으므로,
+    아래 두 규칙 중 하나가 압도적으로 성립할 때만 발동하고 애매하면 빈 dict를 돌려준다.
+    걸러낼 줄은 항상 한글 줄이고 원문 줄은 일어(가나/한자) 줄이어야 한다 — 실측된 오염 형태가
+    "한국어 사용자가 일어 가사에 한글 독음·번역을 병기해 붙여넣는 것"이고, 원문에 라틴까지
+    허용하면 정상 한국어 곡을 오폭한다(_GLOSS_ANCHOR_CLASS 주석 참조).
+
+    규칙 A — 주기 반복: (일어, 한글, 한글) 3줄 주기가 3주기 이상 반복되고, 전체 입력의
+             90% 이상을 덮으며, 주기 일치율이 90% 이상. 2·3번째 줄을 독음·번역으로 본다.
+    규칙 B — 인접 종속: 한글 줄이 4개 이상이면서 전체의 45% 이하이고, 그 **전부**가 일어 줄
+             바로 뒤에 붙어 있을 때. 각 줄을 앞줄의 번역으로 본다. 일치율 1.0을 요구하는
+             이유: 실제로 노래되는 한국어 구간은 여러 줄이 연달아 나오므로(=한글 줄이 한글
+             줄 뒤에 온다) 이 조건에서 자연히 탈락한다.
+
+    잡지 못하는 형태(의도된 한계): ① (일어, 한글) 완전 교대 시트는 한·일 병창 곡과 텍스트상
+    구별이 불가능해 통과시킨다, ② 영어·한국어 원문에 한글 주석이 붙은 시트, ③ 한국어 곡에
+    일본어 번역이 병기된 역방향 시트. 클라이언트 tri-line 경로나 사용자 정리에 맡긴다.
+    """
+    n = len(texts)
+    if n < _GLOSS_MIN_CYCLES * _GLOSS_CYCLE_PERIOD:
+        return {}
+    classes = [_line_script_class(t) for t in texts]
+
+    found = _detect_gloss_by_cycle(classes, n)
+    if found:
+        return found
+    return _detect_gloss_by_adjacency(classes, n)
+
+
+def _detect_gloss_by_cycle(classes: list[str], n: int) -> dict[int, tuple[str, int]]:
+    """규칙 A — (일어, 한글, 한글) 3줄 주기. offset을 훑는 이유는 맨 앞의 제목/표기 한 줄이
+    주기를 밀어도 감지가 죽지 않게 하기 위함이다 (offset 앞 줄들은 손대지 않는다)."""
+    period = _GLOSS_CYCLE_PERIOD
+    for offset in range(period):
+        starts = list(range(offset, n - period + 1, period))
+        if len(starts) < _GLOSS_MIN_CYCLES:
+            continue
+        if period * len(starts) < _GLOSS_MIN_COVER * n:
+            continue
+        conform = [
+            s
+            for s in starts
+            if classes[s] == _GLOSS_ANCHOR_CLASS
+            and all(classes[s + k] == "ko" for k in range(1, period))
+        ]
+        if len(conform) < _GLOSS_MIN_CONFORM * len(starts):
+            continue
+        # 일치하지 않는 주기는 손대지 않는다 — 그 줄들은 그대로 정렬 입력에 남는다.
+        out: dict[int, tuple[str, int]] = {}
+        for s in conform:
+            out[s + 1] = ("pronunciation", s)
+            out[s + 2] = ("translation", s)
+        return out
+    return {}
+
+
+def _detect_gloss_by_adjacency(classes: list[str], n: int) -> dict[int, tuple[str, int]]:
+    """규칙 B — 소수 한글 줄 전부가 원문(ja) 줄 바로 뒤에 붙어 있는 경우."""
+    ko_idx = [i for i, c in enumerate(classes) if c == "ko"]
+    if len(ko_idx) < _GLOSS_MIN_ADJACENT or len(ko_idx) > _GLOSS_MAX_MINORITY * n:
+        return {}
+    anchors: dict[int, tuple[str, int]] = {}
+    for i in ko_idx:
+        # 일치율 1.0 요구: 앞줄이 없거나 원문 계열이 아니면(한글이 연달아 나오는 = 실제로
+        # 노래되는 한국어 구간, 또는 영어 줄 뒤의 한국어 = 병창 가능성) 전체 미발동
+        if i == 0 or classes[i - 1] != _GLOSS_ANCHOR_CLASS:
+            return {}
+        anchors[i] = ("translation", i - 1)
+    return anchors
+
+
+def _split_gloss_lines(lyric_lines: list, enabled: bool) -> tuple[list, dict[int, dict[str, str]]]:
+    """병기 시트의 비가창 줄을 **정렬 입력에서만** 뺀다.
+
+    반환: (정렬에 쓸 라인 목록, {정렬 인덱스: {역할: 텍스트}}). 두 번째 값은 정렬이 끝난 뒤
+    ``_fold_gloss_into_segments``가 원문 세그먼트의 표시용 메타로 접어 넣어, 사용자가
+    붙여넣은 줄이 화면에서 사라지지 않게 한다.
+    """
+    if not enabled or not lyric_lines:
+        return lyric_lines, {}
+    gloss = detect_gloss_lines([ln.text for ln in lyric_lines])
+    if not gloss:
+        return lyric_lines, {}
+    keep = [i for i in range(len(lyric_lines)) if i not in gloss]
+    if not keep:
+        # 이론상 도달 불가(원문 줄은 항상 남는다) — 그래도 전멸 입력을 정렬에 넘기지 않는다
+        return lyric_lines, {}
+    pos = {orig: k for k, orig in enumerate(keep)}
+    folded: dict[int, dict[str, str]] = {}
+    for i in sorted(gloss):
+        role, anchor = gloss[i]
+        k = pos.get(anchor)
+        if k is None:
+            continue
+        folded.setdefault(k, {}).setdefault(role, lyric_lines[i].text)
+    tally: dict[str, int] = {}
+    for role, _ in gloss.values():
+        tally[role] = tally.get(role, 0) + 1
+    logger.info(
+        f"Bilingual gloss sheet detected: excluding {len(gloss)}/{len(lyric_lines)} non-sung "
+        f"line(s) from alignment input ({tally}); kept for display on their source line. "
+        f"Excluded line indexes (0-based, first 12): {sorted(gloss)[:12]}"
+    )
+    return [lyric_lines[i] for i in keep], folded
+
+
+def _fold_gloss_into_segments(
+    timestamps: list[dict[str, Any]], folded: dict[int, dict[str, str]]
+) -> int:
+    """제외한 병기 줄을 원문 세그먼트의 pronunciation/translation으로 되붙인다.
+
+    이미 값이 있으면 덮지 않는다 — 독음 정렬 경로(pron_data)나 위키 line_meta가 채운 값은
+    실측 타이밍(pron_segments)을 동반하므로 붙여넣기 텍스트보다 우선한다.
+    """
+    n = 0
+    for k, roles in folded.items():
+        if k >= len(timestamps):
+            continue
+        seg = timestamps[k]
+        for role, text in roles.items():
+            if not seg.get(role):
+                seg[role] = text
+                n += 1
+    return n
+
+
 def _pron_by_text(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
     """line_meta를 정규화 텍스트 → 메타 dict로 색인 (merge_line_meta와 동일 규칙).
 
@@ -1872,7 +2247,11 @@ def _run_alignment(
     language: str | None,
     line_meta: list[dict[str, Any]] | None = None,
     on_stage: Any | None = None,
+    line_meta_resolver: Any | None = None,
 ) -> dict:
+    """정렬 본체. line_meta_resolver를 주면 **보컬 분리·f0 착수 뒤, CTC 진입 직전에** 한 번
+    불러 line_meta를 늦게 받아온다 (번역·독음을 클라이언트가 병렬로 만드는 경로).
+    리졸버가 None을 돌려주면(상한 초과) 원문 정렬로 그대로 진행한다."""
     from everyric2.audio.loader import AudioLoader
     from everyric2.config.settings import get_settings
     from everyric2.inference.prompt import LyricLine
@@ -1895,6 +2274,13 @@ def _run_alignment(
     try:
         audio = loader.load(audio_path_obj)
         lyric_lines = LyricLine.from_text(lyrics)
+
+        # 번역·독음 병기 시트의 비가창 줄을 정렬 입력에서 제외한다 (표시용으로는 아래에서
+        # 원문 세그먼트에 되붙인다). CTC 진입 전에 해야 _pron_coverage도 가창 줄만으로
+        # 계산돼 병기 시트가 독음 정렬 경로를 커버리지 미달로 떨어뜨리지 않는다.
+        lyric_lines, gloss_folded = _split_gloss_lines(
+            lyric_lines, settings.alignment.exclude_gloss_lines
+        )
 
         # CTC 엔진은 웜 캐시 싱글턴 — 같은 언어의 두 번째 잡부터 모델 재로드 0회 (WS2-A).
         # torch를 최상위 import하는 모듈이라 반드시 여기서 지연 import한다 (API 전용 모드
@@ -1934,6 +2320,13 @@ def _run_alignment(
             else:
                 logger.warning("Melody enabled but torchfcpe is not installed; skipping")
                 melody_extractor = None
+
+        # line_meta(발음·번역)가 아직 안 왔으면 여기서 기다린다 — 위의 오디오 로드·CTC 모델
+        # 웜업·보컬 분리는 이미 끝났고 f0 전곡 추론은 백그라운드에서 계속 돌므로, 대기 시간이
+        # 그 작업들과 겹쳐 사라진다. 상한 초과는 None(원문 정렬 폴백), 취소는 JobCancelled.
+        if line_meta_resolver is not None:
+            report(LINE_META_WAIT_STAGE)
+            line_meta = line_meta_resolver()
 
         report("전사 정렬")
         # 독음(ko) 정렬 경로: 커버리지가 충분하면 한국어 발음 텍스트+kor adapter로 정렬하고
@@ -1975,7 +2368,13 @@ def _run_alignment(
         # (아래 _fuse_original_char_timing). 비용은 CTC 1패스(4.7분 곡 ~9s)뿐이다: ko/ja는
         # 같은 mms-1b-all 베이스라 언어 전환이 어댑터 스왑(0.23s)이다. 여기서 한 번 돌린
         # 결과를 이중정렬 안전망과 역누출 가드가 모두 재사용한다(중복 정렬 0).
+        # 이 정렬에 실제로 쓰인 MMS 어댑터 — conf는 어댑터 vocab 크기에 스케일 의존하므로
+        # 아래 ko/ja 교차비교와 debug 보고의 스케일 무관 품질 산출에 쓴다. 어댑터는 다음
+        # align 호출에서 교체되므로 **각 정렬 직후에** 포착해야 한다.
+        align_adapter = getattr(engine, "_current_adapter", None)
+
         ja_alignment = None
+        ja_adapter = align_adapter
         if alignment_text == "pronunciation":
             ko_conf = _avg_line_confidence(results)
             dual_check = _dual_align_should_run(ko_conf, settings.alignment.dual_align_conf)
@@ -1988,6 +2387,7 @@ def _run_alignment(
                     ja_alignment = engine.align(
                         align_audio, lyric_lines, language=language or "auto"
                     )
+                    ja_adapter = getattr(engine, "_current_adapter", None)
                 except Exception:
                     logger.exception(
                         "Original-text (ja) alignment failed; keeping pronunciation alignment "
@@ -1995,15 +2395,20 @@ def _run_alignment(
                     )
             if dual_check and ja_alignment is not None:
                 try:
-                    ja_conf = _avg_line_confidence(ja_alignment)
+                    ja_conf_raw = _avg_line_confidence(ja_alignment)
+                    # ja는 다른 어댑터(jpn/cmn)로 측정될 수 있고 vocab 크기가 다르면 conf
+                    # 스케일 자체가 달라 raw 비율 비교가 성립하지 않는다. ko 어댑터 스케일로
+                    # 옮겨 비교한다 — 어댑터가 같으면 항등이라 기존 판정은 그대로다.
+                    ja_conf = _rescale_conf(ja_conf_raw, ja_adapter, align_adapter)
                     if _dual_align_prefers_original(
                         ko_conf, ja_conf, settings.alignment.dual_align_min_ratio
                     ):
                         logger.warning(
                             f"Low-confidence pronunciation alignment (avg conf {ko_conf:.5f} < "
                             f"{settings.alignment.dual_align_conf}); original-text alignment scores "
-                            f"{ja_conf:.5f} (>= {settings.alignment.dual_align_min_ratio}x) — "
-                            f"adopting original text"
+                            f"{ja_conf:.5f} (adapter {ja_adapter} raw {ja_conf_raw}, rescaled to "
+                            f"{align_adapter} scale) (>= "
+                            f"{settings.alignment.dual_align_min_ratio}x) — adopting original text"
                         )
                         results = ja_alignment
                         alignment_text = "original"
@@ -2303,6 +2708,15 @@ def _run_alignment(
                     seg["debug"]["fixes"] = fx
             timestamps.append(seg)
 
+        # 정렬 입력에서 뺀 병기 줄을 표시용으로 되붙인다 — 사용자가 붙여넣은 줄이 화면에서
+        # 사라지면 안 된다. 독음 정렬/위키 line_meta가 이미 채운 값은 덮지 않는다.
+        if gloss_folded:
+            attached = _fold_gloss_into_segments(timestamps, gloss_folded)
+            logger.info(
+                f"Re-attached {attached} excluded gloss line(s) to their source segment "
+                f"for display (alignment input untouched)"
+            )
+
         # 가라오케용 음정(MIDI 노트) 주석 — 실패해도 싱크 생성 자체는 계속한다.
         # f0 전곡 추론은 위에서 정렬과 병렬로 이미 돌고 있다(f0_future) — 여기서 그 결과를
         # 받아 정렬 결과에 노트만 부착한다. 미가용/미설정은 위에서 이미 걸러 melody_extractor가
@@ -2348,12 +2762,23 @@ def _run_alignment(
             engine, "_last_star_spans", []
         )
         star_spans = [list(s) for s in final_star_source]
+        # 최종 결과를 실제로 측정한 어댑터. 누출 폴백/스플라이스로 ja를 채택하는 분기가
+        # 여러 곳이라 분기마다 갱신하지 않고 최종 alignment_text로 판정한다 ("spliced"는
+        # ko 라인 경계가 유지되는 혼합이라 ko 쪽으로 본다).
+        final_adapter = ja_adapter if alignment_text == "original" else align_adapter
+        quality_norm = _scale_free_quality(avg_confidence, final_adapter)
         debug_meta = {
             "star_spans": star_spans,
             "vad_regions": [list(v) for v in vad_regions] if vad_regions is not None else None,
             "alignment_text": alignment_text,
             # 음정 모델(RMVPE/FCPE) RAW f0 곡선 — 레인 디버그 오버레이용
             "f0_curve": f0_curve,
+            # quality_score(=avg_confidence)는 어댑터 vocab 크기에 스케일 의존해 곡 간
+            # 비교가 불가능하다(실측: 같은 곡 eng 0.1289 vs kor 0.0492, 잔차 동일).
+            # 어느 어댑터로 측정한 값인지와 스케일 무관 지표를 함께 내려보내 비교 가능하게 한다.
+            # quality_score 자체는 확장의 0.001 고정 임계 호환 때문에 원본 그대로 둔다.
+            "quality_adapter": final_adapter,
+            "quality_norm": None if quality_norm is None else round(quality_norm, 6),
         }
 
         return {

@@ -452,6 +452,17 @@
 }
 .ey-gen-chip-cancel:hover { color: var(--ey-text); }
 
+/* 알림 칩 — 진행 칩과 같은 모양·자리를 쓰되(같은 .ey-gen-chip 클래스), 전사 진행과
+   구분되도록 색만 다르다. 커버 자동 연결 상태·붙여넣기 표기 필터 결과가 여기로 온다.
+   칩이 좁을 때 문구가 잘리지 않게 패널 폭까지 늘어날 수 있다 (title에 전문이 있다). */
+.ey-notice-chip {
+  background: rgba(80, 180, 140, 0.18);
+  max-width: calc(100% - 20px);
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
+}
+
 /* 진행 칩 클릭 시 펼쳐지는 내 생성 대기열 목록 (이 브라우저에서 시킨 잡만) */
 .ey-gen-list {
   display: flex;

@@ -80,8 +80,9 @@ export interface LyricsData {
   key?: SongKey;
   /** 곡 전체 평균 정렬 신뢰도 (기하평균 확률 평균) — 디버그 표시용 */
   qualityScore?: number;
-  /** 다른 영상의 싱크에 링크된 상태 (해제 UI 표시용) — rate는 원곡 대비 배속 */
-  linked?: { sourceVideoId: string; offsetSec: number; rate?: number };
+  /** 다른 영상의 싱크에 링크된 상태 (해제 UI 표시용) — rate는 원곡 대비 배속.
+   *  verified는 반주 크로스 코릴레이션 검증을 통과한 자동 링크임을 뜻한다 (수동 링크는 false) */
+  linked?: { sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean };
   /** 이 영상에 서버 저장된 사용자 싱크 오프셋(초) — 로드 시 적용 */
   userOffset?: number;
 }
@@ -177,8 +178,11 @@ export interface EveryricSyncResponse {
   attribution?: SourceAttribution | null;
   tempo?: SongTempo | null;
   key?: SongKey | null;
-  /** 다른 영상의 싱크를 빌려온 경우 (inst·커버 링크) — 타이밍은 이미 오프셋·배속 적용됨 */
-  linked?: { source_video_id: string; offset_sec: number; rate?: number | null } | null;
+  /** 다른 영상의 싱크를 빌려온 경우 (inst·커버 링크) — 타이밍은 이미 오프셋·배속 적용됨.
+   *  verified=true면 서버가 반주 상관으로 같은 곡임을 확인한 자동 링크 (수동 링크는 false) */
+  linked?: {
+    source_video_id: string; offset_sec: number; rate?: number | null; verified?: boolean | null;
+  } | null;
   /** 이 영상에 저장된 사용자 싱크 오프셋(초) */
   user_offset?: number | null;
 }
@@ -197,6 +201,44 @@ export interface GenerateResponse {
   job_id: string;
   status: string;
   estimated_time?: number;
+}
+
+// ── 커버 자동 연결 (GET /api/sync/{video_id}/link-candidates) ─────
+// 제목·아티스트로 코퍼스에서 같은 곡 후보를 찾고, 후보가 있으면 **서버가** 반주 상관
+// 검증 잡을 자동 제출한다. 클라이언트는 그 잡만 추적하면 된다 — 링크를 만드는 판단은
+// 전부 서버에 있다(제목이 맞았다는 이유만으로는 링크가 생기지 않는다).
+
+export interface LinkCandidate {
+  video_id: string;
+  title?: string | null;
+  artist?: string | null;
+  /** 제목 유사도 (1.0 = 정규화 정확 일치) — 후보 순위일 뿐, 같은 곡인지의 판정값이 아니다 */
+  score: number;
+}
+
+export interface LinkCandidatesResponse {
+  video_id: string;
+  /** has_sync·linked = 연결이 불필요, none·disabled = 후보 없음/기능 off,
+   *  submitted·pending = 검증 잡 진행 중, cooldown = 최근에 이미 시도함 */
+  status: 'has_sync' | 'linked' | 'disabled' | 'none' | 'submitted' | 'pending' | 'cooldown' | string;
+  candidates?: LinkCandidate[];
+  /** 낸 후속 작업의 종류 — 오늘은 'link_validate'(반주 상관 검증)뿐 */
+  followup?: string | null;
+  /** submitted·pending·cooldown일 때의 후속 작업 id (GET /api/link-jobs/{id}로 폴링) */
+  job_id?: string | null;
+}
+
+/** GET /api/link-jobs/{id} — 반주 상관 검증 잡의 상태 */
+export interface LinkJobStatusResponse {
+  /** queued | processing | done | failed */
+  status: string;
+  /** done일 때만 의미 있음 — true면 서버가 이미 SyncLink를 만들었다 */
+  match?: boolean | null;
+  offset_sec?: number | null;
+  confidence?: number | null;
+  error?: string | null;
+  /** 서버에 잡 기록이 없음(404) — 폴링을 마감시키는 마커 (서버 필드가 아니다) */
+  gone?: boolean;
 }
 
 export interface JobStatusResponse {
@@ -410,9 +452,17 @@ export type BgRequest =
   | { type: 'FETCH_LRCLIB'; payload: SongInfo }
   | { type: 'SEARCH_CANDIDATES'; payload: { title: string; artist: string; duration: number } }
   | { type: 'PICK_LRCLIB'; payload: { id: number } }
-  | { type: 'GENERATE_SYNC'; payload: { videoId: string; lyrics: string; language?: string; lineMeta?: LineMeta[]; attribution?: SourceAttribution } }
-  | { type: 'REGENERATE_SYNC'; payload: { videoId: string; lyrics: string; lineMeta?: LineMeta[]; attribution?: SourceAttribution } }
+  // title·artist는 완성된 싱크에 함께 저장돼 커버 링크 후보 탐색의 단서가 된다 —
+  // 이게 없으면 코퍼스에 제목이 쌓이지 않아 후보 탐색이 영원히 빈손이다
+  | { type: 'GENERATE_SYNC'; payload: { videoId: string; lyrics: string; language?: string; lineMeta?: LineMeta[]; lineMetaPending?: boolean; attribution?: SourceAttribution; title?: string; artist?: string } }
+  /** 진행 중인 잡에 번역·독음을 나중에 붙인다 (다운로드와 번역을 겹치는 경로).
+   *  번역이 실패했어도 **빈 배열로 반드시 한 번 보내야** 잡이 대기 상한까지 서 있지 않는다. */
+  | { type: 'ATTACH_LINE_META'; payload: { jobId: string; lineMeta: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string } }
+  | { type: 'REGENERATE_SYNC'; payload: { videoId: string; lyrics: string; lineMeta?: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string } }
   | { type: 'SYNC_LINK'; payload: { videoId: string; sourceVideoId: string; offsetSec: number; rate: number } }
+  /** 같은 곡의 다른 영상 후보 탐색 — 후보가 있으면 서버가 검증 잡까지 자동 제출한다 */
+  | { type: 'LINK_CANDIDATES'; payload: { videoId: string; title: string; artist?: string } }
+  | { type: 'LINK_JOB_STATUS'; payload: { linkJobId: string } }
   | { type: 'SYNC_UNLINK'; payload: { videoId: string } }
   | { type: 'SYNC_RESET'; payload: { videoId: string } }
   | { type: 'SYNC_OFFSET'; payload: { videoId: string; offsetSec: number } }

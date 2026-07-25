@@ -1,0 +1,51 @@
+{
+  "_source": "facebook/mms-1b-all tokenizer vocab.json, 서버 HF 캐시에서 직접 센 값 (2026-07-25). 단일 글자 토큰만 스크립트로 분류했고, 분류 규칙은 everyric2.alignment.ctc_engine._char_script와 동일하다.",
+  "cmn-script_simplified": {
+    "latin_ascii_lower": 26,
+    "latin_ascii_upper": 0,
+    "pad_token_id": 0,
+    "scripts": {
+      "han": 4419,
+      "hangul": 0,
+      "kana": 4,
+      "latin": 26
+    },
+    "vocab_size": 4495
+  },
+  "eng": {
+    "latin_ascii_lower": 26,
+    "latin_ascii_upper": 0,
+    "pad_token_id": 0,
+    "scripts": {
+      "han": 8,
+      "hangul": 0,
+      "kana": 0,
+      "latin": 26
+    },
+    "vocab_size": 154
+  },
+  "jpn": {
+    "latin_ascii_lower": 26,
+    "latin_ascii_upper": 0,
+    "pad_token_id": 0,
+    "scripts": {
+      "han": 2048,
+      "hangul": 0,
+      "kana": 158,
+      "latin": 26
+    },
+    "vocab_size": 2268
+  },
+  "kor": {
+    "latin_ascii_lower": 26,
+    "latin_ascii_upper": 0,
+    "pad_token_id": 0,
+    "scripts": {
+      "han": 2,
+      "hangul": 1261,
+      "kana": 0,
+      "latin": 26
+    },
+    "vocab_size": 1330
+  }
+}

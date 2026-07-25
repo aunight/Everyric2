@@ -276,7 +276,9 @@ class AlignmentSettings(BaseSettings):
         "alignment's song-level average line confidence falls below this, the original-text (ja) "
         "alignment is also run and whichever scores higher is adopted. Measured: 熱異常 original ko "
         "quality 0.0005 vs its cover 0.0076 — 0.002 sits between, so only genuinely floor-confidence "
-        "songs pay for the extra alignment.",
+        "songs pay for the extra alignment. This threshold is NOT contaminated by the adapter-scale "
+        "problem below: the ko path always loads the same 'kor' adapter (align(language='ko') is "
+        "hardcoded), so the scale this number lives on is fixed.",
     )
 
     dual_align_min_ratio: float = Field(
@@ -285,7 +287,12 @@ class AlignmentSettings(BaseSettings):
         "average line confidence, before the dual-align safety net switches to it (ja_conf >= "
         "ko_conf * this). A plain higher-is-better comparison would flip on noise when both scores "
         "are near the floor (熱異常: ja is equally collapsed, so it must NOT win); requiring a clear "
-        "margin preserves the pronunciation alignment's syllable value unless ja is decisively better.",
+        "margin preserves the pronunciation alignment's syllable value unless ja is decisively better. "
+        "The two sides may be measured with DIFFERENT MMS adapters (ko is always 'kor'; the original "
+        "pass is jpn/kor/cmn by detected language) and CTC confidence scales with adapter vocab size, "
+        "so worker.py rescales ja onto ko's adapter scale before applying this ratio — the number "
+        "therefore always means the same thing. When both adapters match (English songs: both 'kor' "
+        "since the eng adapter was dropped) the rescale is the identity.",
     )
 
     synth_all_lines_conf: float = Field(
@@ -299,7 +306,31 @@ class AlignmentSettings(BaseSettings):
         "power on collapsed songs). This field only enables an additional whole-song fallback: when "
         ">0 and the song's avg confidence is below it, EVERY line is re-synthesized regardless of the "
         "structural signals. Left at 0 by default because it discards accurate CTC timing on songs "
-        "like 消失 (quality 0.00106) whose sung lines are ±0.5s correct.",
+        "like 消失 (quality 0.00106) whose sung lines are ±0.5s correct. WARNING if you enable it: "
+        "the value is compared against RAW song-level confidence, which scales with the MMS adapter's "
+        "vocab size (measured: same English song, eng adapter 0.1289 vs kor 0.0492 — 2.6x apart with "
+        "IDENTICAL residuals), so one number cannot mean the same thing for a jpn-aligned and a "
+        "kor-aligned song. Calibrate per deployment language, or use debug.quality_norm (scale-free) "
+        "when comparing songs across adapters.",
+    )
+
+    exclude_gloss_lines: bool = Field(
+        default=True,
+        description="Drop translation/pronunciation gloss lines from the ALIGNMENT INPUT when the "
+        "pasted lyrics are a bilingual sheet rather than the sung text. Measured on a 73-song corpus: "
+        "FxOfDVyITak pastes a perfectly regular (kana, hangul, hangul) 3-line block 74/74 times — two "
+        "thirds of the input is not sung — and ba7YbGO2aq4 has 8 hangul lines that are each a "
+        "translation of the immediately preceding Japanese line (8/8). Forcing timings onto non-sung "
+        "lines makes CTC fit a token sequence several times longer than the vocal, wrecking the sung "
+        "lines' timing too; both songs sit at the corpus confidence floor (0.0072/0.0135). Detection "
+        "is deliberately conservative (worker.detect_gloss_lines): it needs either a >=3-cycle "
+        "(non-hangul, hangul, hangul) period covering >=90% of the input at >=90% conformance, or a "
+        "hangul minority (>=4 lines, <=45% of the song) where EVERY hangul line directly follows a "
+        "non-hangul line of one uniform script — a genuinely sung Korean passage has consecutive "
+        "hangul lines and fails that. Excluded lines are NOT discarded: they are re-attached to their "
+        "source line as pronunciation/translation for display. A fully alternating (original, hangul) "
+        "sheet is intentionally NOT detected — it is indistinguishable from a bilingual duet. Set "
+        "false to feed the pasted text to the aligner verbatim.",
     )
 
 

@@ -88,6 +88,9 @@ export class LyricsOverlay {
   private genList: HTMLDivElement;
   private genListOpen = false;
   private genListItems: { title: string; state: string; isCurrent: boolean }[] = [];
+  /** 알림 칩 — 커버 자동 연결 진행/결과, 붙여넣기 표기 필터 결과 등 한 줄 알림 */
+  private noticeChip: HTMLDivElement;
+  private noticeTimer = 0;
   private warnBar: HTMLDivElement;
   /** 서버 오류 배너 — body 밖에 있어 resetBody()로 지워지지 않는다.
    *  덕분에 어떤 화면(가사·검색·생성 중·오류)에서도 사유 한 줄이 반드시 보인다. */
@@ -127,8 +130,11 @@ export class LyricsOverlay {
   private linkSrcInput: HTMLInputElement | null = null;
   private linkFilterInput: HTMLInputElement | null = null;
   private syncListItems: SyncListItem[] | null = null;
-  /** 현재 표시 중인 싱크의 링크 상태 (없으면 null) — content가 setLinked로 밀어넣는다 */
-  private linkedInfo: { sourceVideoId: string; offsetSec: number; rate?: number } | null = null;
+  /** 현재 표시 중인 싱크의 링크 상태 (없으면 null) — content가 setLinked로 밀어넣는다.
+   *  verified는 반주 대조로 검증된 자동 링크 여부 (undefined = 구버전 서버로 알 수 없음) */
+  private linkedInfo: {
+    sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean;
+  } | null = null;
 
   private geometry: PanelGeometry;
   private applyingGeometry = false;
@@ -190,6 +196,11 @@ export class LyricsOverlay {
       this.renderGenList();
     });
 
+    // 알림 칩 — 전사 진행 칩과 같은 모양·같은 자리 규약을 쓰되 **별개 엘리먼트**다.
+    // (전사 진행과 자동 연결 확인은 동시에 일어날 수 있어 한 칩을 공유하면 서로를 지운다)
+    this.noticeChip = h('div', { className: 'ey-gen-chip ey-notice-chip' });
+    this.noticeChip.style.display = 'none';
+
     // 낮은 정렬 신뢰도 경고 바 — X로 닫을 수 있고 설정에서 아예 끌 수 있다
     this.warnBar = h('div', { className: 'ey-warn-bar' });
     this.warnBar.style.display = 'none';
@@ -240,8 +251,8 @@ export class LyricsOverlay {
     this.debugEl.style.display = 'none';
 
     this.panel = h('div', { className: 'ey-panel' },
-      this.header, this.serverBar, this.banner, this.genChip, this.genList, this.warnBar,
-      this.body, this.resumeChip, this.footer, this.debugEl,
+      this.header, this.serverBar, this.banner, this.genChip, this.genList, this.noticeChip,
+      this.warnBar, this.body, this.resumeChip, this.footer, this.debugEl,
     );
     // 패널 안 타이핑(검색창·가사 붙여넣기)이 유튜브 전역 단축키(스페이스=재생/정지,
     // 방향키=시킹 등)로 새지 않도록 키 이벤트를 패널에서 끊는다
@@ -483,9 +494,14 @@ export class LyricsOverlay {
     if (this.linkedInfo) {
       const rateBadge = this.linkedInfo.rate && this.linkedInfo.rate !== 1
         ? ` ×${this.linkedInfo.rate}` : '';
+      // 검증된 자동 연결과 검증 없는 수동 연결을 구분해 말한다 — 코퍼스에 검증 없는
+      // 링크가 섞여 있어서, 가사가 어긋날 때 이 표시가 원인 판단의 첫 단서가 된다
+      const verifyBadge = this.linkedInfo.verified === true ? ' · 검증됨'
+        : this.linkedInfo.verified === false ? ' · 검증 없음' : '';
       section.append(h('div', { className: 'ey-link-current' },
         h('span', {
-          text: `현재 ${this.linkedInfo.sourceVideoId}에 연결됨 (${this.linkedInfo.offsetSec >= 0 ? '+' : ''}${this.linkedInfo.offsetSec}s${rateBadge})`,
+          text: `현재 ${this.linkedInfo.sourceVideoId}에 연결됨 (${this.linkedInfo.offsetSec >= 0 ? '+' : ''}${this.linkedInfo.offsetSec}s${rateBadge})${verifyBadge}`,
+          attrs: { title: this.describeLink(this.linkedInfo) },
         }),
         h('button', {
           className: 'ey-secondary-btn',
@@ -573,7 +589,9 @@ export class LyricsOverlay {
   }
 
   /** 현재 싱크의 링크 상태 — 검색 시트의 해제 UI와 출처 배지에 반영 */
-  setLinked(info: { sourceVideoId: string; offsetSec: number; rate?: number } | null): void {
+  setLinked(
+    info: { sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean } | null,
+  ): void {
     this.linkedInfo = info;
   }
 
@@ -812,6 +830,32 @@ export class LyricsOverlay {
     this.renderGenList();
   }
 
+  /**
+   * 한 줄 알림 칩 — null이면 숨김.
+   *
+   * 쓰는 곳: 커버 자동 연결("동일 곡 추정 — 자동 연결 확인 중" → "자동 연결됨"),
+   * 붙여넣기 표기 필터 결과. 패널 본문을 점유하지 않아 어떤 화면 위에서도 뜬다.
+   * autoHideMs를 주면 그 뒤 스스로 사라진다 (마지막 호출이 이긴다 — 알림은 상태가
+   * 아니라 사건이므로 겹치면 새 소식을 보여주는 편이 맞다).
+   */
+  setNoticeChip(text: string | null, autoHideMs?: number): void {
+    clearTimeout(this.noticeTimer);
+    if (!text) {
+      this.noticeChip.style.display = 'none';
+      this.noticeChip.replaceChildren();
+      return;
+    }
+    this.noticeChip.replaceChildren(icon(ICONS.sparkle), text);
+    this.noticeChip.title = text; // 칩이 좁아 잘려도 전문을 볼 수 있게
+    this.noticeChip.style.display = '';
+    if (autoHideMs !== undefined) {
+      this.noticeTimer = window.setTimeout(() => {
+        this.noticeChip.style.display = 'none';
+        this.noticeChip.replaceChildren();
+      }, autoHideMs);
+    }
+  }
+
   /** 내 생성 대기열 목록 데이터 갱신 — 진행 칩 클릭으로 펼친다.
    *  이 브라우저(activeJobs)가 시킨 잡만 들어오므로 타인 큐는 노출되지 않는다. */
   setGenerationList(items: { title: string; state: string; isCurrent: boolean }[]): void {
@@ -921,15 +965,32 @@ export class LyricsOverlay {
       : 'LRCLIB';
     // 가사 원출처(위키 등)를 병기 — 전사는 서버가 했어도 가사의 출처는 따로 표기
     const extra = this.attributionName && this.attributionName !== base ? ` · ${this.attributionName}` : '';
-    // 다른 영상의 싱크를 빌려온 경우 링크 표시 (해제는 검색 시트에서)
+    // 다른 영상의 싱크를 빌려온 경우 링크 표시 (해제는 검색 시트에서).
+    // 검증(반주 대조)을 통과한 자동 링크와 검증 없는 수동 링크는 신뢰도가 다르다 —
+    // 어긋난 가사를 보고 있을 때 원인을 짚을 수 있도록 ✓/? 로 구분해 표시한다
     const link = this.linkedInfo
-      ? ` · 🔗${this.linkedInfo.offsetSec !== 0 ? `${this.linkedInfo.offsetSec > 0 ? '+' : ''}${this.linkedInfo.offsetSec}s` : ''}`
+      ? ` · 🔗${this.linkedInfo.verified ? '✓' : '?'}${this.linkedInfo.offsetSec !== 0 ? `${this.linkedInfo.offsetSec > 0 ? '+' : ''}${this.linkedInfo.offsetSec}s` : ''}`
       : '';
     this.sourceBadge.textContent = base + extra + link;
     // 출처 상세: 무엇을 어디서 가져왔는지 — 클릭 전에 툴팁으로도 확인 가능
     const kind = synced ? '싱크 가사' : '일반 가사';
     this.sourceBadge.title = this.sourceUrl ? `${kind} · 출처 페이지 열기\n${this.sourceUrl}` : kind;
+    if (this.linkedInfo) this.sourceBadge.title += `\n${this.describeLink(this.linkedInfo)}`;
     this.sourceBadge.classList.toggle('everyric', source === 'everyric');
+  }
+
+  /**
+   * 링크 한 건을 사람이 읽는 한 줄로 — 배지 툴팁과 검색 시트가 같은 문구를 쓴다.
+   *
+   * verified가 undefined면 서버가 검증 여부를 안 내려준 구버전이다 — 단정하지 않는다
+   * (검증됐다고 잘못 말하면 어긋난 싱크를 신뢰하게 된다).
+   */
+  private describeLink(info: { sourceVideoId: string; verified?: boolean }): string {
+    if (info.verified === true) return `${info.sourceVideoId} 싱크를 빌려옴 · 반주 대조로 검증된 자동 연결`;
+    if (info.verified === false) {
+      return `${info.sourceVideoId} 싱크를 빌려옴 · 검증 없는 수동 연결 — 어긋나면 오프셋을 조정하거나 해제하세요`;
+    }
+    return `${info.sourceVideoId} 싱크를 빌려옴 · 검증 여부 알 수 없음(구버전 서버)`;
   }
 
   /** 가사 원출처 표기 (이름+링크). show* 호출 전에 설정해야 배지에 반영된다. */

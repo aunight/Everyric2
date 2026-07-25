@@ -27,8 +27,10 @@ from everyric2.alignment.ctc_engine import (
 )
 from everyric2.config.settings import AlignmentSettings
 
-# 서버 3090 실측 vocab 크기 — 스왑 후 이 값이 따라 바뀌어야 한다
-MEASURED_VOCAB_SIZES = {"eng": 154, "kor": 1330, "jpn": 2268}
+# 서버 실측 vocab 크기 — 스왑 후 이 값이 따라 바뀌어야 한다.
+# eng는 더 이상 선택되지 않지만(test_english_never_loads_the_eng_adapter) 크기를 남겨
+# 스텁이 잘못된 어댑터를 로드했을 때 vocab 크기로 잡히게 한다.
+MEASURED_VOCAB_SIZES = {"eng": 154, "kor": 1330, "jpn": 2268, "cmn-script_simplified": 4495}
 
 
 class _StubTokenizer:
@@ -170,12 +172,37 @@ def test_processor_follows_the_adapter(stubbed):
     assert stubbed._processor.tokenizer.target_lang == "jpn"
     assert len(stubbed._processor.tokenizer.get_vocab()) == MEASURED_VOCAB_SIZES["jpn"]
 
-    stubbed._ensure_model_loaded("en")
-    assert stubbed._processor.tokenizer.target_lang == "eng"
-    assert len(stubbed._processor.tokenizer.get_vocab()) == MEASURED_VOCAB_SIZES["eng"]
+    # 세 번째 어댑터로 cmn을 쓴다 — force_mms면 zh도 MMS 어댑터 경로로 들어온다
+    stubbed._ensure_model_loaded("zh", force_mms=True)
+    assert stubbed._processor.tokenizer.target_lang == "cmn-script_simplified"
+    assert (
+        len(stubbed._processor.tokenizer.get_vocab())
+        == MEASURED_VOCAB_SIZES["cmn-script_simplified"]
+    )
 
     # blank id는 세 어댑터 모두 0 (실측) — 스왑이 이걸 흔들면 정렬이 통째로 깨진다
     assert stubbed._processor.tokenizer.pad_token_id == 0
+
+
+def test_english_never_loads_the_eng_adapter(stubbed):
+    """영어는 kor 어댑터로 정렬한다 — eng는 vocab 154개에 한글·가나가 0개다.
+
+    순수 영어 4곡 실측에서 eng의 정확도 우위가 없었고(잔차 중앙값 차 ≤ 0.035초 = CTC
+    프레임 2칸 이하, 부호는 곡마다 뒤집힘), 반대로 한 글자라도 CJK가 섞이면 eng는 그
+    글자를 통째로 놓친다. 상세 수치는 tests/test_adapter_coverage.py 참조.
+    """
+    assert MMS_LANG_CODES["en"] == "kor"
+
+    stubbed._ensure_model_loaded("en")
+    assert stubbed._current_adapter == "kor"
+    assert stubbed._model.adapter_calls == ["kor"]
+    assert stubbed._processor.tokenizer.target_lang == "kor"
+    assert "eng" not in stubbed._model.adapter_calls
+
+    # 매핑에 없는 언어도 eng로 떨어지지 않아야 한다
+    stubbed._ensure_model_loaded("xx", force_mms=True)
+    assert stubbed._current_adapter == "kor"
+    assert "eng" not in stubbed._model.adapter_calls
 
 
 def test_same_language_reload_is_a_noop(stubbed):

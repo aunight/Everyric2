@@ -44,8 +44,111 @@ MMS_LANG_CODES = {
     "ko": "kor",
     "ja": "jpn",
     "zh": "cmn-script_simplified",
-    "en": "eng",
+    # 영어는 'eng'가 아니라 'kor' 어댑터로 정렬한다. eng vocab은 154개뿐이고 한글·가나가
+    # 0개라 한 글자라도 CJK가 섞이면 그 글자가 통째로 정렬에서 빠지는데, kor/jpn/cmn은
+    # 전부 ASCII 소문자 26개를 갖고 있어 라틴을 똑같이 덮는다. 순수 영어 4곡을 같은
+    # 오디오·같은 가사로 세 어댑터에 돌려 유튜브 수동 자막 기준 잔차를 비교한 결과
+    # eng의 우위가 없었다 (중앙값 차 ≤ 0.035초 = CTC 프레임 20ms의 2칸 이하이고,
+    # 부호도 곡마다 뒤집힌다). 상세 수치는 tests/test_adapter_coverage.py 참조.
+    "en": "kor",
 }
+
+# 어댑터 vocab이 실제로 덮는 문자 스크립트. facebook/mms-1b-all의 tokenizer vocab.json을
+# 직접 센 값이다(2026-07-25, 단일 글자 토큰만):
+#     eng 154 — latin_lower 26, latin_ext 51, han 8,    hangul    0, kana  0
+#     kor 1330 — latin_lower 26, latin_ext  5, han 2,    hangul 1261, kana  0
+#     jpn 2268 — latin_lower 26, latin_ext  1, han 2048, hangul    0, kana 158
+#     cmn 4495 — latin_lower 26, latin_ext  5, han 4419, hangul    0, kana  4
+# 한 자리 수의 흔적(eng의 han 8개, cmn의 kana 4개)은 그 스크립트를 덮는다고 보지 않는다 —
+# 수천 자 규모와 한 자리 수를 같은 'True'로 접으면 커버리지 판정이 뒤집힌다.
+#
+# 왜 하드코딩인가: 어느 어댑터를 로드할지 **로드 전에** 정해야 하므로 vocab을 조회할 수
+# 없다(vocab.json은 HF 캐시가 이미 있을 때만 읽히고, 첫 실행에는 없다). 대신 글자 단위가
+# 아니라 스크립트 단위로만 판정한다 — kor vocab의 한글은 1261자로 완성형 11172자를 다
+# 담지 못하지만, 빠진 음절은 `_oov_substitute`가 발음이 가까운 in-vocab 음절로 치환하므로
+# "kor은 한글을 덮는다"가 실효적으로 성립한다. 실측 대조: 한글 234자 + 라틴 406자인 곡의
+# 글자 단위 커버리지는 kor 0.994 / eng 0.632 / jpn 0.628이었고, 아래 스크립트 표가 주는
+# 예측(1.000 / 0.634 / 0.634)과 순위가 일치한다.
+# 이 표가 실제 vocab과 어긋나지 않는지는 tests/test_adapter_coverage.py가 고정한다.
+_ADAPTER_SCRIPTS: dict[str, frozenset[str]] = {
+    "kor": frozenset({"latin", "hangul"}),
+    "jpn": frozenset({"latin", "kana", "han"}),
+    "cmn-script_simplified": frozenset({"latin", "han"}),
+}
+
+# 여러 스크립트가 섞였을 때 후보로 두는 언어 → 그 언어를 지목하는 스크립트.
+# 삽입 순서가 곧 완전 동점 시의 우선순위다 (_pick_by_coverage의 max가 첫 최대를 남긴다) —
+# 기존 단일 스크립트 분기의 우선순위(ja → ko → zh)와 같게 두어 판정이 예측 가능하게 한다.
+# 'en'이 없는 것이 의도다: en은 kor 어댑터를 쓰므로 ko 후보와 커버리지가 항상 같고,
+# 스크립트가 둘 이상이면 라틴만 있는 후보는 어차피 이길 수 없다.
+_MULTILINGUAL_CANDIDATES: dict[str, str] = {
+    "ja": "kana",
+    "ko": "hangul",
+    "zh": "han",
+}
+
+
+def _char_script(char: str) -> str | None:
+    """정렬 토큰이 될 수 있는 글자를 스크립트로 분류한다. 그 밖이면 None.
+
+    대문자 라틴도 'latin'이다 — `_resolve_token_char`가 소문자로 조회하므로 어댑터
+    vocab에 대문자가 0개여도 실제로 정렬된다. 여기서 커버 불가로 세면 커버리지 판정이
+    소문자화 폴백과 어긋난다.
+    숫자·구두점·공백은 어느 어댑터로도 노래로 정렬되지 않으므로 분모에서 아예 뺀다.
+    """
+    code = ord(char)
+    if 0x3040 <= code <= 0x30FF:  # Hiragana + Katakana
+        return "kana"
+    if 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF:  # Hangul
+        return "hangul"
+    if 0x4E00 <= code <= 0x9FFF:  # CJK Ideographs
+        return "han"
+    if 0x41 <= code <= 0x5A or 0x61 <= code <= 0x7A:  # A-Z a-z
+        return "latin"
+    return None
+
+
+def script_census(text: str) -> dict[str, int]:
+    """가사 텍스트의 스크립트별 글자 수 (정렬 대상이 아닌 글자는 세지 않는다)."""
+    counts = {"kana": 0, "hangul": 0, "han": 0, "latin": 0}
+    for char in text:
+        script = _char_script(char)
+        if script is not None:
+            counts[script] += 1
+    return counts
+
+
+def adapter_coverage(counts: dict[str, int], adapter: str) -> float:
+    """이 어댑터 vocab이 덮는 글자 비율 (0~1). 정렬 대상 글자가 없으면 0.0."""
+    total = sum(counts.values())
+    if total == 0:
+        return 0.0
+    scripts = _ADAPTER_SCRIPTS[adapter]
+    return sum(n for script, n in counts.items() if script in scripts) / total
+
+
+def _pick_by_coverage(counts: dict[str, int]) -> str:
+    """스크립트가 섞인 가사에서 쓸 언어를 어댑터 vocab 커버리지로 고른다.
+
+    "어느 문자가 더 많나"로 고르면 안 된다 — 한글 234자 + 라틴 406자인 KPOP 곡이 라틴
+    다수라는 이유로 en으로 판정됐고, eng vocab에는 한글이 0개라 순수 한글 15줄이 정렬에서
+    통째로 빠져 균등 보간만 됐다(구간 오차 −2.5초 → −11.4초로 단조 악화, 실측). 많은 쪽이
+    아니라 **덮는 쪽**을 골라야 한다: kor은 한글과 라틴을 모두 덮으므로 이 곡을 100% 덮는다.
+
+    동점 처리:
+      ① 커버리지가 같으면 그 언어를 지목하는 스크립트가 실제로 더 많은 쪽. 한글 100자 +
+         한자 100자처럼 ko/ja/zh가 모두 0.5로 묶이는 경우, 가나가 0자인 ja를 이 기준이
+         떨어뜨린다.
+      ② 그래도 같으면 _MULTILINGUAL_CANDIDATES의 순서(ja → ko → zh). 남은 후보가
+         정말로 구별 불가능한 경우이므로 결정론만 확보하면 된다.
+    """
+    return max(
+        _MULTILINGUAL_CANDIDATES,
+        key=lambda lang: (
+            adapter_coverage(counts, MMS_LANG_CODES[lang]),
+            counts[_MULTILINGUAL_CANDIDATES[lang]],
+        ),
+    )
 
 
 def detect_language_from_text(text: str) -> tuple[str, bool]:
@@ -56,40 +159,37 @@ def detect_language_from_text(text: str) -> tuple[str, bool]:
         - primary_language: 'ja', 'ko', 'zh', or 'en' (dominant language)
         - is_multilingual: True if multiple scripts detected → recommends MMS 1B-all
     """
-    ja_count = 0
-    ko_count = 0
-    zh_count = 0
-    en_count = 0
-
-    for char in text:
-        code = ord(char)
-        if 0x3040 <= code <= 0x309F or 0x30A0 <= code <= 0x30FF:  # Hiragana/Katakana
-            ja_count += 1
-        elif 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF:  # Hangul
-            ko_count += 1
-        elif 0x4E00 <= code <= 0x9FFF:  # CJK Ideographs
-            zh_count += 1
-        elif 0x0041 <= code <= 0x007A:  # Basic Latin (A-Za-z)
-            en_count += 1
+    counts = script_census(text)
+    ja_count, ko_count, zh_count, en_count = (
+        counts["kana"],
+        counts["hangul"],
+        counts["han"],
+        counts["latin"],
+    )
 
     detected = []
     if ja_count > 0:
-        detected.append(("ja", ja_count))
+        detected.append("ja")
     if ko_count > 0:
-        detected.append(("ko", ko_count))
+        detected.append("ko")
     if zh_count > 0 and ja_count == 0:  # CJK without kana = Chinese
-        detected.append(("zh", zh_count))
+        detected.append("zh")
     if en_count > 10:
-        detected.append(("en", en_count))
+        detected.append("en")
 
     is_multilingual = len(detected) >= 2
 
     if is_multilingual:
-        dominant = max(detected, key=lambda x: x[1])
-        logger.info(
-            f"Multiple languages detected: {[d[0] for d in detected]} → primary: {dominant[0]}, using MMS 1B-all"
+        primary = _pick_by_coverage(counts)
+        coverage = ", ".join(
+            f"{lang}/{MMS_LANG_CODES[lang]}={adapter_coverage(counts, MMS_LANG_CODES[lang]):.3f}"
+            for lang in _MULTILINGUAL_CANDIDATES
         )
-        return (dominant[0], True)
+        logger.info(
+            f"Multiple languages detected: {detected} → primary: {primary} "
+            f"(chars {counts}, vocab coverage {coverage}), using MMS 1B-all"
+        )
+        return (primary, True)
 
     if ja_count > 0:
         return ("ja", False)
@@ -230,7 +330,10 @@ class CTCEngine(BaseAlignmentEngine):
         )
 
         if use_mms:
-            mms_lang_code = MMS_LANG_CODES.get(language, "eng")
+            # 매핑에 없는 언어까지 오면 라틴+한글을 덮는 kor로 떨어진다. 예전 기본값
+            # 'eng'는 vocab 154개에 한글·가나가 0개라, 정체를 모르는 언어에 대해 가장
+            # 잃을 게 많은 선택이었다.
+            mms_lang_code = MMS_LANG_CODES.get(language, "kor")
 
             # 베이스가 이미 MMS면 인코더 가중치는 언어와 무관하게 동일하다 — 언어별로 다른
             # 것은 어댑터 레이어와 lm_head뿐이고 load_adapter가 그 둘을 통째로 덮어쓴다

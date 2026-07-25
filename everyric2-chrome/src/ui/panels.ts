@@ -1,4 +1,5 @@
 import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo } from '../types';
+import { describeRemoved, stripPartMarkers } from '../lib/lyrics-clean';
 import { formatLogEntry, serverBlockedTip, serverKnownBad, serverUsable, statusLine } from '../lib/server-status';
 import { h, icon, ICONS } from './dom';
 
@@ -251,7 +252,7 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
     className: 'ey-textarea',
     attrs: {
       placeholder: '여기에 가사를 붙여넣으면 AI가 타이밍을 맞춰줘요\n'
-        + '유의: 제목·섹션 표기 등 없이 줄바꿈만 있는 원문 언어 가사여야 합니다.',
+        + '[Verse]·1절·후렴 같은 파트 표기와 주석 줄은 자동으로 걸러내요.',
       rows: '6',
     },
   });
@@ -272,7 +273,7 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
     lyricsArea,
     h('div', {
       className: 'ey-state-sub',
-      text: '유의: 제목·섹션 표기([Verse] 등)가 섞이면 타이밍이 어긋나요 — 원문 가사 줄만 넣어 주세요',
+      text: '파트 표기([Verse]·1절·후렴)와 주석·크레딧 줄은 자동으로 제외해요 — 무엇을 제외했는지 알려드려요',
     }),
     statusEl,
     attributionInput,
@@ -284,7 +285,14 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
         lyricsArea.focus();
         return;
       }
-      ctx.callbacks.onGenerate(text, attributionInput.value.trim() || undefined);
+      // 파트 표기·주석을 걷어내고, **무엇을 걷어냈는지 반드시 보여준다** — 조용히 지우면
+      // 사용자에게는 가사가 사라진 것으로 보인다. content.handleGenerate도 같은 필터를
+      // 한 번 더 통과시키지만(멱등) 사용자에게 알리는 자리는 붙여넣은 이 화면이다.
+      const cleaned = stripPartMarkers(text);
+      const note = describeRemoved(cleaned);
+      if (note) setListStatus(statusEl, note);
+      else statusEl.replaceChildren();
+      ctx.callbacks.onGenerate(cleaned.text, attributionInput.value.trim() || undefined);
     }),
   );
   pasteSection.style.display = startOpen ? '' : 'none';

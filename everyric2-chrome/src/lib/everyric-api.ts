@@ -1,4 +1,4 @@
-import type { ApiFailure, EveryricSyncResponse, GenerateResponse, JobStatusResponse, LineMeta, ServerLogEntry, ServerStatus, SourceAttribution, SyncListItem, TranslateResult } from '../types';
+import type { ApiFailure, EveryricSyncResponse, GenerateResponse, JobStatusResponse, LineMeta, LinkCandidatesResponse, LinkJobStatusResponse, ServerLogEntry, ServerStatus, SourceAttribution, SyncListItem, TranslateResult } from '../types';
 import { affectsServerStatus, failureKindFromStatus, failureToStatus, maskPath, maskSecret, okStatus } from './server-status';
 
 export interface ServerConfig {
@@ -46,6 +46,21 @@ function baseUrl(server: ServerConfig): string {
   return server.serverUrl
     .replace(/^(https?:\/\/)localhost(?=[:/]|$)/i, '$1127.0.0.1')
     .replace(/\/+$/, '');
+}
+
+/**
+ * 서버 스키마 상한(title 256·artist 128자)에 맞춰 자른다.
+ *
+ * 넘기면 FastAPI가 422를 낸다 — 그게 하필 **싱크 조회**에서 터지면 제목을 실어 보낸 대가로
+ * 가사가 통째로 사라진다(백필은 부수 효과일 뿐인데 본 기능을 깨뜨린다). 서버 쪽 백필도
+ * 자른 제목으로 충분히 매칭되므로 잘라 보내는 편이 언제나 낫다.
+ */
+const TITLE_MAX = 256;
+const ARTIST_MAX = 128;
+
+function clip(value: string | null | undefined, max: number): string | undefined {
+  const text = value?.trim();
+  return text ? text.slice(0, max) : undefined;
 }
 
 function buildHeaders(server: ServerConfig, extra?: Record<string, string>): Record<string, string> {
@@ -143,35 +158,116 @@ async function request<T>(
   }
 }
 
+/**
+ * 이 영상의 싱크 조회.
+ *
+ * song(제목·아티스트)을 함께 보내면 서버가 **비어 있을 때만** 기존 싱크의 제목을 채운다
+ * (기존 값은 덮어쓰지 않는다). 재생성 없이 코퍼스에 제목이 쌓이게 하는 유일한 경로라서
+ * 조회할 때마다 싣는다 — 제목이 없으면 커버 링크 후보 탐색이 영원히 빈손이 된다.
+ * 구버전 서버는 모르는 쿼리 파라미터를 그냥 무시하므로 붙여도 안전하다.
+ */
 export function lookupSync(
-  server: ServerConfig, videoId: string, sink?: FailureSink,
+  server: ServerConfig,
+  videoId: string,
+  song?: { title?: string | null; artist?: string | null },
+  sink?: FailureSink,
 ): Promise<EveryricSyncResponse | null> {
-  return request<EveryricSyncResponse>(server, `/api/sync/${encodeURIComponent(videoId)}`, undefined, 2500, sink);
+  const params = new URLSearchParams();
+  const title = clip(song?.title, TITLE_MAX);
+  const artist = clip(song?.artist, ARTIST_MAX);
+  if (title) params.set('title', title);
+  if (artist) params.set('artist', artist);
+  const query = params.size > 0 ? `?${params.toString()}` : '';
+  return request<EveryricSyncResponse>(
+    server, `/api/sync/${encodeURIComponent(videoId)}${query}`, undefined, 2500, sink,
+  );
 }
 
-/** 서버는 여기서 큐 등록만 하고 즉시 job_id를 반환해야 한다 (처리 대기와 무관) */
+/**
+ * 같은 곡의 다른 영상(원곡·다른 업로드) 후보 탐색.
+ *
+ * 후보가 있으면 **서버가** 반주 상관 검증 잡을 자동 제출하고 그 id를 돌려준다. 쿨다운·
+ * 중복 제출 억제도 서버가 한다 — 클라이언트는 잡 id만 받아 폴링하면 된다.
+ * 이 엔드포인트가 없는 구버전 서버에서는 404 → null이므로 호출부는 조용히 포기한다.
+ */
+export function findLinkCandidates(
+  server: ServerConfig,
+  videoId: string,
+  song: { title: string; artist?: string | null },
+  sink?: FailureSink,
+): Promise<LinkCandidatesResponse | null> {
+  const title = clip(song.title, TITLE_MAX);
+  if (!title) return Promise.resolve(null); // 서버가 title을 필수로 요구한다 (min_length=1)
+  const params = new URLSearchParams({ title });
+  const artist = clip(song.artist, ARTIST_MAX);
+  if (artist) params.set('artist', artist);
+  return request<LinkCandidatesResponse>(
+    server,
+    `/api/sync/${encodeURIComponent(videoId)}/link-candidates?${params.toString()}`,
+    undefined,
+    6000,
+    sink,
+  );
+}
+
+/** 반주 상관 검증 잡의 상태. 404(기록 소실)는 gone 마커로 돌려 폴링을 마감시킨다 —
+ *  null로 뭉개면 사라진 잡을 영원히 폴링한다 (getJobStatus와 같은 규약). */
+export async function getLinkJobStatus(
+  server: ServerConfig, linkJobId: string, sink?: FailureSink,
+): Promise<LinkJobStatusResponse | null> {
+  const probe: FailureSink = {};
+  const res = await request<LinkJobStatusResponse>(
+    server, `/api/link-jobs/${encodeURIComponent(linkJobId)}`, undefined, 4000, probe,
+  );
+  if (res !== null) return res;
+  if (probe.failure?.status === 404) {
+    return { status: 'failed', gone: true };
+  }
+  if (sink) sink.failure = probe.failure;
+  return null;
+}
+
+/** 서버는 여기서 큐 등록만 하고 즉시 job_id를 반환해야 한다 (처리 대기와 무관).
+ *  title·artist는 완성된 싱크에 함께 저장돼 나중에 커버 링크 후보 탐색의 단서가 된다. */
 export function generateSync(
   server: ServerConfig,
-  payload: { video_id: string; lyrics: string; language?: string; line_meta?: LineMeta[]; attribution?: SourceAttribution },
+  payload: {
+    video_id: string; lyrics: string; language?: string; line_meta?: LineMeta[];
+    line_meta_pending?: boolean;
+    attribution?: SourceAttribution; title?: string; artist?: string;
+  },
   sink?: FailureSink,
 ): Promise<GenerateResponse | null> {
   return request<GenerateResponse>(server, '/api/sync/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    // 제목이 서버 상한을 넘으면 422로 생성 자체가 실패한다 — 자르고 보낸다
+    body: JSON.stringify({
+      ...payload,
+      title: clip(payload.title, TITLE_MAX),
+      artist: clip(payload.artist, ARTIST_MAX),
+    }),
   }, 15000, sink);
 }
 
 /** 캐시를 무시하고 싱크를 강제 재생성한다 — 큐 등록 후 즉시 job_id 반환 */
 export function regenerateSync(
   server: ServerConfig,
-  payload: { video_id: string; lyrics: string; line_meta?: LineMeta[]; attribution?: SourceAttribution },
+  payload: {
+    video_id: string; lyrics: string; line_meta?: LineMeta[];
+    attribution?: SourceAttribution; title?: string; artist?: string;
+  },
   sink?: FailureSink,
 ): Promise<GenerateResponse | null> {
   return request<GenerateResponse>(server, '/api/sync/regenerate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, force: true }),
+    body: JSON.stringify({
+      ...payload,
+      force: true,
+      title: clip(payload.title, TITLE_MAX),
+      artist: clip(payload.artist, ARTIST_MAX),
+    }),
   }, 15000, sink);
 }
 
@@ -327,6 +423,35 @@ export function fetchCaptionLines(
  * 네트워크 실패를 구분하지 않는다(둘 다 "이 경로는 못 쓴다"로 같게 취급하면 충분).
  * sink에는 사유가 담기지만, 404는 affectsServerStatus()가 걸러 서버 상태를 내리지 않는다.
  */
+/**
+ * 진행 중인 생성 잡에 번역·독음을 나중에 붙인다 — 번역을 다운로드·보컬 분리와 겹치는 경로.
+ *
+ * **번역이 실패했어도 빈 배열로 반드시 한 번 호출해야 한다.** 서버는 정렬 직전에 이 메타를
+ * 유한 시간 기다리는데, 아무것도 안 보내면 그 상한까지 잡이 헛되게 서 있는다(빈 배열은
+ * "붙일 것이 없음"이 확정된 신호라 서버가 즉시 원문 정렬로 넘어간다).
+ *
+ * 잡이 이미 끝났어도(캐시 히트 등) 호출은 성공한다 — 서버가 완성된 싱크에 발음·번역만
+ * 병합하고 applied로 무엇이 일어났는지 알려준다. 클라이언트가 분기할 필요는 없다.
+ */
+export function attachLineMeta(
+  server: ServerConfig,
+  jobId: string,
+  payload: {
+    line_meta: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string;
+  },
+  sink?: FailureSink,
+): Promise<{ job_id: string; status: string; applied: string; merged_segments?: number } | null> {
+  return request(server, `/api/sync/jobs/${encodeURIComponent(jobId)}/line-meta`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...payload,
+      title: clip(payload.title, TITLE_MAX),
+      artist: clip(payload.artist, ARTIST_MAX),
+    }),
+  }, 15000, sink);
+}
+
 export function generateSyncFromCaption(
   server: ServerConfig, videoId: string, sink?: FailureSink,
 ): Promise<GenerateResponse | null> {

@@ -1,5 +1,5 @@
 import { fetchFromLrclib, getLrclibById, searchTracksLrclib } from './lib/lrclib';
-import { cancelJob, checkServerStatus, fetchCaptionLines, generateSync, generateSyncFromCaption, getJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
+import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLinkCandidates, generateSync, generateSyncFromCaption, getJobStatus, getLinkJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
 import { getSettings } from './lib/settings';
@@ -85,7 +85,19 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         lyrics: message.payload.lyrics,
         language: message.payload.language,
         line_meta: message.payload.lineMeta,
+        line_meta_pending: message.payload.lineMetaPending,
         attribution: message.payload.attribution,
+        title: message.payload.title,
+        artist: message.payload.artist,
+      }, sink));
+    }
+    case 'ATTACH_LINE_META': {
+      const server = await getServerConfig();
+      return call('attach_line_meta_failed', sink => attachLineMeta(server, message.payload.jobId, {
+        line_meta: message.payload.lineMeta,
+        attribution: message.payload.attribution,
+        title: message.payload.title,
+        artist: message.payload.artist,
       }, sink));
     }
 
@@ -96,6 +108,8 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         lyrics: message.payload.lyrics,
         line_meta: message.payload.lineMeta,
         attribution: message.payload.attribution,
+        title: message.payload.title,
+        artist: message.payload.artist,
       }, sink));
     }
 
@@ -158,6 +172,22 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       }, sink));
     }
 
+    // 커버 자동 연결: 같은 곡 후보 탐색 (서버가 검증 잡까지 자동 제출한다).
+    // 이 엔드포인트가 없는 구버전 서버는 404 → error가 되고, content는 조용히 포기한다.
+    case 'LINK_CANDIDATES': {
+      const server = await getServerConfig();
+      return call('link_candidates_unavailable', sink => findLinkCandidates(server, message.payload.videoId, {
+        title: message.payload.title,
+        artist: message.payload.artist,
+      }, sink));
+    }
+
+    case 'LINK_JOB_STATUS': {
+      const server = await getServerConfig();
+      return call('link_job_status_failed', sink =>
+        getLinkJobStatus(server, message.payload.linkJobId, sink));
+    }
+
     case 'SYNC_UNLINK': {
       const server = await getServerConfig();
       return call('unlink_failed', sink => unlinkSync(server, message.payload.videoId, sink));
@@ -216,7 +246,12 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
 async function fetchLyricsChain(
   song: SongInfo, skipLrclib = false, sink?: FailureSink,
 ): Promise<LyricsData | null> {
-  const sync = await lookupSync(await getServerConfig(), song.videoId, sink);
+  // 제목·아티스트를 함께 보낸다 — 서버가 기존 싱크의 빈 제목을 이 기회에 채운다(백필).
+  // 재생성 없이 코퍼스에 제목이 쌓이는 유일한 경로이고, 그게 없으면 커버 링크 후보
+  // 탐색이 영원히 빈손이다.
+  const sync = await lookupSync(
+    await getServerConfig(), song.videoId, { title: song.title, artist: song.artist }, sink,
+  );
   // 서버에 저장된 영상별 사용자 오프셋 — 싱크가 없어도(found=false) 내려온다
   const userOffset = sync?.user_offset ?? undefined;
   if (sync?.found && sync.timestamps && sync.timestamps.length > 0) {
@@ -239,6 +274,8 @@ async function fetchLyricsChain(
               sourceVideoId: sync.linked.source_video_id,
               offsetSec: sync.linked.offset_sec,
               rate: sync.linked.rate ?? undefined,
+              // 서버가 안 내려주는 구버전이면 undefined → 화면은 '검증 여부 모름'으로 표시
+              verified: sync.linked.verified ?? undefined,
             }
           : undefined,
         userOffset,

@@ -920,13 +920,31 @@ class RemoteHooks:
     """원격 워커의 PipelineHooks 구현 — 진행률·취소·캐시 판정을 서버 워커 API로 위임한다.
 
     run_pipeline은 async라 이벤트 루프에서 돌고, HTTP는 동기 requests를 asyncio.to_thread로
-    감싼다. report(하트비트)는 실패를 삼키고, progress(경계)는 몇 번 재시도 후 포기한다."""
+    감싼다. report(하트비트)는 실패를 삼키고, progress(경계)는 몇 번 재시도 후 포기한다.
 
-    def __init__(self, base: str, key: str, worker_id: str, job_id: str) -> None:
+    **하트비트 응답은 서버→워커 역방향 채널을 겸한다.** 원격 워커는 claim 시점의 스냅샷만
+    받으므로, 클레임 뒤에 도착하는 line_meta(번역·독음)와 취소 요청을 이것으로만 알 수 있다.
+    받은 값은 이 워커 프로세스의 코어 전역(_PENDING_LINE_META·_PENDING_ATTRIBUTION·
+    _CANCEL_REQUESTED)에 그대로 넣는다 — 코어의 정렬 직전 대기(_wait_for_line_meta)는 자기
+    프로세스의 그 전역을 폴링하므로, **인프로세스 경로와 완전히 같은 코드가 같은 상한
+    (LINE_META_WAIT_SEC)으로 원격에서도 돈다** (상한을 양쪽에 따로 적어 어긋나는 일이 없다).
+    대기 중 하트비트는 _stage_monitor가 계속 보내 주므로 서버 리스도 함께 갱신된다."""
+
+    def __init__(
+        self,
+        base: str,
+        key: str,
+        worker_id: str,
+        job_id: str,
+        await_line_meta: bool = False,
+    ) -> None:
         self.base = base
         self.key = key
         self.worker_id = worker_id
         self.job_id = job_id
+        # 늦은 line_meta를 받아야 하는 잡에서만 하트비트에 요청 플래그를 싣고, 한 번 받으면
+        # 내린다 — 2초마다 오는 하트비트에 번역 전문을 매번 되돌려 받지 않기 위해서다.
+        self._want_line_meta = await_line_meta
 
     def _headers(self) -> dict:
         return {"X-Worker-Key": self.key, "X-Worker-Id": self.worker_id}
@@ -938,15 +956,47 @@ class RemoteHooks:
         r.raise_for_status()
         return r.json()
 
+    def _progress_body(self, progress: int, stage: str) -> dict:
+        body: dict = {"progress": progress, "stage": stage}
+        if self._want_line_meta:
+            body["want_line_meta"] = True
+        return body
+
+    def _absorb(self, data: dict) -> None:
+        """하트비트 응답에 실려 온 서버 상태를 이 프로세스의 코어 전역에 반영한다.
+
+        코어는 원격/인프로세스를 구분하지 않고 자기 프로세스의 스태시·취소 집합만 본다.
+        여기서 같은 전역에 넣어 주는 것이 원격 워커의 "도착 통지"다:
+        - line_meta: 빈 리스트도 그대로 넣는다 — 키의 존재 자체가 "붙일 것 없음 확정"
+          신호이고, 그 구분으로 코어가 상한까지 더 기다릴지 즉시 원문 정렬로 갈지 정한다.
+        - cancel_requested: 대기 중(경계가 아닌 시점)에도 취소가 먹어야 하므로 코어 취소
+          집합에 넣는다 — 코어가 폴링 틱마다 확인해 JobCancelled로 대기를 끊는다.
+        """
+        from everyric2.server.worker import request_cancel, stash_attribution, stash_line_meta
+
+        if data.get("cancel_requested"):
+            request_cancel(self.job_id)
+        if not self._want_line_meta:
+            return
+        meta = data.get("line_meta")
+        if meta is None:
+            return  # 아직 안 왔다 (빈 리스트와 다르다) — 계속 요청한다
+        stash_line_meta(self.job_id, meta)
+        attribution = data.get("attribution")
+        if attribution:
+            stash_attribution(self.job_id, attribution)
+        self._want_line_meta = False
+
     async def report(self, progress: int, stage: str) -> None:
         try:
-            await asyncio.to_thread(
+            data = await asyncio.to_thread(
                 self._post,
                 f"/api/worker/jobs/{self.job_id}/progress",
-                {"progress": progress, "stage": stage},
+                self._progress_body(progress, stage),
             )
         except Exception:
-            pass  # 하트비트 보고 실패는 무시 — 경계 progress가 취소를 최종 확인한다
+            return  # 하트비트 보고 실패는 무시 — 경계 progress가 취소를 최종 확인한다
+        self._absorb(data)
 
     async def progress(self, progress: int, stage: str) -> bool:
         last: Exception | None = None
@@ -955,12 +1005,14 @@ class RemoteHooks:
                 data = await asyncio.to_thread(
                     self._post,
                     f"/api/worker/jobs/{self.job_id}/progress",
-                    {"progress": progress, "stage": stage},
+                    self._progress_body(progress, stage),
                 )
-                return not data.get("cancel_requested", False)
             except Exception as e:
                 last = e
                 await asyncio.sleep(1.0 * (attempt + 1))
+                continue
+            self._absorb(data)
+            return not data.get("cancel_requested", False)
         raise RuntimeError(f"진행률 보고가 연속 실패했어요: {last}")
 
     async def cache_check(self, audio_hash: str, audio_path: str) -> bool:
@@ -976,12 +1028,20 @@ class RemoteHooks:
 
 
 def _worker_claim(base: str, key: str, worker_id: str) -> dict:
-    """claim → ClaimResponse dict 전체를 돌려준다 (kind로 sync/link 잡을 구분한다)."""
+    """claim → ClaimResponse dict 전체를 돌려준다 (kind로 sync/link 잡을 구분한다).
+
+    supports_line_meta_heartbeat는 "늦게 오는 line_meta를 하트비트로 받아 정렬 직전에 기다릴
+    수 있다"는 능력 광고다 — 버전 문자열은 릴리스마다 올라가지 않아 능력 판정에 쓸 수 없으므로,
+    서버가 이 잡을 병렬 경로로 줄지(또는 구버전 워커라 경고를 남길지) 이걸로 정한다."""
     import requests
 
     r = requests.post(
         f"{base}/api/worker/claim",
-        json={"worker_id": worker_id, "version": __version__},
+        json={
+            "worker_id": worker_id,
+            "version": __version__,
+            "supports_line_meta_heartbeat": True,
+        },
         headers={"X-Worker-Key": key, "X-Worker-Id": worker_id},
         timeout=30,
     )
@@ -1159,6 +1219,22 @@ async def _process_link_job(base: str, key: str, worker_id: str, link_job: dict)
         console.print(f"[red]링크 결과 제출 실패:[/red] {e}")
 
 
+def _clear_job_state(job_id: str) -> None:
+    """잡 경계에서 이 워커 프로세스의 코어 전역 잔여물을 지운다 (멱등).
+
+    원격 워커는 하트비트로 받은 line_meta·출처·취소를 코어 전역에 넣어 두는데, 워커는 상주
+    프로세스라 지우지 않으면 잡마다 쌓인다 (키가 job_id라 오염은 없지만 메모리는 늘어난다)."""
+    from everyric2.server.worker import (
+        _CANCEL_REQUESTED,
+        _PENDING_ATTRIBUTION,
+        _PENDING_LINE_META,
+    )
+
+    _PENDING_LINE_META.pop(job_id, None)
+    _PENDING_ATTRIBUTION.pop(job_id, None)
+    _CANCEL_REQUESTED.discard(job_id)
+
+
 async def _worker_loop(base: str, key: str, worker_id: str, poll: float, once: bool) -> None:
     from everyric2.gpu_mem import reclaim_after_job
     from everyric2.server.worker import JobInput, PipelineError, run_pipeline
@@ -1197,8 +1273,14 @@ async def _worker_loop(base: str, key: str, worker_id: str, poll: float, once: b
             continue
 
         job_id = job["job_id"]
-        console.print(f"[cyan]잡 클레임:[/cyan] {job_id} (video {job['video_id']})")
-        hooks = RemoteHooks(base, key, worker_id, job_id)
+        # 번역 병렬 잡: line_meta 없이 먼저 내려온 잡 — 다운로드·보컬 분리를 돌리는 동안
+        # 하트비트로 받아 정렬 직전 대기에서 집는다 (구버전 서버는 이 필드를 안 보내므로 False).
+        # **`is None`이어야 한다**: 빈 리스트로 온 것은 "붙일 것 없음 확정"이라 기다릴 게 없다
+        # (falsy 검사로 짜면 그 잡이 아무도 안 보낼 값을 상한까지 기다린다).
+        awaits_meta = bool(job.get("await_line_meta")) and job.get("line_meta") is None
+        suffix = ", 번역 대기" if awaits_meta else ""
+        console.print(f"[cyan]잡 클레임:[/cyan] {job_id} (video {job['video_id']}{suffix})")
+        hooks = RemoteHooks(base, key, worker_id, job_id, await_line_meta=awaits_meta)
         # 서버 미디어 캐시 히트면 audio_url(상대경로)로 온다 — base를 붙이고 워커 키 헤더를 실어
         # run_pipeline의 다운로드 블록이 yt-dlp 대신 HTTP로 받게 한다 (실패 시 yt-dlp 폴백)
         audio_rel = job.get("audio_url")
@@ -1215,6 +1297,7 @@ async def _worker_loop(base: str, key: str, worker_id: str, poll: float, once: b
             audio_url_headers=(
                 {"X-Worker-Key": key, "X-Worker-Id": worker_id} if audio_rel else None
             ),
+            await_line_meta=awaits_meta,
         )
         try:
             result = await run_pipeline(job_input, hooks)
@@ -1237,6 +1320,10 @@ async def _worker_loop(base: str, key: str, worker_id: str, poll: float, once: b
                     console.print(f"[green]잡 완료:[/green] {job_id}")
                 except Exception as e:
                     console.print(f"[red]결과 제출 실패:[/red] {e}")
+
+        # 하트비트로 받아 둔 코어 전역 잔여물 정리 — 상주 워커에 잡마다 쌓이지 않게 한다
+        # (서버는 자기 쪽 스태시를 잡 터미널 지점에서 이미 비운다)
+        _clear_job_state(job_id)
 
         # 잡 경계 VRAM 위생 — 앨로케이터가 사재기한 활성 스파이크 예약을 반환한다
         # (동거 호스트에서 18.4GiB까지 부풀어 본 서비스 기근을 낸 실사고의 재발 방지)

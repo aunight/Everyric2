@@ -3,7 +3,12 @@
  * 붙여넣기 텍스트를 감지해 분해한다.
  * 지원 형태: 빈 줄로 구분된 3줄 블록들, 또는 빈 줄 없이 3줄 주기로 이어지는 텍스트.
  * 확신이 없으면 null — 호출부는 원문 그대로 생성 경로를 탄다.
+ *
+ * **블록을 나누기 전에 파트 표기·주석 줄을 걷어낸다** (lyrics-clean). 표기 한 줄이 섞이면
+ * 3줄 주기가 밀려 블록이 4줄이 되거나 (원문,번역,원문) 꼴로 잘못 잘려 감지 자체가 실패했다.
  */
+
+import { stripPartMarkers } from './lyrics-clean';
 
 export interface TriLine {
   text: string;
@@ -32,7 +37,9 @@ function isKo(s: string): boolean {
 }
 
 export function parseTriLineLyrics(raw: string): TriLine[] | null {
-  const rawLines = raw.split('\n').map(s => s.trim());
+  // 호출부(content.handleGenerate)가 이미 걸러낸 텍스트를 주더라도 판정은 멱등하다 —
+  // 표기를 지운 결과에는 새 표기가 생기지 않으므로 두 번 통과해도 같은 텍스트다
+  const rawLines = stripPartMarkers(raw).text.split('\n').map(s => s.trim());
   const blocks: string[][] = [];
   let cur: string[] = [];
   for (const ln of rawLines) {
@@ -57,7 +64,8 @@ export function parseTriLineLyrics(raw: string): TriLine[] | null {
   if (!triples) return null;
 
   // 각 세트가 (일어, 한글, 한글) 꼴인지 — 80% 이상이면 혼합 가사로 판정.
-  // 간주 표기 등 예외 줄이 섞여도 통과하도록 완전 일치를 요구하지 않는다.
+  // 파트 표기는 위에서 이미 걸러졌지만, 위키가 놓친 표기·영어 삽입 줄 등 예외가 남을 수
+  // 있으므로 완전 일치를 요구하지 않는다.
   let ok = 0;
   for (const [a, b, c] of triples) {
     if (isJa(a) && isKo(b) && isKo(c)) ok++;

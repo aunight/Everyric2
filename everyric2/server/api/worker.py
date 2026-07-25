@@ -12,6 +12,7 @@ GPU 등)가 돌린다. 인증은 X-Worker-Key(EVERYRIC_SERVER_WORKER_KEY) 한 �
 """
 
 import asyncio
+import logging
 import os
 import time
 from typing import Any
@@ -30,6 +31,8 @@ from everyric2.server.db.repository import (
     SyncRepository,
     hash_lyrics,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/worker", tags=["worker"])
 
@@ -72,11 +75,12 @@ def _require_lease(lease_key: str, worker_id: str | None) -> None:
 
 
 def _pop_stashes(job_id: str) -> None:
-    """잡별 인메모리 스태시(발음/번역 메타·출처·강제) 정리 — 완료/실패/취소 시 (멱등)."""
+    """잡별 인메모리 스태시(발음/번역 메타·출처·강제·대기 예고) 정리 — 완료/실패/취소 시 (멱등)."""
     from everyric2.server.worker import (
         _PENDING_ATTRIBUTION,
         _PENDING_FORCE,
         _PENDING_LINE_META,
+        _PENDING_META_WAIT,
         _PENDING_TITLE,
     )
 
@@ -84,6 +88,19 @@ def _pop_stashes(job_id: str) -> None:
     _PENDING_ATTRIBUTION.pop(job_id, None)
     _PENDING_TITLE.pop(job_id, None)
     _PENDING_FORCE.discard(job_id)
+    # 대기 예고는 claim이 peek로 실어 보내므로(재클레임 대비) 터미널 지점에서만 비운다
+    _PENDING_META_WAIT.discard(job_id)
+
+
+def _peek_line_meta(job_id: str) -> list[dict[str, Any]] | None:
+    """대기 중인 line_meta 스태시 조회 (제거하지 않음) — claim·하트비트의 단일 읽기 지점.
+
+    **None과 빈 리스트는 다른 뜻이다**: None은 "아직 안 왔음"(워커는 상한까지 계속 기다린다),
+    빈 리스트는 "붙일 것 없음 확정"(확장이 번역 실패를 알린 것 → 즉시 원문 정렬)이다.
+    이 구분은 코어 스태시의 규약(_PENDING_LINE_META 주석)이고, 워커 API는 그대로 중계만 한다."""
+    from everyric2.server.worker import _PENDING_LINE_META
+
+    return _PENDING_LINE_META.get(job_id)
 
 
 def _cleanup_worker_audio(job_id: str) -> None:
@@ -148,6 +165,12 @@ async def _sweep_expired_leases() -> None:
 class ClaimRequest(BaseModel):
     worker_id: str
     version: str
+    # 이 워커가 하트비트 응답으로 늦은 line_meta를 받아 정렬 직전에 기다릴 수 있는지.
+    # **버전 문자열로는 이 능력을 알 수 없다** — __version__은 릴리스마다 올라가지 않아
+    # (계속 "0.1.0") 구버전 코드를 돌리는 워커도 버전 게이트를 그대로 통과한다. 그래서
+    # 능력은 능력으로 물어본다: 안 보내는 워커에게는 대기를 지시하지 않고(기존 동작 =
+    # 원문 정렬) 서버가 경고를 남겨, 조용한 품질 저하가 로그에 드러나게 한다.
+    supports_line_meta_heartbeat: bool = False
 
 
 class WorkerJob(BaseModel):
@@ -161,6 +184,10 @@ class WorkerJob(BaseModel):
     max_audio_sec: int = 0
     # 서버 미디어 캐시 히트 시 워커가 yt-dlp 대신 받아 갈 오디오 경로 (없으면 yt-dlp).
     audio_url: str | None = None
+    # "line_meta(번역·독음)가 이 잡에는 나중에 온다" — 워커는 다운로드·보컬 분리를 먼저 돌리고
+    # 정렬 진입 직전에 상한을 둔 대기를 한 번 넣는다(하트비트 응답으로 받는다). line_meta가
+    # 이미 실려 있으면 코어가 대기를 만들지 않으므로 함께 와도 무해하다.
+    await_line_meta: bool = False
 
 
 class WorkerLinkJob(BaseModel):
@@ -182,10 +209,22 @@ class ClaimResponse(BaseModel):
 class ProgressRequest(BaseModel):
     progress: int
     stage: str
+    # 늦게 도착하는 line_meta(+출처)를 이 응답에 실어 달라는 요청 — 원격 워커의 번역 병렬 경로.
+    # 워커는 받기 전까지만 켠다: 2초마다 오는 하트비트에 번역 전문을 매번 되돌려 보내지 않기
+    # 위해서다. 이 필드를 모르는 구버전 워커는 보내지 않으므로 기본값에서 기존 동작 그대로다.
+    want_line_meta: bool = False
 
 
 class ProgressResponse(BaseModel):
     cancel_requested: bool = False
+    # want_line_meta를 켠 하트비트에만 채운다. **None과 빈 리스트의 뜻이 다르다** —
+    # None은 "아직 안 왔음"(워커는 상한까지 더 기다린다), 빈 리스트는 "붙일 것 없음 확정"
+    # (워커는 즉시 원문 정렬로 간다). 서버는 스태시 값을 그대로 중계하고 판단은 코어가 한다.
+    line_meta: list[dict[str, Any]] | None = None
+    # line_meta와 함께 붙는 가사 출처 표기 — 같은 attach 호출로 오므로 같은 채널로 보낸다.
+    # 원격 워커는 extra["attribution"]을 자기 쪽에서 조립하므로, 이걸 안 보내면 클레임 뒤에
+    # 도착한 출처가 결과에서 조용히 사라진다 (제목·아티스트는 서버가 저장 시점에 붙여서 무관).
+    attribution: dict[str, Any] | None = None
 
 
 class CacheCheckRequest(BaseModel):
@@ -228,7 +267,10 @@ async def claim_job(request: ClaimRequest, x_worker_key: str | None = Header(def
     sync 잡 우선, 없으면 link 잡을 FIFO로 준다. 버전이 서버와 다르면 409. 만료 리스는 먼저
     스윕해 큐로 되돌린 뒤 선택한다. sync 잡은 확정 직후(claim 락 밖) 미디어 캐시를 조회해
     히트면 audio_url을, 과길이면 즉시 실패시키고 job=null을 돌려준다. line_meta 등 스태시는
-    peek(제거하지 않음)해 재클레임 시 다시 전달되게 한다."""
+    peek(제거하지 않음)해 재클레임 시 다시 전달되게 한다.
+
+    line_meta가 아직 없는 예고 잡(_PENDING_META_WAIT)은 await_line_meta=true로 실어 보낸다 —
+    워커는 다운로드·보컬 분리를 먼저 돌리고 정렬 직전 대기에서 하트비트로 받는다."""
     _require_worker_key(x_worker_key)
     if request.version != __version__:
         raise HTTPException(
@@ -239,7 +281,11 @@ async def claim_job(request: ClaimRequest, x_worker_key: str | None = Header(def
             ),
         )
 
-    from everyric2.server.worker import _PENDING_ATTRIBUTION, _PENDING_FORCE, _PENDING_LINE_META
+    from everyric2.server.worker import (
+        _PENDING_ATTRIBUTION,
+        _PENDING_FORCE,
+        _PENDING_META_WAIT,
+    )
 
     max_audio_sec = get_settings().server.max_job_audio_sec
     sync_job_id: str | None = None
@@ -260,11 +306,23 @@ async def claim_job(request: ClaimRequest, x_worker_key: str | None = Header(def
                     video_id=job.video_id,
                     lyrics=job.lyrics,
                     language=job.language,
-                    line_meta=_PENDING_LINE_META.get(job.id),
+                    line_meta=_peek_line_meta(job.id),
                     attribution=_PENDING_ATTRIBUTION.get(job.id),
                     force=job.id in _PENDING_FORCE,
                     max_audio_sec=max_audio_sec,
+                    await_line_meta=(
+                        job.id in _PENDING_META_WAIT and request.supports_line_meta_heartbeat
+                    ),
                 )
+                if job.id in _PENDING_META_WAIT and not request.supports_line_meta_heartbeat:
+                    # 이 잡은 늦은 번역·독음을 기다려야 하는데 이 워커는 받을 수 없다 →
+                    # 원문 정렬로 떨어져 독음 정렬 품질을 잃는다. 조용히 넘기지 않고 남긴다.
+                    logger.warning(
+                        "Job %s awaits line_meta but worker %s cannot receive it over the "
+                        "heartbeat; it will align on the original text. Update the worker.",
+                        job.id,
+                        request.worker_id,
+                    )
                 sync_job_id = job.id
                 sync_video_id = job.video_id
         if sync_payload is not None:
@@ -336,14 +394,22 @@ async def report_progress(
     """진행률·단계 보고(하트비트 겸) — 응답의 cancel_requested가 true면 워커는 경계에서
     포기하고 아무것도 제출하지 않는다.
 
+    **이 응답은 서버→워커 역방향 채널을 겸한다.** 원격 워커는 claim 시점의 스태시 스냅샷만
+    받으므로, 클레임 뒤에 도착한 line_meta(번역·독음)와 출처를 알 방법이 이것뿐이다 —
+    want_line_meta를 켠 하트비트에 스태시 값을 그대로 실어 보내면, 워커 쪽 코어가 정렬 진입
+    직전 대기에서 그 값을 집어 독음 정렬로 진행한다 (아직 안 옴=None / 없음 확정=빈 리스트).
+    대기 구간에도 _stage_monitor가 2초마다 이 엔드포인트를 치므로 리스가 계속 갱신된다 —
+    갱신이 끊기면 만료 스윕이 잡을 회수해 다른 워커에게 넘기므로, 대기 중 하트비트는 이
+    경로의 필수 전제다.
+
     _set_progress를 경유해 취소 가드(failed↔processing 왕복 방지)를 재사용한다. 취소면
-    스태시를 정리하고, 리스는 남겨 만료 스윕에 맡긴다 — 잡은 cancel API가 이미 failed로
-    마킹했으므로 스윕이 queued로 되돌리지 않는다. (틱/모니터의 잦은 보고가 리스를 지워
-    경계 progress가 리스를 잃는 것을 막으려면 여기서 리스를 건드리지 않아야 한다.)"""
+    스태시를 정리하고(더 실어 보낼 것도 없다), 리스는 남겨 만료 스윕에 맡긴다 — 잡은 cancel
+    API가 이미 failed로 마킹했으므로 스윕이 queued로 되돌리지 않는다. (틱/모니터의 잦은 보고가
+    리스를 지워 경계 progress가 리스를 잃는 것을 막으려면 여기서 리스를 건드리지 않아야 한다.)"""
     _require_worker_key(x_worker_key)
     _require_lease(job_id, x_worker_id)
 
-    from everyric2.server.worker import _CANCEL_REQUESTED, _set_progress
+    from everyric2.server.worker import _CANCEL_REQUESTED, _PENDING_ATTRIBUTION, _set_progress
 
     await _set_progress(job_id, request.progress, request.stage)
     if job_id in _CANCEL_REQUESTED:
@@ -352,7 +418,13 @@ async def report_progress(
     lease = _LEASES.get(job_id)
     if lease:
         _LEASES[job_id] = (lease[0], time.time() + _lease_seconds())
-    return ProgressResponse(cancel_requested=False)
+    if not request.want_line_meta:
+        return ProgressResponse(cancel_requested=False)
+    return ProgressResponse(
+        cancel_requested=False,
+        line_meta=_peek_line_meta(job_id),
+        attribution=_PENDING_ATTRIBUTION.get(job_id),
+    )
 
 
 @router.post("/jobs/{job_id}/cache-check", response_model=CacheCheckResponse)
