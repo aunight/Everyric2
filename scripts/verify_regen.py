@@ -147,7 +147,8 @@ def main() -> None:
         deadline = time.monotonic() + args.timeout
         status = None
         while time.monotonic() < deadline:
-            st = _api(f"/api/job/{job_id}")
+            # 이 배포는 모든 /api에 키를 요구한다 (health까지 401) — 조회에도 싣는다
+            st = _api(f"/api/job/{job_id}", key=key)
             status = st.get("status")
             if status in ("completed", "failed"):
                 break
