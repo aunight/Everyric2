@@ -21,7 +21,12 @@ import pytest
 import torch
 
 from everyric2.alignment.ctc_engine import CTCEngine, _resolve_token_char
-from everyric2.alignment.star_prior import star_frame_scores, vocal_presence_from_f0
+from everyric2.alignment.star_prior import (
+    frame_rms,
+    star_frame_scores,
+    vocal_presence_from_f0,
+    vocal_presence_from_stems,
+)
 from everyric2.config.settings import AlignmentSettings
 from everyric2.inference.prompt import LyricLine
 
@@ -180,6 +185,44 @@ def test_presence_rejects_unusable_signals():
     assert vocal_presence_from_f0(np.array([]), np.array([]), 0.4) is None
     assert vocal_presence_from_f0(np.array([100.0]), np.array([0.0]), 0.4) is None
     assert vocal_presence_from_f0(np.zeros(5), np.zeros(3), 0.4) is None
+
+
+def test_stem_dominance_separates_interlude_from_singing():
+    """우세도 경로 — f0가 못 가른 간주를 스템 비율이 가른다 (실측 근거는 모듈 주석).
+
+    0~6초는 반주만 크고(간주) 6초부터 보컬이 우세한 합성 스템을 만든다. 보컬 스템에
+    간주 «블리드»(작은 잔류 신호)를 일부러 남겨 둔다 — f0 유성 지시자를 죽였던 바로
+    그 조건에서 우세도는 살아 있어야 한다.
+    """
+    sr = 16000
+    t = np.arange(12 * sr) / sr
+    bleed = 0.05 * np.sin(2 * np.pi * 220 * t)  # 간주에도 남는 보컬 스템 잔류
+    voice = np.where(t >= 6.0, 0.5, 0.0) * np.sin(2 * np.pi * 220 * t)
+    vocals = voice + bleed
+    accomp = np.where(t < 6.0, 0.6, 0.2) * np.sin(2 * np.pi * 110 * t)
+    out = vocal_presence_from_stems(vocals, accomp, sr, smooth_sec=0.4)
+    assert out is not None
+    times, presence = out
+    early = presence[(times > 1.0) & (times < 5.0)]
+    late = presence[(times > 7.0) & (times < 11.0)]
+    assert float(early.mean()) < 0.1, "간주(반주 우세)에서 presence가 낮아야 star가 싸다"
+    assert float(late.mean()) > 0.9, "가창(보컬 우세)에서 presence가 높아야 글자가 이긴다"
+
+
+def test_stem_presence_rejects_degenerate_input():
+    assert vocal_presence_from_stems(np.zeros(10), np.zeros(3), 16000) is None
+    assert vocal_presence_from_stems(np.zeros(0), np.zeros(0), 16000) is None
+
+
+def test_frame_rms_grid_convention():
+    sr = 16000
+    w = np.ones(sr)  # 1초 상수 신호 → RMS 1.0 × 100프레임
+    r = frame_rms(w, sr, hop_sec=0.01)
+    assert r.shape == (100,)
+    assert r[50] == pytest.approx(1.0)
+    # 스테레오는 모노 평균 후 계산된다
+    r2 = frame_rms(np.stack([w, -w]), sr, hop_sec=0.01)
+    assert r2[50] == pytest.approx(0.0)
 
 
 def test_star_frame_scores_grid_and_clamp():

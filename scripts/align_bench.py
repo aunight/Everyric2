@@ -132,7 +132,8 @@ def main() -> None:
     ap.add_argument(
         "--configs",
         default="base,star",
-        help="쉼표 구분: base(star 성형 없음) / star(f0 presence 성형)",
+        help="쉼표 구분: base(보컬 스템, star 평평) / star(보컬 스템, 우세도 성형) / "
+        "nosep(믹스 직접 정렬 — 조사 04① 분리 생략 A/B)",
     )
     ap.add_argument("--star-weight", type=float, default=None, help="star 설정 가중치 재정의")
     ap.add_argument("--reuse-vocals", action="store_true", help="분리를 곡당 1회로 고정(편차 원천 제거)")
@@ -147,18 +148,16 @@ def main() -> None:
     import torch
 
     from everyric2.alignment.ctc_engine import CTCEngine
-    from everyric2.alignment.star_prior import vocal_presence_from_f0
+    from everyric2.alignment.star_prior import vocal_presence_from_stems
     from everyric2.audio.loader import AudioLoader
     from everyric2.audio.separator import VocalSeparator
     from everyric2.config.settings import get_settings
     from everyric2.inference.prompt import LyricLine
-    from everyric2.melody.extractor import MelodyExtractor
 
     settings = get_settings()
     configs = [c.strip() for c in args.configs.split(",") if c.strip()]
     loader = AudioLoader()
     separator = VocalSeparator()
-    extractor = MelodyExtractor(settings.melody)
     engine = CTCEngine(settings.alignment)
     star_weight = (
         args.star_weight
@@ -204,22 +203,26 @@ def main() -> None:
 
         for run in range(args.runs):
             if args.reuse_vocals and shared_vocals is not None:
-                vocals = shared_vocals
+                vocals, accomp = shared_vocals
             else:
                 t0 = time.time()
-                vocals = separator.separate(audio, use_gpu=torch.cuda.is_available()).vocals
+                res = separator.separate(audio, use_gpu=torch.cuda.is_available())
+                vocals, accomp = res.vocals, res.accompaniment
                 sep_sec = round(time.time() - t0, 1)
-                shared_vocals = vocals
+                shared_vocals = (vocals, accomp)
             presence = None
             if "star" in configs:
-                f0_hz, f0_times = extractor.precompute_f0(audio, vocals)
-                presence = vocal_presence_from_f0(
-                    f0_hz, f0_times, settings.alignment.star_prior_smooth_sec
+                # 우세도 기반 — f0 유성 지시자는 분리 스템 위에서 대비가 없다 (star_prior.py)
+                presence = vocal_presence_from_stems(
+                    vocals.waveform,
+                    accomp.waveform,
+                    vocals.sample_rate,
+                    settings.alignment.star_prior_smooth_sec,
                 )
             for cfg in configs:
                 t0 = time.time()
                 results = engine.align(
-                    vocals,
+                    audio if cfg.startswith("nosep") else vocals,
                     lyric_lines,
                     language=args.language,
                     forbidden_spans=forbidden or None,

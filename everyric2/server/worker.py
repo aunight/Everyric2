@@ -1006,8 +1006,9 @@ def _estimate_tempo(audio) -> dict[str, Any] | None:
         return None
 
 
-def _separate_vocals(audio):
-    """demucs 보컬 분리 (실패/미설치 시 None) — VAD 클램프와 멜로디 f0가 공유한다.
+def _separate_stems(audio):
+    """demucs 분리 결과 전체 (실패/미설치 시 None) — 보컬은 정렬·VAD·f0가 쓰고,
+    반주는 star 성형의 보컬 우세도 계산(star_prior.vocal_presence_from_stems)이 쓴다.
 
     분리기는 웜 캐시 싱글턴(get_shared_separator)에서 가져와 잡마다 재생성하지 않는다 (WS2-A)."""
     try:
@@ -1019,10 +1020,16 @@ def _separate_vocals(audio):
         if not separator.is_available():
             logger.info("demucs not installed; skipping VAD clamp / using mix for melody")
             return None
-        return separator.separate(audio, use_gpu=torch.cuda.is_available()).vocals
+        return separator.separate(audio, use_gpu=torch.cuda.is_available())
     except Exception:
         logger.exception("Vocal separation failed; skipping VAD clamp")
         return None
+
+
+def _separate_vocals(audio):
+    """demucs 보컬 스템만 (기존 호출부 호환 래퍼)."""
+    result = _separate_stems(audio)
+    return result.vocals if result is not None else None
 
 
 def _repeat_key(text: str) -> str:
@@ -2890,7 +2897,8 @@ def _run_alignment(
         # 훨씬 깨끗해 고밀도 믹스/이펙트 구간에서 정렬 품질이 오른다. 미설치/실패 시 믹스 폴백.
         report("보컬 분리")
         need_vocals = settings.melody.separate_vocals or settings.alignment.align_on_vocals
-        vocals = _separate_vocals(audio) if need_vocals else None
+        sep_result = _separate_stems(audio) if need_vocals else None
+        vocals = sep_result.vocals if sep_result is not None else None
         align_audio = (
             vocals if (vocals is not None and settings.alignment.align_on_vocals) else audio
         )
@@ -2943,17 +2951,27 @@ def _run_alignment(
                     anchor_executor.shutdown(wait=True)
                     anchor_executor = None
 
-        # star 성형: f0 유성 신호로 star 채널의 프레임별 가격을 만든다 (star_prior.py).
-        # f0는 WS2-B로 정렬과 병렬이었지만 성형이 켜지면 정렬의 **입력**이 되므로 여기서
-        # 기다린다 — 분리와 이미 겹쳐 돌았으므로 대기는 f0 추론의 잔여 시간뿐이다.
+        # star 성형: star 채널의 프레임별 가격 신호를 만든다 (star_prior.py).
+        # 1순위는 보컬/반주 스템의 **우세도** — f0 유성 지시자는 분리 스템 위에서 죽는다
+        # (실측: 사고 곡 간주의 f0 presence 0.979 vs 우세도 0.199, star_prior.py 주석).
+        # 순수 numpy라 대기가 없다. 반주 스템이 없을 때만 f0 폴백을 기다린다.
         # 실패·미가용은 평평한 star로 계속한다(성형은 있으면 좋은 신호다). anchor_kw에
         # 싣는 이유: ko/ja/이중정렬/재정렬이 전부 이 dict를 쓰므로 모든 정렬이 같은
         # 가격을 본다 — 한쪽만 성형하면 누출 가드가 성형 차이를 누출로 오독한다.
         if settings.alignment.star_prior and settings.alignment.star_tokens:
-            if f0_future is None:
-                logger.info("Star prior enabled but melody f0 is unavailable; star stays flat")
-            else:
-                try:
+            presence = None
+            try:
+                if sep_result is not None:
+                    from everyric2.alignment.star_prior import vocal_presence_from_stems
+
+                    presence = vocal_presence_from_stems(
+                        sep_result.vocals.waveform,
+                        sep_result.accompaniment.waveform,
+                        sep_result.vocals.sample_rate,
+                        settings.alignment.star_prior_smooth_sec,
+                    )
+                    src = "stem dominance"
+                elif f0_future is not None:
                     t0 = time.monotonic()
                     f0_hz, f0_times = f0_future.result()
                     from everyric2.alignment.star_prior import vocal_presence_from_f0
@@ -2961,16 +2979,18 @@ def _run_alignment(
                     presence = vocal_presence_from_f0(
                         f0_hz, f0_times, settings.alignment.star_prior_smooth_sec
                     )
-                    if presence is None:
-                        logger.info("Star prior: f0 signal unusable; star stays flat")
-                    else:
-                        anchor_kw["vocal_presence"] = presence
-                        logger.info(
-                            f"Star prior: presence from f0 ({len(presence[1])} frames, "
-                            f"waited {time.monotonic() - t0:.1f}s for the parallel f0 pass)"
-                        )
-                except Exception:
-                    logger.exception("Star prior: f0 precompute failed; star stays flat")
+                    src = f"f0 fallback (waited {time.monotonic() - t0:.1f}s)"
+                else:
+                    src = "no signal"
+                if presence is None:
+                    logger.info(f"Star prior: no usable presence ({src}); star stays flat")
+                else:
+                    anchor_kw["vocal_presence"] = presence
+                    logger.info(
+                        f"Star prior: presence from {src} ({len(presence[1])} frames)"
+                    )
+            except Exception:
+                logger.exception("Star prior: presence derivation failed; star stays flat")
 
         report("전사 정렬")
         # 독음(ko) 정렬 경로: 커버리지가 충분하면 한국어 발음 텍스트+kor adapter로 정렬하고
