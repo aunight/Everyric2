@@ -66,6 +66,13 @@ dev = [
 separator = [
     "demucs>=4.0.0",
 ]
+bench = [
+    # scripts/align_bench.py — MIREX 표준 정렬 지표(AAE/PCO/지각 지표)를 재구현하지
+    # 않고 그대로 쓴다 (조사 종합 03절). scipy는 Wilcoxon signed-rank용(librosa가
+    # 이미 끌고 오지만 명시한다).
+    "mir_eval>=0.7",
+    "scipy>=1.10",
+]
 
 mfa = [
     "praatio>=6.0.0",
