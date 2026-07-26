@@ -373,8 +373,8 @@ def derive_anchor_plan(
 
     트랙 선택은 «모든 트랙을 재서 최적을 고른다»가 아니다. 트랙마다 yt-dlp 호출 1회라
     그 방식은 곡당 요청이 두 자리로 간다. 대신 ``tracks``가 사전 정보로 정렬된 게으른
-    이터러블(``youtube_captions.order_anchor_tracks``: 우리 가사의 문자 체계 → 유튜브 신호 →
-    알파벳)이라는 전제 아래, **``min_match``를 넘는 첫 트랙에서 멈춘다.**
+    이터러블(``youtube_captions.order_manual_tracks``: 우리 가사의 문자 체계 → 제목·채널명의
+    문자 체계 → 알파벳)이라는 전제 아래, **``min_match``를 넘는 첫 트랙에서 멈춘다.**
 
     이 전제가 왜 필요한지가 실측으로 드러났다: ``zyRt-nBM3dY``의 수동 트랙은
     ``[ar, zh-TW, en, fil, id, ja, ko, ms, es, th, tr, vi]``로 **``ja``가 알파벳 6번째**다.

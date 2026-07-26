@@ -49,6 +49,8 @@ HTTP_STATUS_BY_CODE = {
     "listing_failed": 502,
     "download_failed": 502,
     "no_captions": 404,
+    "no_manual_captions": 404,
+    "no_original_track": 404,
     "language_undetermined": 404,
     "empty_caption": 404,
     "too_short": 404,
@@ -59,8 +61,9 @@ HTTP_STATUS_BY_CODE = {
 class CaptionUnavailable(Exception):
     """자막으로 가사를 만들 수 없을 때 — code로 실패 사유를 구분한다.
 
-    code: listing_failed | no_captions | language_undetermined | download_failed |
-          empty_caption | too_short | non_cjk_caption
+    code: listing_failed | no_captions | no_manual_captions | no_original_track |
+          language_undetermined | download_failed | empty_caption | too_short |
+          non_cjk_caption
     """
 
     def __init__(self, code: str, message: str):
@@ -255,98 +258,121 @@ def _usable_keys(mapping: dict[str, Any] | None) -> list[str]:
     return [k for k in (mapping or {}) if k != "live_chat"]
 
 
-def detect_original_language(
-    subtitles: dict[str, Any] | None,
-    automatic_captions: dict[str, Any] | None,
-    video_language: str | None = None,
-) -> tuple[str, str] | None:
-    """이 영상 노래의 원어를 사용자 개입 없이 판정한다. (언어코드, 판정근거) 또는 None.
+def body_language(counts: dict[str, int]) -> str | None:
+    """가사 **본문의 문자 구성**에서 언어를 정한다. CJK 문자가 없으면 None.
 
-    실측 근거: 어떤 곡의 트랙 구성은 수동작성 15종(gl/ru/vi/es/ar/en/oc/id/ja/zh/tr/pl/
-    fr/fil/ko) + 자동생성 ja였고 원어는 ja였다. 수동작성 트랙 수는 팬 번역 인기도를
-    따를 뿐 원어와 무관하므로 **다수결·순서로는 절대 고를 수 없다**. 반면 유튜브는
-    원어 오디오에 대해서만 ASR을 만들므로 자동 생성 트랙의 언어가 곧 원어다.
+    `script_lang_hint`와 왜 다른 함수인가: 그쪽은 «틀려도 트랙 순서만 바뀐다»는 전제로 한
+    글자만 있어도 판정한다. 이 함수가 내는 값은 **저장되는 language**이고 그것이 정렬
+    어댑터와 한글 독음 표기 여부를 가르므로, 한 글자로 뒤집히면 안 된다.
+
+    규칙은 저장된 가사 283건을 실측해 정했다 (2026-07-26):
+
+        language=ja 196건 — kana/CJK 비율 최소 0.500 · 중앙 0.755 · hangul 비율 최대 0.088
+        language=ko  83건 — hangul 비율 중앙 1.000
+        language=zh   1건 — han 1.000, kana 0
+
+    그래서 **가나와 한글을 맞대 놓고 많은 쪽**을 고르고, 둘 다 없을 때만 한자를 보고 zh로
+    간다. 한자는 ja/ko 판정에 쓰지 않는다 — 일본어 가사의 한자 비율은 정상적으로 최대
+    0.500까지 올라가므로 «한자가 많으면 중국어»는 일본어 곡을 중국어로 오판한다.
+
+    「가나가 한 글자라도 있으면 ja」(= `script_lang_hint`의 규칙)를 그대로 쓰면 실측에서
+    한 건이 깨진다: `2zilNT7hgFc`는 hangul 485자(98%)에 kana가 8자 섞인 한국 곡인데 ja로
+    판정된다. 비교로 바꾸면 맞는다.
+    """
+    kana, hangul, han = counts.get("kana", 0), counts.get("hangul", 0), counts.get("han", 0)
+    if not (kana or hangul or han):
+        return None
+    if kana or hangul:
+        return "ja" if kana >= hangul else "ko"
+    return "zh"
+
+
+def title_script_hint(info: dict[str, Any]) -> str | None:
+    """제목·채널명의 문자 체계에서 얻는 원어 힌트. 판정할 수 없으면 None.
+
+    **이것이 유튜브 신호를 대신하는 근거다.** 원래 원어 판정은 `-orig` ASR 트랙과
+    `info['language']`에 의존했는데, 자동 더빙·다중 오디오 업로드가 퍼지면서 일본어 곡에
+    `vi-orig`·`th-orig`가 붙는 일이 생겨 전제가 깨졌다(실측). 제목과 채널명은 업로더가 쓴
+    것이고 오디오 트랙 구성과 무관하므로 그 오염을 받지 않는다.
+
+    한계도 분명하다 — 제목이 로마자뿐인 곡(영어 제목을 붙인 보카로 곡 등)에는 힌트가
+    없다. 그때는 None을 돌려주고, 호출부가 «본문이 CJK이기만 하면 받는다»로 느슨하게
+    판정한다. 실측(폐기 44건 전수 조사)에서 제목 문자가 ja/ko인 곡이 38건, 로마자인 곡이
+    6건이었다.
+    """
+    from everyric2.alignment.caption_anchors import script_counts
+
+    text = f"{info.get('title') or ''} {info.get('uploader') or ''}"
+    return body_language(script_counts(text))
+
+
+def order_manual_tracks(
+    info: dict[str, Any], lang_hint: str | None = None, limit: int = 4
+) -> list[str]:
+    """수동 자막 트랙을 «원어일 가능성이 높은 순»으로 정렬해 상한까지 자른다.
+
+    두 소비자가 같은 순서를 쓴다 — 자막 가사 조달(`fetch_lyrics_from_captions`)과 정렬
+    앵커(`iter_manual_caption_events`). 순서 규칙이 갈리면 한쪽에서 옳은 트랙이 다른 쪽에서
+    밀린다.
 
     우선순위:
-      ① asr_orig — yt-dlp가 원어 ASR에 붙이는 '-orig' 접미사 트랙. 자동 생성 목록에는
-         번역본 ~150종이 함께 들어오므로 '-orig'만이 원어를 가린다.
-      ② asr_only — 번역본이 노출되지 않아 자동 트랙이 하나뿐이면 그게 ASR 원어다.
-      ③ video_language — yt-dlp가 기본 오디오 트랙에서 뽑은 info['language'].
-         해당 언어의 자막이 실제로 있을 때만 인정한다.
-      ④ sole_manual — 업로더 자막이 딱 하나면 그게 가사일 가능성이 가장 높다.
+      ① lang_hint — 이미 가진 가사의 문자 체계에서 얻은 언어. 앵커 경로에만 있는 신호이고
+         (가사가 있어야 나온다) 자막 목록 구성에 흔들리지 않아 가장 강하다.
+      ② title_script_hint — 제목·채널명의 문자 체계. 가사가 없는 조달 경로의 주 신호다.
+      ③ 나머지는 키 알파벳순 (재현 가능한 순서)
+
+    유튜브 쪽 신호(`-orig` ASR 트랙, `info['language']`)는 **쓰지 않는다.** 자동 더빙·다중
+    오디오 업로드에서 일본어 곡에 `vi-orig`·`th-orig`가 붙는 것이 실측으로 확인됐고
+    (`zyRt-nBM3dY`), 그 신호를 순서에 넣으면 틀린 트랙을 먼저 받아 보게 된다. 받아 본 뒤의
+    본문 검증도 그것을 걸러내지 못한다 — 베트남어 ASR 전사가 베트남어 문자를 내는 것은
+    당연하기 때문이다.
+
+    트랙 하나가 yt-dlp 호출 1회이므로 상한을 둔다.
     """
-    auto_keys = _usable_keys(automatic_captions)
-    manual_keys = _usable_keys(subtitles)
+    keys = manual_track_keys(info)
+    if not keys:
+        return []
+    priors = [base_lang(lang_hint) if lang_hint else None, title_script_hint(info)]
 
-    orig = sorted(k for k in auto_keys if k.endswith("-orig"))
-    if orig:
-        return base_lang(orig[0]), "asr_orig"
+    def rank(key: str) -> tuple[int, str]:
+        b = base_lang(key)
+        for i, p in enumerate(priors):
+            if p and b == p:
+                return (i, key)
+        return (len(priors), key)
 
-    if len(auto_keys) == 1:
-        return base_lang(auto_keys[0]), "asr_only"
-
-    if video_language:
-        lang = base_lang(video_language)
-        if any(base_lang(k) == lang for k in (*manual_keys, *auto_keys)):
-            return lang, "video_language"
-
-    if len(manual_keys) == 1:
-        return base_lang(manual_keys[0]), "sole_manual"
-
-    return None
+    return sorted(keys, key=rank)[: max(0, limit)]
 
 
-def _match_key(mapping: dict[str, Any] | None, lang: str, prefer_orig: bool = False) -> str | None:
-    """해당 언어의 트랙 키를 고른다 — 정확 일치 > ('-orig') > 같은 기저 언어."""
-    keys = _usable_keys(mapping)
-    if prefer_orig and f"{lang}-orig" in keys:
-        return f"{lang}-orig"
-    if lang in keys:
-        return lang
-    same = sorted(k for k in keys if base_lang(k) == lang)
-    return same[0] if same else None
+def verify_track_body(hint: str | None, counts: dict[str, int]) -> str | None:
+    """받아 본 트랙 본문이 원어 가사로 쓸 만한가 — 쓸 만하면 그 언어를, 아니면 None.
 
+    두 관문이다:
 
-def select_original_track(info: dict[str, Any]) -> TrackChoice:
-    """원어를 판정하고 그 언어의 트랙 하나를 고른다.
+    ① **CJK 문자가 하나라도 있어야 한다.** 우리가 다루는 곡은 압도적으로 일본어·한국어다.
+       라틴 전용 본문은 진짜 비CJK 곡보다 «엉뚱한 언어의 ASR 전사거나 팬 번역»일 확률이
+       훨씬 높다(실측: 폐기 44건 중 진짜 비CJK 곡은 2건뿐이었다).
+    ② **제목 힌트가 있으면 본문이 그것과 같아야 한다.** 제목이 일본어인데 본문이 한글이면
+       그 트랙은 원어가 아니라 한국어 팬 번역이다. 이 관문이 없으면 «수동 자막이 하나뿐이면
+       원어»라는 옛 규칙이 남긴 오염이 그대로 통과한다(MoRef 집계: `sole_manual` 근거로
+       고른 트랙의 62.5%가 오염이었다).
 
-    같은 언어에 업로더 자막과 자동 생성이 모두 있으면 **업로더 자막을 쓴다** — 자동
-    생성은 가사 오인식이 많아 정렬 텍스트로서 품질이 떨어진다.
+    힌트가 없으면(제목이 로마자뿐인 곡) ①만 본다 — 느슨하지만 그 경우 반박할 근거가 없다.
+
+    ②에는 예외가 하나 있다. **한자는 일본어와 중국어가 공유하는 문자다.** 본문에 가나도
+    한글도 없이 한자만 있으면 `body_language`는 zh를 내지만, 그것만으로 두 언어를 가릴 수는
+    없다 — 짧은 자막이나 한자 위주 줄에서 실제로 일어난다(실측: language=ja 196건의 한자
+    비율이 최대 0.500까지 올라간다). 그래서 그 경우는 제목 힌트를 따른다. 반대 방향은
+    거른다 — 가나가 있는 본문은 중국어 곡의 가사가 아니다.
     """
-    subtitles = info.get("subtitles") or {}
-    autos = info.get("automatic_captions") or {}
-    if not _usable_keys(subtitles) and not _usable_keys(autos):
-        raise CaptionUnavailable("no_captions", "이 영상에는 자막이 없어요")
-
-    detected = detect_original_language(subtitles, autos, info.get("language"))
-    if not detected:
-        raise CaptionUnavailable(
-            "language_undetermined",
-            "자막은 있지만 어느 것이 이 노래의 원어인지 판단하지 못했어요",
-        )
-    lang, reason = detected
-
-    manual_key = _match_key(subtitles, lang)
-    if manual_key:
-        return TrackChoice(
-            lang=manual_key,
-            auto=False,
-            label=track_label(subtitles.get(manual_key), manual_key, False),
-            reason=reason,
-            language=lang,
-        )
-    auto_key = _match_key(autos, lang, prefer_orig=True)
-    if auto_key:
-        return TrackChoice(
-            lang=auto_key,
-            auto=True,
-            label=track_label(autos.get(auto_key), auto_key, True),
-            reason=reason,
-            language=lang,
-        )
-    raise CaptionUnavailable(
-        "language_undetermined", f"원어({lang})로 판정했지만 해당 언어 자막이 없어요"
-    )
+    lang = body_language(counts)
+    if lang is None:
+        return None
+    if hint and lang != hint:
+        if lang == "zh" and hint in ("ja", "zh"):
+            return hint
+        return None
+    return lang
 
 
 # ── 자막 → 가사 텍스트 정리 ───────────────────────────────────────
@@ -525,6 +551,20 @@ def _require_cjk_enabled() -> bool:
         return True
 
 
+# 본문을 받아 볼 수동 트랙 상한 — 트랙 하나가 yt-dlp 호출 1회다. 설정을 못 읽으면
+# 기본값으로 계속한다(조달을 멈출 이유가 아니다).
+_PROBE_LIMIT_FALLBACK = 4
+
+
+def _probe_limit() -> int:
+    try:
+        from everyric2.config.settings import get_settings
+
+        return max(1, int(get_settings().server.caption_track_probe_limit))
+    except Exception:  # pragma: no cover - 설정 로드 실패는 조달을 멈추는 사유가 아니다
+        return _PROBE_LIMIT_FALLBACK
+
+
 # ── 한 번에: video_id → 가사 ──────────────────────────────────────
 
 
@@ -538,34 +578,94 @@ def fetch_lyrics_from_captions(video_id: str) -> CaptionLyrics:
         raise CaptionUnavailable("listing_failed", "invalid video_id")
 
     info = extract_caption_info(video_id)
-    track = select_original_track(info)
-    raw_lines = download_track_lines(video_id, track.lang, track.auto)
-    lines = clean_caption_lines(raw_lines, merge_rolling=track.auto)
-    if len(lines) < MIN_LYRIC_LINES:
+    manual = manual_track_keys(info)
+    if not manual:
+        # 자동 생성(ASR)만 있는 영상이 여기로 온다. ASR 전사는 가사로 쓰지 않는다 —
+        # 사용자 확인(2026-07-26): 표시는 되지만 인식 품질이 가사로 쓸 수준이 아니다.
+        # 코드에도 처음부터 «자동 생성은 가사 오인식이 많다»고 적혀 있었고, 언어 라벨까지
+        # 못 믿는다는 것이 실측으로 확인됐다(일본어 곡에 vi-orig·th-orig).
         raise CaptionUnavailable(
-            "too_short",
-            f"자막에서 쓸 만한 가사 줄이 {len(lines)}줄뿐이라 가사로 쓸 수 없어요",
+            "no_manual_captions",
+            "이 영상에는 사람이 쓴 자막이 없어요 (자동 생성 자막은 가사로 쓰지 않아요)",
         )
-    counts = caption_script_counts(lines)
-    # 판정 근거를 항상 남긴다 — 오염 규모를 사후에 세는 유일한 자료다 (MoRef soak 집계용)
-    logger.info(
-        f"caption lyrics for {video_id}: lang={track.lang} auto={track.auto} "
-        f"reason={track.reason} lines={len(lines)} script={counts}"
+
+    hint = title_script_hint(info)
+    require_cjk = _require_cjk_enabled()
+    # (트랙, 사유코드) — 전부 같은 사유로 떨어졌으면 그 사유를 그대로 전한다. 「자막이
+    # 효과음뿐이라 줄이 부족하다」를 「원어 트랙이 없다」로 뭉개면 안내가 틀린다.
+    rejected: list[tuple[str, str]] = []
+
+    # 후보를 순서대로 **받아 보고 본문으로 판정한다.** 목록만 보고 고를 수 없다는 것이
+    # 이 경로의 핵심 교훈이다 — 트랙의 언어 코드는 «그 트랙이 무슨 언어인가»만 말하고
+    # «이 곡의 원어가 무엇인가»는 말하지 않는다. 팬 번역 트랙도 자기 언어와 일치한다.
+    for key in order_manual_tracks(info, hint, _probe_limit()):
+        if not LANG_RE.match(key):
+            continue
+        try:
+            raw_lines = download_track_lines(video_id, key, auto=False)
+        except CaptionUnavailable as e:
+            rejected.append((key, e.code))
+            continue
+        lines = clean_caption_lines(raw_lines, merge_rolling=False)
+        if len(lines) < MIN_LYRIC_LINES:
+            rejected.append((key, "too_short"))
+            continue
+        counts = caption_script_counts(lines)
+        lang = verify_track_body(hint, counts)
+        # 판정 근거를 항상 남긴다 — 오염 규모를 사후에 세는 유일한 자료다 (MoRef soak 집계용)
+        logger.info(
+            f"caption lyrics probe {video_id}: track={key} hint={hint} body={lang} "
+            f"lines={len(lines)} script={counts}"
+        )
+        if lang is None and require_cjk:
+            rejected.append((key, "body_mismatch" if has_cjk_script(counts) else "non_cjk"))
+            continue
+        return CaptionLyrics(
+            track=TrackChoice(
+                lang=key,
+                auto=False,
+                label=track_label((info.get("subtitles") or {}).get(key), key, False),
+                # 어느 근거로 이 트랙을 받았는지 — 사후 집계가 이 문자열로 갈린다
+                reason="title_script" if hint else "body_script",
+                # **트랙 코드가 아니라 본문에서 유도한 언어를 쓴다.** 이것이 이 변경의
+                # 핵심이다: 한국 팬이 일본어 원문을 ko 트랙에 올리는 일이 흔해서, 트랙
+                # 코드를 그대로 쓰면 일본어 가사가 language=ko로 저장된다(실측 33건).
+                # 그러면 한국어 어댑터로 정렬되고 한글 독음도 붙지 않는다.
+                language=lang or base_lang(key),
+            ),
+            lines=lines,
+        )
+
+    logger.warning(
+        f"caption lyrics rejected for {video_id}: no usable original track among {manual} "
+        f"(hint={hint}, probed={rejected}). A manual track whose body script disagrees with the "
+        f"title is a fan translation, not the original; a body with no kana/hangul/han is far more "
+        f"likely to be a wrong-language transcript than a genuine non-CJK song "
+        f"(measured: only 2 of 44 purged songs were genuinely non-CJK)"
     )
-    if _require_cjk_enabled() and not has_cjk_script(counts):
-        logger.warning(
-            f"caption lyrics rejected for {video_id}: track {track.lang} (reason={track.reason}) "
-            f"has no kana/hangul/han in {counts['total']} char(s) (latin={counts['latin']}). "
-            f"YouTube's original-language signal is unreliable for dubbed/multi-audio uploads "
-            f"(measured: vi-orig and th-orig on Japanese songs), so a non-CJK caption is far more "
-            f"likely to be an ASR transcript in the wrong language than a genuine non-CJK song"
-        )
+    detail = ", ".join(f"{k}:{c}" for k, c in rejected) or "받아 볼 트랙이 없었어요"
+    codes = {c for _, c in rejected}
+
+    # 후보 전부가 같은 사유로 떨어졌고 그 사유가 그대로 전할 만한 것이면 그것을 쓴다.
+    # 「자막이 효과음뿐이다」와 「원어 트랙이 없다」는 사용자가 할 일이 다르다.
+    if codes == {"too_short"}:
         raise CaptionUnavailable(
-            "non_cjk_caption",
-            f"이 영상의 자막이 {track.label} 한 종류인데 일본어·한국어 문자가 전혀 없어요 — "
-            f"유튜브가 원어를 잘못 알려 주는 경우라 가사로 쓰면 엉뚱한 내용이 저장돼요",
+            "too_short", "자막에서 쓸 만한 가사 줄이 너무 적어 가사로 쓸 수 없어요"
         )
-    return CaptionLyrics(track=track, lines=lines)
+    if codes == {"empty_caption"} or codes == {"download_failed"}:
+        raise CaptionUnavailable(next(iter(codes)), f"자막을 받지 못했어요 ({detail})")
+
+    if hint and codes and codes != {"non_cjk"}:
+        raise CaptionUnavailable(
+            "no_original_track",
+            f"사람이 쓴 자막은 있는데 이 곡의 원어({hint}) 가사인 트랙이 없어요 — "
+            f"팬 번역 자막만 있는 경우예요 ({detail})",
+        )
+    raise CaptionUnavailable(
+        "non_cjk_caption",
+        f"사람이 쓴 자막에 일본어·한국어 문자가 전혀 없어요 — 유튜브가 원어를 잘못 알려 "
+        f"주는 경우라 가사로 쓰면 엉뚱한 내용이 저장돼요 ({detail})",
+    )
 
 
 # ── 정렬 앵커용: 타임스탬프를 살린 수동 자막 트랙 ─────────────────
@@ -578,44 +678,6 @@ def manual_track_keys(info: dict[str, Any]) -> list[str]:
     어긋난다 — 앵커로 쓰면 없는 구조를 만들어낸다. 앵커는 «사람이 찍은 시각»만 쓴다.
     """
     return _usable_keys(info.get("subtitles"))
-
-
-def order_anchor_tracks(
-    info: dict[str, Any], lang_hint: str | None = None, limit: int = 5
-) -> list[str]:
-    """앵커 후보 수동 트랙을 «원어일 가능성이 높은 순»으로 정렬해 상한까지 자른다.
-
-    원어 판정은 **트랙을 받아 우리 가사와 맞춰 보는 것**이 가장 견고하다(실측: 어떤 곡은
-    수동 15종 중 원어가 ja인데 `select_original_track`이 vi를 골랐다 — asr 트랙이 없으면
-    `detect_original_language`의 근거가 전부 무너진다). 다만 트랙마다 yt-dlp 호출 1회라
-    전부 받을 수는 없으므로, 받아 볼 순서만 사전 정보로 정한다:
-
-      ① lang_hint — 우리 가사의 문자 체계에서 얻은 언어(가나가 있으면 ja 등). 가사 자체에서
-         나온 신호라 자막 목록 구성에 흔들리지 않는다.
-      ② detect_original_language — asr-orig 등 유튜브 쪽 신호 (있으면 강하다)
-      ③ info['language'] — 기본 오디오 트랙 언어
-      ④ 나머지는 키 알파벳순 (재현 가능한 순서)
-    """
-    keys = manual_track_keys(info)
-    if not keys:
-        return []
-    detected = detect_original_language(
-        info.get("subtitles"), info.get("automatic_captions"), info.get("language")
-    )
-    priors = [
-        base_lang(lang_hint) if lang_hint else None,
-        detected[0] if detected else None,
-        base_lang(info.get("language") or "") or None,
-    ]
-
-    def rank(key: str) -> tuple[int, str]:
-        b = base_lang(key)
-        for i, p in enumerate(priors):
-            if p and b == p:
-                return (i, key)
-        return (len(priors), key)
-
-    return sorted(keys, key=rank)[: max(0, limit)]
 
 
 def iter_manual_caption_events(video_id: str, lang_hint: str | None = None, limit: int = 5):
@@ -633,7 +695,7 @@ def iter_manual_caption_events(video_id: str, lang_hint: str | None = None, limi
     except Exception:
         logger.info(f"caption anchors: listing failed for {video_id}; continuing without anchors")
         return
-    for lang in order_anchor_tracks(info, lang_hint, limit):
+    for lang in order_manual_tracks(info, lang_hint, limit):
         if not LANG_RE.match(lang):
             continue
         try:

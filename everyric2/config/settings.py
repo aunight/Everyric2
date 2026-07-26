@@ -585,14 +585,17 @@ class AlignmentSettings(BaseSettings):
         "caption_anchor_min_match and stops, because each extra track is another yt-dlp download and "
         "'download them all, keep the maximum' pushes a single song into double-digit requests. "
         "Candidate ORDER carries the accuracy: our lyrics' own script first (kana/hangul/han → "
-        "ja/ko/zh), then detect_original_language, then the video's audio language, then alphabetical. "
+        "ja/ko/zh), then the script of the video title and channel name, then alphabetical. "
         "Both halves of that design are measured on zyRt-nBM3dY: its manual tracks are "
         "[ar, zh-TW, en, fil, id, ja, ko, ms, es, th, tr, vi], so 'ja' is SIXTH alphabetically — a "
         "cap of 5 over an alphabetical list picks zh-TW at 11% match and the anchors get discarded "
-        "(ja scores 79%). YouTube's own signals do not rescue it either: select_original_track "
-        "returns 'vi' for this video. With the script prior the right track is first and one request "
-        "settles it; the bound only matters when the prior is absent (Latin-script lyrics), and 6 "
-        "keeps even an alphabetical walk able to reach a 'ja'-shaped position.",
+        "(ja scores 79%). YouTube's own signals are deliberately NOT used in the order: its "
+        "'-orig' ASR track and info['language'] both say 'vi' for this Japanese song, because "
+        "auto-dubbing and multi-audio uploads broke the premise that YouTube only builds ASR for "
+        "the original audio. With the script prior the right track is first and one request "
+        "settles it; the bound only matters when the prior is absent (Latin-script lyrics AND a "
+        "Latin-script title), and 6 keeps even an alphabetical walk able to reach a 'ja'-shaped "
+        "position.",
     )
 
     caption_anchor_max_forbidden_ratio: float = Field(
@@ -850,25 +853,36 @@ class ServerSettings(BaseSettings):
     )
     caption_require_cjk: bool = Field(
         default=True,
-        description="Refuse to build lyrics from a YouTube caption track that contains no kana, "
-        "hangul or han at all. This is a CONTAMINATION GATE for a measured bug in YouTube's "
+        description="Refuse to build lyrics from a YouTube caption track whose body contains no "
+        "kana, hangul or han at all. This is a CONTAMINATION GATE for a measured bug in YouTube's "
         "original-language signal, not a language policy: zyRt-nBM3dY is a Japanese Vocaloid song "
-        "whose video_language is 'vi' and whose only '-orig' ASR track is 'vi-orig', so "
-        "detect_original_language returns ('vi', 'asr_orig') and the caption path would store a "
-        "VIETNAMESE ASR transcript of Japanese audio as the song's lyrics (reproduced with 'th-orig' "
-        "on another song in the overnight batch rehearsal). The premise both of its rules rest on — "
-        "'YouTube only builds ASR for the original audio' — broke when auto-dubbing and multi-audio "
-        "tracks spread. A proper fix needs the AUDIO to settle the language and is a separate piece "
-        "of work; the selection rules in select_original_track are deliberately left untouched. "
-        "The anchor path's rule (pick the track that matches our lyrics) cannot help here either: "
-        "that path HAS lyrics to match against, this one is building them. Nor can script agreement "
-        "— a vi-orig track really does emit Vietnamese script, so 'does the caption match the "
-        "detected language' passes. So the gate is scope, not refutation: our corpus is "
-        "overwhelmingly Japanese and Korean. THE COST IS EXPLICIT — a genuinely English (or other "
-        "Latin-script) song loses its caption path and falls back to pasted lyrics, which is a far "
-        "smaller loss than wrong lyrics accumulating in the corpus. 'None at all' rather than a "
-        "percentage keeps that cost as small as possible: romaji-glossed Japanese, half-English "
-        "K-pop, and Latin-titled tracks all still pass. Set false to disable.",
+        "whose video_language is 'vi' and whose only '-orig' ASR track is 'vi-orig', so the old "
+        "detection returned ('vi', 'asr_orig') and the caption path stored a VIETNAMESE ASR "
+        "transcript of Japanese audio as the song's lyrics (reproduced with 'th-orig' on another "
+        "song). The premise those rules rested on — 'YouTube only builds ASR for the original "
+        "audio' — broke when auto-dubbing and multi-audio tracks spread. THE SELECTION RULES HAVE "
+        "SINCE BEEN REPLACED (youtube_captions: manual tracks only, ordered by the script of the "
+        "title/channel, each candidate downloaded and judged by its own body script), so this gate "
+        "is no longer the only defence — it is the last one, for the case where the title gives no "
+        "hint and the body is Latin-only. Script agreement alone cannot refute the bug: a vi-orig "
+        "track really does emit Vietnamese script. So the gate is scope, not refutation: our corpus "
+        "is overwhelmingly Japanese and Korean. THE COST IS EXPLICIT AND MEASURED — of the 44 songs "
+        "purged in the 2026-07-26 overnight batch, only 2 (4.5%) were genuinely non-CJK; the rest "
+        "had Japanese or Korean titles and a mis-picked track. A genuinely English song loses its "
+        "caption path and falls back to pasted lyrics. 'None at all' rather than a percentage keeps "
+        "that cost as small as possible: romaji-glossed Japanese, half-English K-pop, and "
+        "Latin-titled tracks all still pass. Set false to disable.",
+    )
+
+    caption_track_probe_limit: int = Field(
+        default=4,
+        description="How many manual caption tracks to download and judge before giving up on the "
+        "caption path. The track list alone cannot identify the original language — a fan "
+        "translation's language code agrees with its own body just as the original's does — so the "
+        "only reliable test is to fetch a candidate and look at what script its text is in. Each "
+        "track costs one yt-dlp call, hence the cap. 4 is enough in practice because the ordering "
+        "puts the title's script first: on the 2026-07-26 batch, 82 of the songs that had a manual "
+        "track had one matching their title's script.",
     )
 
     max_job_audio_sec: int = Field(

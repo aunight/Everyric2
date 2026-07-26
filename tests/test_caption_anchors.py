@@ -26,7 +26,7 @@ from everyric2.alignment.caption_anchors import (
     script_lang_hint,
     span_candidates,
 )
-from everyric2.server.services.youtube_captions import manual_track_keys, order_anchor_tracks
+from everyric2.server.services.youtube_captions import manual_track_keys, order_manual_tracks
 
 # 우리 가사 (위키에서 온 것 — 크레디트가 없다). idx 8~10은 자막에 없어 매칭되지 않는다.
 LYRICS = [
@@ -336,7 +336,7 @@ def test_plan_gives_up_after_the_candidate_bound():
 
     실측 근거: zyRt-nBM3dY의 수동 트랙은 알파벳순으로 ja가 6번째다. 상한 5개로 자르고 최적을
     고르는 방식이면 zh-TW(11%)가 뽑혀 앵커가 버려졌다. 순서를 문자 체계로 정하는 것이
-    상한보다 중요하다 — 그 순서는 `order_anchor_tracks`가 만든다.
+    상한보다 중요하다 — 그 순서는 `order_manual_tracks`가 만든다.
     """
     junk = [(f"t{i}", [_ev(1.0, 3.0, "全然違う歌詞です")]) for i in range(6)]
     plan = derive_anchor_plan(LYRICS, junk, audio_sec=240.0)
@@ -419,7 +419,7 @@ def test_asr_tracks_are_never_anchor_candidates():
     assert "vi-orig" not in keys and "ja" in keys
     assert set(keys) == set(MANY_TRACKS["subtitles"])
     # 후보 순서에도 자동 생성은 끼지 않는다
-    assert all(not k.endswith("-orig") for k in order_anchor_tracks(MANY_TRACKS, "ja", 5))
+    assert all(not k.endswith("-orig") for k in order_manual_tracks(MANY_TRACKS, "ja", 5))
 
 
 def test_live_chat_is_not_a_caption_track():
@@ -437,16 +437,24 @@ def test_our_lyrics_script_orders_the_candidates_over_youtube_signals():
     assert alphabetical.index("ja") == 5, "실측 트랙 구성이 아니다 (ja가 6번째여야 한다)"
     assert "ja" not in alphabetical[:5], "상한 5개로 자르면 ja가 빠지는 구성이어야 한다"
 
-    order = order_anchor_tracks(MANY_TRACKS, script_lang_hint("\n".join(LYRICS)), 5)
+    order = order_manual_tracks(MANY_TRACKS, script_lang_hint("\n".join(LYRICS)), 5)
     assert order[0] == "ja", "우리 가사의 문자 체계가 ja를 첫 후보로 올려야 한다"
     assert len(order) == 5, "후보 트랙 수에 상한이 있어야 한다 (트랙당 다운로드 1회)"
-    # 힌트가 없으면 유튜브 신호로 떨어진다 — 이 곡에서는 그것이 vi이고, ja를 놓친다
-    assert order_anchor_tracks(MANY_TRACKS, None, 5)[0] == "vi"
-    assert "ja" not in order_anchor_tracks(MANY_TRACKS, None, 5)
+    # 유튜브 신호(vi-orig · language=vi)는 순서에 **쓰지 않는다**. 자동 더빙 업로드에서
+    # 일본어 곡에 vi-orig가 붙는 것이 실측으로 확인됐고, 그 신호를 순서에 넣으면 틀린
+    # 트랙을 먼저 받아 본다. 힌트도 제목도 없으면 재현 가능한 알파벳순으로 떨어진다.
+    no_hint = order_manual_tracks(MANY_TRACKS, None, 5)
+    assert no_hint[0] == "ar", f"유튜브 신호를 따라갔다: {no_hint}"
+    assert "vi" not in no_hint
+    assert "ja" not in no_hint, "힌트가 없으면 상한 안에 ja가 들어오지 않는다"
+
+    # 실제 영상에는 제목이 있고, 그것이 가사 힌트를 대신한다
+    with_title = order_manual_tracks({**MANY_TRACKS, "title": "シニカルナイトプラン"}, None, 5)
+    assert with_title[0] == "ja", f"제목의 문자 체계가 ja를 올려야 한다: {with_title}"
 
 
 def test_no_manual_track_yields_no_candidates():
-    assert order_anchor_tracks({"automatic_captions": {"ja-orig": [{}]}}, "ja", 5) == []
+    assert order_manual_tracks({"automatic_captions": {"ja-orig": [{}]}}, "ja", 5) == []
 
 
 @pytest.mark.parametrize(

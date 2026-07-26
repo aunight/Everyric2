@@ -61,100 +61,152 @@ def _lines(*texts: str) -> list[dict]:
 # ── 원어 판정 규칙 ────────────────────────────────────────────────
 
 
-def test_detect_prefers_asr_orig_language_over_manual_majority():
-    """수동작성 15종 중 어느 것도 아니고, ASR 원어(ja)가 답이다."""
-    assert yc.detect_original_language(MANUAL_15, AUTO_WITH_ORIG) == ("ja", "asr_orig")
+def _counts(kana=0, hangul=0, han=0, latin=0):
+    return {"kana": kana, "hangul": hangul, "han": han, "latin": latin,
+            "total": kana + hangul + han + latin}
 
 
-def test_detect_ignores_translation_only_auto_tracks_without_orig():
-    """'-orig'가 없고 자동 트랙이 여럿이면 그건 번역본 목록 — ASR 신호가 아니다."""
-    autos = {"en": [{}], "ko": [{}], "es": [{}]}
-    assert yc.detect_original_language({"ja": [{}], "en": [{}]}, autos) is None
+# 임계는 저장된 가사 283건 실측(2026-07-26)에서 나왔다:
+#   language=ja 196건 — kana/CJK 비율 최소 0.500 · 중앙 0.755 · hangul 비율 최대 0.088
+#   language=ko  83건 — hangul 비율 중앙 1.000
+#   language=zh   1건 — han 1.000, kana 0
 
 
-def test_detect_falls_back_to_sole_auto_track():
-    """번역본이 노출되지 않아 자동 트랙이 하나뿐이면 그게 ASR 원어다."""
-    assert yc.detect_original_language(MANUAL_15, {"ja": [{}]}) == ("ja", "asr_only")
+def test_body_language_reads_japanese_from_kana_even_with_many_kanji():
+    """일본어 가사의 한자 비율은 정상적으로 0.500까지 올라간다 — 한자가 많다고 중국어가 아니다."""
+    assert yc.body_language(_counts(kana=755, han=245)) == "ja"
+    assert yc.body_language(_counts(kana=500, han=500)) == "ja"
 
 
-def test_detect_falls_back_to_video_language():
-    """ASR이 없으면 yt-dlp가 기본 오디오에서 뽑은 info['language']를 쓴다."""
-    hit = yc.detect_original_language(MANUAL_15, {}, video_language="ja-JP")
-    assert hit == ("ja", "video_language")
+def test_body_language_compares_kana_against_hangul_instead_of_any_presence():
+    """실측 반례 — 2zilNT7hgFc는 hangul 485자(98%)에 kana가 8자 섞인 한국 곡이다.
+
+    「가나가 한 글자라도 있으면 ja」(script_lang_hint의 규칙)는 이 곡을 일본어로 판정한다.
+    저장되는 language는 정렬 어댑터와 독음 표기를 가르므로 한 글자로 뒤집혀선 안 된다.
+    """
+    assert yc.body_language(_counts(kana=8, hangul=485, latin=135)) == "ko"
 
 
-def test_detect_rejects_video_language_without_matching_track():
-    """오디오 언어가 ja라도 ja 자막이 없으면 그 판정으로 트랙을 고를 수 없다."""
-    assert yc.detect_original_language({"en": [{}], "ko": [{}]}, {}, video_language="ja") is None
+def test_body_language_needs_han_only_for_chinese():
+    assert yc.body_language(_counts(han=100)) == "zh"
+    # 가나가 있으면 중국어가 아니다 — 중국어 가사에 가나가 나올 이유가 없다
+    assert yc.body_language(_counts(kana=1, han=100)) == "ja"
 
 
-def test_detect_falls_back_to_sole_manual_track():
-    assert yc.detect_original_language({"ko": [{}]}, {}) == ("ko", "sole_manual")
+def test_body_language_is_none_without_any_cjk():
+    assert yc.body_language(_counts(latin=500)) is None
+    assert yc.body_language(_counts()) is None
 
 
-def test_detect_returns_none_when_undeterminable():
-    assert yc.detect_original_language({"en": [{}], "ko": [{}]}, {}) is None
-    assert yc.detect_original_language({}, {}) is None
+def test_title_script_hint_uses_title_and_channel():
+    """유튜브 신호(-orig · info['language'])를 대신하는 근거 — 업로더가 쓴 글자다."""
+    assert yc.title_script_hint({"title": "YOASOBI「アイドル」 Official"}) == "ja"
+    assert yc.title_script_hint({"title": "[MV] 아이유 - 밤편지"}) == "ko"
+    # 제목이 로마자뿐이면 채널명이 남은 단서다
+    assert yc.title_script_hint({"title": "Overdose", "uploader": "なとり"}) == "ja"
 
 
-# ── 트랙 선택 ─────────────────────────────────────────────────────
+def test_title_script_hint_is_none_for_latin_only():
+    """영어 제목을 붙인 곡에는 힌트가 없다 — 실측 폐기 44건 중 6건이 이 부류였다."""
+    assert yc.title_script_hint({"title": "ROSE & Bruno Mars - APT.", "uploader": "ROSE"}) is None
+    assert yc.title_script_hint({}) is None
 
 
-def test_select_prefers_manual_track_of_the_detected_language():
-    """자동 생성은 가사 오인식이 많다 — 같은 언어 수동작성이 있으면 그쪽."""
-    choice = yc.select_original_track(
-        {"subtitles": MANUAL_15, "automatic_captions": AUTO_WITH_ORIG}
-    )
-    assert (choice.lang, choice.auto, choice.language) == ("ja", False, "ja")
-    assert choice.reason == "asr_orig"
-    assert choice.label == "JA"
+def test_verify_accepts_body_matching_the_title_script():
+    assert yc.verify_track_body("ja", _counts(kana=100, han=30)) == "ja"
 
 
-def test_select_uses_orig_auto_track_when_no_manual_in_that_language():
-    choice = yc.select_original_track(
-        {"subtitles": {"en": [{}], "ko": [{}]}, "automatic_captions": AUTO_WITH_ORIG}
-    )
-    assert (choice.lang, choice.auto, choice.language) == ("ja-orig", True, "ja")
-    assert "자동 생성" in choice.label
+def test_verify_rejects_fan_translation_whose_body_disagrees_with_the_title():
+    """제목이 일본어인데 본문이 한글이면 그 트랙은 원어가 아니라 한국어 팬 번역이다.
+
+    이 관문이 없으면 «수동 자막이 하나뿐이면 원어»라는 옛 규칙의 오염이 그대로 통과한다
+    (MoRef 집계: sole_manual 근거로 고른 트랙의 62.5%가 오염).
+    """
+    assert yc.verify_track_body("ja", _counts(hangul=400)) is None
 
 
-def test_select_matches_regional_manual_variant():
-    """판정 언어가 'ja'인데 트랙 키가 'ja-JP'뿐이어도 같은 언어로 붙는다."""
-    choice = yc.select_original_track(
-        {"subtitles": {"ja-JP": [{"name": "日本語"}], "en": [{}]},
-         "automatic_captions": {"ja-orig": [{}], "en": [{}]}}
-    )
-    assert (choice.lang, choice.auto) == ("ja-JP", False)
+def test_verify_falls_back_to_cjk_presence_without_a_hint():
+    """제목에 힌트가 없으면 반박할 근거가 없다 — CJK이기만 하면 받는다."""
+    assert yc.verify_track_body(None, _counts(kana=100)) == "ja"
+    assert yc.verify_track_body(None, _counts(latin=300)) is None
 
 
-def test_select_raises_when_no_captions_at_all():
-    with pytest.raises(yc.CaptionUnavailable) as e:
-        yc.select_original_track({"subtitles": {}, "automatic_captions": {}})
-    assert e.value.code == "no_captions"
+def test_verify_follows_the_title_when_the_body_is_kanji_only():
+    """한자는 일본어·중국어가 공유하는 문자다 — 그것만으로는 두 언어를 가릴 수 없다.
+
+    실측: language=ja 196건의 한자 비율이 최대 0.500까지 올라간다. 짧은 자막이나 한자
+    위주 줄에서는 가나가 아예 없을 수 있는데, 그것을 «중국어라서 제목과 불일치»로 버리면
+    일본어 곡의 자막을 잃는다.
+    """
+    assert yc.verify_track_body("ja", _counts(han=9)) == "ja"
+    assert yc.verify_track_body("zh", _counts(han=9)) == "zh"
+
+
+def test_verify_does_not_accept_kana_for_a_chinese_title():
+    """반대 방향은 거른다 — 가나가 있는 본문은 중국어 곡의 가사가 아니다."""
+    assert yc.verify_track_body("zh", _counts(kana=100, han=20)) is None
+
+
+def test_order_puts_the_title_script_language_first_not_the_majority():
+    """수동작성 트랙 수는 팬 번역 인기도를 따를 뿐 원어와 무관하다 — 다수결·순서로는
+    절대 고를 수 없다(실측: 수동 15종 중 원어가 ja인 곡)."""
+    info = {"subtitles": MANUAL_15, "title": "隠しきれない / 初音ミク"}
+    assert yc.order_manual_tracks(info, None, 4)[0] == "ja"
+
+
+def test_order_ignores_youtube_original_language_signals():
+    """자동 더빙 업로드에서 일본어 곡에 vi-orig가 붙는다(실측 zyRt-nBM3dY) — 그 신호를
+    순서에 넣으면 틀린 트랙을 먼저 받아 본다."""
+    info = {
+        "subtitles": {"ja": [{}], "vi": [{}]},
+        "automatic_captions": {"vi-orig": [{}]},
+        "language": "vi",
+        "title": "シニカルナイトプラン / 初音ミク",
+    }
+    assert yc.order_manual_tracks(info, None, 2)[0] == "ja"
+
+
+def test_order_prefers_our_own_lyrics_hint_over_the_title():
+    """가사가 이미 있으면 그 문자 체계가 제목보다 강한 신호다(앵커 경로)."""
+    info = {"subtitles": {"ja": [{}], "ko": [{}]}, "title": "밤편지 (Japanese ver.)"}
+    assert yc.order_manual_tracks(info, "ja", 2)[0] == "ja"
+
+
+def test_order_excludes_auto_tracks_and_live_chat():
+    info = {"subtitles": {"ja": [{}], "live_chat": [{}]}, "automatic_captions": {"ja-orig": [{}]}}
+    assert yc.order_manual_tracks(info, None, 5) == ["ja"]
+
+
+def test_manual_only_means_asr_video_has_no_caption_path():
+    """자동 생성만 있는 영상은 자막 경로를 쓰지 않는다.
+
+    ASR 전사는 가사로 쓰지 않는다 — 사용자 확인(2026-07-26): 표시는 되지만 인식 품질이
+    가사로 쓸 수준이 아니다. 언어 라벨까지 못 믿는다는 것도 실측으로 확인됐다(일본어 곡에
+    vi-orig · th-orig). 실측 대가: 어젯밤 300곡 중 97곡이 ASR만 있었다.
+    """
+    with _ytdlp({"subtitles": {}, "automatic_captions": {"ja-orig": [{}], "vi-orig": [{}]}}, []):
+        with pytest.raises(yc.CaptionUnavailable) as e:
+            yc.fetch_lyrics_from_captions(VIDEO)
+    assert e.value.code == "no_manual_captions"
     assert e.value.http_status == 404
     assert e.value.terminal is True
 
 
-def test_select_raises_when_language_undeterminable():
-    with pytest.raises(yc.CaptionUnavailable) as e:
-        yc.select_original_track({"subtitles": {"en": [{}], "ko": [{}]}, "automatic_captions": {}})
-    assert e.value.code == "language_undetermined"
-
-
 def test_live_chat_is_not_a_caption_track():
-    """라이브 채팅 리플레이가 유일한 '자막'이면 자막이 없는 것과 같다."""
-    with pytest.raises(yc.CaptionUnavailable) as e:
-        yc.select_original_track({"subtitles": {"live_chat": [{}]}, "automatic_captions": {}})
-    assert e.value.code == "no_captions"
+    """라이브 채팅 리플레이가 유일한 '자막'이면 사람이 쓴 자막이 없는 것과 같다."""
+    with _ytdlp({"subtitles": {"live_chat": [{}]}, "automatic_captions": {}}, []):
+        with pytest.raises(yc.CaptionUnavailable) as e:
+            yc.fetch_lyrics_from_captions(VIDEO)
+    assert e.value.code == "no_manual_captions"
 
 
 def test_align_language_only_passed_for_engine_supported_langs():
     """CTC가 모르는 언어 코드를 그대로 넘기면 엉뚱한 어댑터가 잡힌다 — None으로 비운다."""
     ja = yc.CaptionLyrics(
-        track=yc.TrackChoice("ja", False, "JA", "asr_orig", "ja"), lines=["a", "b", "c"]
+        track=yc.TrackChoice("ja", False, "JA", "title_script", "ja"), lines=["a", "b", "c"]
     )
     gl = yc.CaptionLyrics(
-        track=yc.TrackChoice("gl", False, "GL", "sole_manual", "gl"), lines=["a", "b", "c"]
+        track=yc.TrackChoice("gl", False, "GL", "body_script", "gl"), lines=["a", "b", "c"]
     )
     assert ja.align_language == "ja"
     assert gl.align_language is None
@@ -216,8 +268,13 @@ def test_json3_events_to_lines_still_exported_from_router_module():
 
 @contextlib.contextmanager
 def _ytdlp(info, lines):
-    """extract_caption_info / download_track_lines만 갈아끼운다 — 판정·정리는 실코드."""
-    calls: dict = {}
+    """extract_caption_info / download_track_lines만 갈아끼운다 — 판정·정리는 실코드.
+
+    `lines`가 dict면 **트랙별 본문**이다. 이 경로는 후보를 순서대로 받아 보고 본문으로
+    판정하므로, 모든 트랙에 같은 텍스트를 주면 «어느 트랙을 받았는지»가 판정에 아무 영향을
+    주지 않아 검증이 무의미해진다. dict에 없는 트랙은 `empty_caption`으로 떨어진다.
+    """
+    calls: dict = {"tracks": []}
 
     def fake_extract(video_id):
         calls["video_id"] = video_id
@@ -225,6 +282,11 @@ def _ytdlp(info, lines):
 
     def fake_download(video_id, lang, auto):
         calls["track"] = (lang, auto)
+        calls["tracks"].append(lang)
+        if isinstance(lines, dict):
+            if lang not in lines:
+                raise yc.CaptionUnavailable("empty_caption", f"no {lang}")
+            return lines[lang]
         return lines
 
     orig = (yc.extract_caption_info, yc.download_track_lines)
@@ -237,21 +299,68 @@ def _ytdlp(info, lines):
 
 
 def test_fetch_lyrics_uses_selected_track_and_cleans_text():
-    info = {"subtitles": MANUAL_15, "automatic_captions": AUTO_WITH_ORIG}
+    info = {"subtitles": MANUAL_15, "automatic_captions": AUTO_WITH_ORIG,
+            "title": "隠しきれない / 初音ミク"}
     raw = _lines("[음악]", "隠しきれない", "隠しきれない", ">> 次の行", "三行目")
-    with _ytdlp(info, raw) as calls:
+    with _ytdlp(info, {"ja": raw}) as calls:
         found = yc.fetch_lyrics_from_captions(VIDEO)
-    assert calls["track"] == ("ja", False)  # 수동작성 ja 트랙
+    assert calls["tracks"] == ["ja"]  # 제목 문자와 맞는 트랙을 첫 번째로 받았다
     assert found.lines == ["隠しきれない", "次の行", "三行目"]
     assert found.text == "隠しきれない\n次の行\n三行目"
-    assert found.track.reason == "asr_orig"
+    assert found.track.reason == "title_script"
     assert found.align_language == "ja"
 
 
+def test_fetch_lyrics_takes_the_language_from_the_body_not_the_track_code():
+    """한국 팬이 일본어 원문을 ko 트랙에 올리는 일이 흔하다 — 트랙 코드를 그대로 쓰면
+    일본어 가사가 language=ko로 저장된다(실측: 살아 있는 싱크 33건이 그 상태였다).
+    그러면 한국어 어댑터로 정렬되고 한글 독음도 붙지 않는다."""
+    info = {"subtitles": {"ko": [{}]}, "title": "初音ミク - メルト"}
+    with _ytdlp(info, {"ko": _lines("隠しきれない", "次の行", "三行目")}):
+        found = yc.fetch_lyrics_from_captions(VIDEO)
+    assert found.track.lang == "ko"  # 받아 온 트랙은 ko다
+    assert found.track.language == "ja"  # 저장되는 언어는 본문에서 온다
+    assert found.align_language == "ja"
+
+
+def test_fetch_lyrics_skips_a_fan_translation_and_takes_the_original():
+    """제목이 일본어인 곡에서 ko 본문 트랙은 팬 번역이다 — 건너뛰고 ja를 받아야 한다."""
+    info = {"subtitles": {"en": [{}], "ko": [{}], "ja": [{}]}, "title": "初音ミク - メルト"}
+    bodies = {
+        "ko": _lines("숨길 수 없는", "다음 줄", "세 번째 줄"),
+        "ja": _lines("隠しきれない", "次の行", "三行目"),
+        "en": _lines("cannot hide", "next line", "third line"),
+    }
+    with _ytdlp(info, bodies) as calls:
+        found = yc.fetch_lyrics_from_captions(VIDEO)
+    assert calls["tracks"][0] == "ja", "제목 문자와 맞는 트랙을 먼저 받아야 한다"
+    assert found.lines == ["隠しきれない", "次の行", "三行目"]
+    assert found.track.language == "ja"
+
+
+def test_fetch_lyrics_rejects_when_only_fan_translations_exist():
+    """제목은 일본어인데 일본어 자막이 없으면 팬 번역만 있는 것이다 — 가사로 쓰면 안 된다."""
+    info = {"subtitles": {"ko": [{}], "en": [{}]}, "title": "初音ミク - メルト"}
+    bodies = {
+        "ko": _lines("숨길 수 없는", "다음 줄", "세 번째 줄"),
+        "en": _lines("cannot hide", "next line", "third line"),
+    }
+    with _ytdlp(info, bodies):
+        with pytest.raises(yc.CaptionUnavailable) as e:
+            yc.fetch_lyrics_from_captions(VIDEO)
+    assert e.value.code == "no_original_track"
+    assert e.value.terminal is True
+
+
 def test_fetch_lyrics_rejects_caption_with_too_few_usable_lines():
-    """자막이 안내 문구·효과음뿐이면 GPU를 태우기 전에 거절한다."""
-    info = {"subtitles": {"ja": [{}]}, "automatic_captions": {"ja-orig": [{}]}}
-    with _ytdlp(info, _lines("[음악]", "구독과 좋아요")):
+    """자막이 안내 문구·효과음뿐이면 GPU를 태우기 전에 거절한다.
+
+    후보가 전부 같은 사유로 떨어졌으면 그 사유를 그대로 전한다 — 「가사 줄이 부족하다」를
+    「원어 트랙이 없다」로 뭉개면 사용자가 할 일이 달라진다.
+    """
+    info = {"subtitles": {"ja": [{}]}, "automatic_captions": {"ja-orig": [{}]},
+            "title": "初音ミク"}
+    with _ytdlp(info, {"ja": _lines("[음악]", "구독과 좋아요")}):
         with pytest.raises(yc.CaptionUnavailable) as e:
             yc.fetch_lyrics_from_captions(VIDEO)
     assert e.value.code == "too_short"
@@ -262,7 +371,28 @@ def test_fetch_lyrics_rejects_video_without_captions():
     with _ytdlp({"subtitles": {}, "automatic_captions": {}}, []):
         with pytest.raises(yc.CaptionUnavailable) as e:
             yc.fetch_lyrics_from_captions(VIDEO)
-    assert e.value.code == "no_captions"
+    assert e.value.code == "no_manual_captions"
+
+
+def test_fetch_lyrics_accepts_cjk_body_when_the_title_gives_no_hint():
+    """영어 제목을 붙인 보카로 곡 — 힌트가 없으면 CJK이기만 하면 받는다."""
+    info = {"subtitles": {"ja": [{}]}, "title": "GUMI - KING (Kanaria)"}
+    with _ytdlp(info, {"ja": _lines("隠しきれない", "次の行", "三行目")}):
+        found = yc.fetch_lyrics_from_captions(VIDEO)
+    assert found.track.reason == "body_script"
+    assert found.track.language == "ja"
+
+
+def test_fetch_lyrics_rejects_latin_only_body_without_a_hint():
+    """제목도 본문도 로마자면 원어를 반박할 근거가 없다 — CJK 게이트가 막는다.
+
+    실측 대가: 폐기 44건 중 진짜 비CJK 곡은 2건(4.5%)뿐이었다.
+    """
+    info = {"subtitles": {"en": [{}]}, "title": "INSANE (Hazbin Hotel Song)"}
+    with _ytdlp(info, {"en": _lines("cannot hide", "next line", "third line")}):
+        with pytest.raises(yc.CaptionUnavailable) as e:
+            yc.fetch_lyrics_from_captions(VIDEO)
+    assert e.value.code == "non_cjk_caption"
 
 
 def test_fetch_lyrics_rejects_malformed_video_id():
@@ -303,7 +433,13 @@ async def _env(**server_overrides):
         await engine.dispose()
 
 
-CAPTION_INFO = {"subtitles": MANUAL_15, "automatic_captions": AUTO_WITH_ORIG}
+# 제목을 함께 둔다 — 원어 판정이 제목·채널명의 문자 체계에서 나오므로, 제목이 없으면
+# 힌트가 없어 알파벳순 첫 트랙(ar)을 받아 본다. 실제 영상에는 제목이 항상 있다.
+CAPTION_INFO = {
+    "subtitles": MANUAL_15,
+    "automatic_captions": AUTO_WITH_ORIG,
+    "title": "熱異常 / いよわ",
+}
 CAPTION_RAW = _lines("一行目", "二行目", "三行目")
 CAPTION_LYRICS = "一行目\n二行目\n三行目"
 
@@ -319,7 +455,7 @@ def test_generate_from_caption_creates_job_through_generate_path():
                     BackgroundTasks(),
                 )
             assert resp.status == "processing"
-            assert (resp.lang, resp.auto, resp.reason) == ("ja", False, "asr_orig")
+            assert (resp.lang, resp.auto, resp.reason) == ("ja", False, "title_script")
             assert resp.line_count == 3
 
             async with sm() as s:
@@ -387,18 +523,34 @@ def test_generate_from_caption_joins_active_job_instead_of_duplicating():
     asyncio.run(body())
 
 
-def test_generate_from_caption_uses_auto_track_when_no_manual_original():
+def test_generate_from_caption_never_falls_back_to_an_auto_track():
+    """수동 자막에 원어가 없으면 ASR 원어 트랙이 있어도 쓰지 않는다.
+
+    예전에는 `ja-orig` ASR 트랙으로 폴백했다. 사용자 확인(2026-07-26)으로 그 전사의 인식
+    품질이 가사로 쓸 수준이 아님이 확정됐고, 언어 라벨도 못 믿는다는 것이 실측으로
+    확인됐다(일본어 곡에 vi-orig · th-orig). ASR은 순서 결정에도 쓰지 않는다.
+    """
+
     async def body():
-        async with _env(local_worker=False):
-            info = {"subtitles": {"en": [{}], "ko": [{}]}, "automatic_captions": AUTO_WITH_ORIG}
-            with _ytdlp(info, CAPTION_RAW) as calls:
-                resp = await generate_sync_from_caption(
-                    GenerateFromCaptionRequest(video_id=VIDEO), BackgroundTasks()
-                )
-            assert calls["track"] == ("ja-orig", True)
-            assert resp.auto is True
-            assert resp.lang == "ja-orig"
-            assert "자동 생성" in resp.track_label
+        async with _env(local_worker=False) as sm:
+            # 제목은 일본어인데 수동 자막은 en·ko뿐이고, ASR에는 ja-orig가 있다
+            info = {
+                "subtitles": {"en": [{}], "ko": [{}]},
+                "automatic_captions": AUTO_WITH_ORIG,
+                "title": "熱異常 / いよわ",
+            }
+            bodies = {"en": _lines("line one", "line two", "line three"),
+                      "ko": _lines("첫 줄", "둘째 줄", "셋째 줄")}
+            with _ytdlp(info, bodies) as calls:
+                with pytest.raises(HTTPException) as e:
+                    await generate_sync_from_caption(
+                        GenerateFromCaptionRequest(video_id=VIDEO), BackgroundTasks()
+                    )
+            assert e.value.detail["code"] == "no_original_track"
+            assert "ja-orig" not in calls["tracks"], "ASR 트랙을 받아 봤다"
+            # 실패한 요청은 잡을 만들지 않는다
+            async with sm() as s:
+                assert (await s.execute(select(Job))).scalars().all() == []
 
     asyncio.run(body())
 
@@ -406,14 +558,17 @@ def test_generate_from_caption_uses_auto_track_when_no_manual_original():
 @pytest.mark.parametrize(
     "info,raw,code,status",
     [
-        ({"subtitles": {}, "automatic_captions": {}}, [], "no_captions", 404),
+        # 자막이 아예 없는 경우와 ASR만 있는 경우가 같은 코드로 떨어진다 — 어느 쪽이든
+        # 사용자가 할 일은 «가사를 직접 붙여넣기»다
+        ({"subtitles": {}, "automatic_captions": {}}, [], "no_manual_captions", 404),
         (
-            {"subtitles": {"en": [{}], "ko": [{}]}, "automatic_captions": {}},
+            {"subtitles": {}, "automatic_captions": {"ja-orig": [{}], "vi-orig": [{}]}},
             [],
-            "language_undetermined",
+            "no_manual_captions",
             404,
         ),
-        ({"subtitles": {"ja": [{}]}, "automatic_captions": {"ja-orig": [{}]}},
+        ({"subtitles": {"ja": [{}]}, "automatic_captions": {"ja-orig": [{}]},
+          "title": "熱異常"},
          _lines("[음악]"), "too_short", 404),
     ],
 )

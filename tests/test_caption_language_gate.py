@@ -38,7 +38,7 @@ def _lines(*texts):
 @contextlib.contextmanager
 def _ytdlp(info, lines):
     """extract_caption_info / download_track_lines만 갈아끼운다 — 판정·정리·게이트는 실코드."""
-    calls: dict = {}
+    calls: dict = {"tracks": []}
 
     def fake_extract(video_id):
         calls["video_id"] = video_id
@@ -46,6 +46,7 @@ def _ytdlp(info, lines):
 
     def fake_download(video_id, lang, auto):
         calls["track"] = (lang, auto)
+        calls["tracks"].append(lang)
         return lines
 
     orig = (yc.extract_caption_info, yc.download_track_lines)
@@ -74,15 +75,23 @@ def _gate(enabled: bool):
 
 
 def test_youtube_signals_really_do_point_at_the_wrong_language():
-    """판정 규칙은 건드리지 않는다 — 다만 그 규칙이 이 영상에서 vi를 고른다는 사실을 못박는다.
+    """유튜브 신호가 이 영상에서 vi를 가리킨다는 **사실**을 못박는다.
 
-    이 단언이 깨지면 근본 수정이 들어온 것이므로 게이트의 근거도 다시 봐야 한다.
+    이것이 판정에서 유튜브 신호를 빼기로 한 근거다. 신호 자체는 그대로 있으므로 (실측
+    데이터가 바뀐 것이 아니다) 그 사실을 여기서 확인하고, 아래에서 우리 판정이 그것을
+    따르지 않는 것을 확인한다.
     """
-    detected = yc.detect_original_language(
-        REAL_INFO["subtitles"], REAL_INFO["automatic_captions"], REAL_INFO["language"]
-    )
-    assert detected == ("vi", "asr_orig")
-    assert yc.select_original_track(REAL_INFO).language == "vi"
+    assert REAL_INFO["language"] == "vi"
+    assert [k for k in REAL_INFO["automatic_captions"] if k.endswith("-orig")] == ["vi-orig"]
+
+
+def test_our_ordering_does_not_follow_those_signals():
+    """옛 판정은 vi-orig를 1순위로 봐서 vi 트랙을 골랐다 — 이제 그 신호를 쓰지 않는다."""
+    order = yc.order_manual_tracks(REAL_INFO, None, 12)
+    assert order[0] != "vi", f"유튜브 신호를 따라갔다: {order}"
+    # 제목이 일본어면 그것이 ja를 첫 후보로 올린다 (실제 영상에는 제목이 있다)
+    titled = yc.order_manual_tracks({**REAL_INFO, "title": "シニカルナイトプラン"}, None, 12)
+    assert titled[0] == "ja"
 
 
 # --------------------------------------------------------------------------
@@ -99,7 +108,9 @@ def test_latin_only_caption_is_refused_with_a_reason():
     with _gate(True), _ytdlp(REAL_INFO, vietnamese_asr) as calls:
         with pytest.raises(yc.CaptionUnavailable) as e:
             yc.fetch_lyrics_from_captions(VIDEO)
-    assert calls["track"] == ("vi", False)  # 규칙이 vi를 골랐다 (그대로 둔다)
+    # 후보를 여러 개 받아 봤지만 어느 것도 CJK가 아니라 전부 떨어졌다 (이 목은 모든 트랙에
+    # 같은 베트남어 본문을 준다 — 자동 더빙 업로드에서 팬 번역 트랙까지 오염된 상황이다)
+    assert calls["tracks"] and all(not k.endswith("-orig") for k in calls["tracks"])
     assert e.value.code == "non_cjk_caption"
     # 4xx = 이 영상은 자막으로 안 된다는 확정 판정 → 클라이언트가 붙여넣기로 안내한다
     assert e.value.http_status == 404
