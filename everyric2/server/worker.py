@@ -2943,6 +2943,35 @@ def _run_alignment(
                     anchor_executor.shutdown(wait=True)
                     anchor_executor = None
 
+        # star 성형: f0 유성 신호로 star 채널의 프레임별 가격을 만든다 (star_prior.py).
+        # f0는 WS2-B로 정렬과 병렬이었지만 성형이 켜지면 정렬의 **입력**이 되므로 여기서
+        # 기다린다 — 분리와 이미 겹쳐 돌았으므로 대기는 f0 추론의 잔여 시간뿐이다.
+        # 실패·미가용은 평평한 star로 계속한다(성형은 있으면 좋은 신호다). anchor_kw에
+        # 싣는 이유: ko/ja/이중정렬/재정렬이 전부 이 dict를 쓰므로 모든 정렬이 같은
+        # 가격을 본다 — 한쪽만 성형하면 누출 가드가 성형 차이를 누출로 오독한다.
+        if settings.alignment.star_prior and settings.alignment.star_tokens:
+            if f0_future is None:
+                logger.info("Star prior enabled but melody f0 is unavailable; star stays flat")
+            else:
+                try:
+                    t0 = time.monotonic()
+                    f0_hz, f0_times = f0_future.result()
+                    from everyric2.alignment.star_prior import vocal_presence_from_f0
+
+                    presence = vocal_presence_from_f0(
+                        f0_hz, f0_times, settings.alignment.star_prior_smooth_sec
+                    )
+                    if presence is None:
+                        logger.info("Star prior: f0 signal unusable; star stays flat")
+                    else:
+                        anchor_kw["vocal_presence"] = presence
+                        logger.info(
+                            f"Star prior: presence from f0 ({len(presence[1])} frames, "
+                            f"waited {time.monotonic() - t0:.1f}s for the parallel f0 pass)"
+                        )
+                except Exception:
+                    logger.exception("Star prior: f0 precompute failed; star stays flat")
+
         report("전사 정렬")
         # 독음(ko) 정렬 경로: 커버리지가 충분하면 한국어 발음 텍스트+kor adapter로 정렬하고
         # 원문 라인에 역매핑한다. 미달/실패 시 원문 정렬로 폴백 (회귀 0).

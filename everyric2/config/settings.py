@@ -177,6 +177,37 @@ class AlignmentSettings(BaseSettings):
         "stretching neighboring lines",
     )
 
+    star_prior: bool = Field(
+        default=False,
+        description="Shape the <star> channel's per-frame score by vocal presence (f0 "
+        "voicedness) instead of the constant log(1.0)=0. With a constant score the star "
+        "absorbs anywhere at zero cost, so on flat-posterior songs (synthesized vocals) every "
+        "placement ties and the DP crams lyrics forward or into interludes, with the tie "
+        "broken by floating-point noise (measured: up to 21.74s run-to-run drift, interlude "
+        "misplacement on zyRt-nBM3dY). Pricing star at -star_prior_weight×presence makes "
+        "absorbing an interlude cheaper than absorbing sung audio — a per-frame price, not a "
+        "prohibition, so unlike the hard -1e4 mask it removes the tie instead of relocating "
+        "it (alignment/star_prior.py). Needs star_tokens and the melody f0 precompute; falls "
+        "back to the flat star when f0 is unavailable. OFF until the 3-song real-audio A/B "
+        "lands; flip with measured numbers.",
+    )
+    star_prior_weight: float = Field(
+        default=2.0,
+        description="Star cost in nats/frame at full vocal presence (star_prior). Must sit "
+        "between 0 (no preference — the old tie) and a typical wrong-character log-prob "
+        "(~-3 nats/frame on MMS adapters): raise it past that and star stops absorbing real "
+        "ad-libs (its original job) because emitting any character gets cheaper than star. "
+        "Each character that occupies a voiced frame saves exactly this many nats of star "
+        "cost, so this is also the per-frame margin by which placements stop tying.",
+    )
+    star_prior_smooth_sec: float = Field(
+        default=0.4,
+        description="Moving-average window (seconds) over the 10ms f0 voiced indicator before "
+        "it prices the star channel. Unvoiced consonants (s/t/k…) and breaths zero f0 for "
+        "tens of ms mid-line; unsmoothed they would make star free inside sung lines. 0.4s "
+        "bridges those gaps while keeping interlude edges within ~0.2s (window half-width).",
+    )
+
     use_pronunciation: bool = Field(
         default=True,
         description="When line-level Korean pronunciation (독음, e.g. from the Vocaloid lyrics "

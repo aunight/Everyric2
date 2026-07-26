@@ -577,6 +577,9 @@ class CTCEngine(BaseAlignmentEngine):
         # 직전 정렬의 자막 앵커 판정 기록 (금지 구간·실행가능성·손실·채택) — 사후 감사용.
         # 앵커를 주지 않은 정렬에서는 None이다.
         self._last_caption_anchor: dict[str, Any] | None = None
+        # 직전 정렬의 star 성형 기록 (weight·가격이 매겨진 프레임 비율) — presence를 주지
+        # 않은 정렬에서는 None이다.
+        self._last_star_prior: dict[str, Any] | None = None
         # 직전 정렬의 오디오 심판 판정 기록 (line_idx 오름차순). 워커가 로그·디버그 메타에
         # 실어 실오디오에서 판정 근거를 되짚을 수 있게 한다 — 조용히 바꾸면 사후 추적 불가.
         self._last_referee: list[dict] = []
@@ -1108,6 +1111,7 @@ class CTCEngine(BaseAlignmentEngine):
         referee_margins: dict[int, float] | None = None,
         forbidden_spans: list[tuple[float, float]] | None = None,
         line_starts: dict[int, float] | None = None,
+        vocal_presence: tuple | None = None,
     ) -> list[SyncResult]:
         device = self._get_device()
 
@@ -1136,12 +1140,40 @@ class CTCEngine(BaseAlignmentEngine):
         # log(1.0)=0.0이라 argmax가 항상 star를 고르고, 후보 비교도 실제 토큰 확률로만
         # 해야 한다. 슬라이스로 보므로 텐서 복사가 없다(star를 붙인 뒤엔 뷰가 된다).
         base_dim = star_id
+        num_frames = int(emission.shape[1])
+        audio_length = waveform.shape[0] / 16000
+        ratio = audio_length / num_frames
         if use_star:
             star_col = torch.zeros(
                 (emission.shape[0], emission.shape[1], 1),
                 dtype=emission.dtype,
                 device=emission.device,
             )
+            # star의 상수 0(=log 1)은 «어디서 흡수할지»에 선호가 없다는 뜻이고, 균일 바닥
+            # posterior에서는 그 동점이 간주 오배치·재실행 비결정성의 뿌리다. f0 유성
+            # presence가 주어지면 프레임별로 가격을 매긴다 — 유성 프레임의 star가
+            # -weight×presence로 비싸져 star는 간주로, 글자는 가창 구간으로 간다.
+            # 금지(-1e4)가 아니라 가격이라 남은 자리가 동점으로 남지 않는다
+            # (전체 근거는 alignment/star_prior.py 모듈 주석).
+            prior_weight = float(getattr(self.config, "star_prior_weight", 0.0) or 0.0)
+            if vocal_presence is not None and prior_weight > 0:
+                from everyric2.alignment.star_prior import star_frame_scores
+
+                vals = star_frame_scores(
+                    vocal_presence[0], vocal_presence[1], num_frames, ratio, prior_weight
+                )
+                star_col[0, :, 0] = torch.from_numpy(vals).to(
+                    dtype=star_col.dtype, device=star_col.device
+                )
+                priced = float((vals < -0.5 * prior_weight).mean()) if num_frames else 0.0
+                self._last_star_prior = {
+                    "weight": prior_weight,
+                    "priced_frac": round(priced, 3),
+                }
+                logger.info(
+                    f"Star prior shaped: {priced:.0%} of {num_frames} frame(s) cost more than "
+                    f"half weight (full presence = {prior_weight} nats/frame)"
+                )
             emission = torch.cat([emission, star_col], dim=2)
 
         tokens = []
@@ -1199,10 +1231,6 @@ class CTCEngine(BaseAlignmentEngine):
             token_spans = F.merge_tokens(aligned_tokens[0], alignment_scores[0], blank=blank_id)
         except Exception as e:
             raise AlignmentError(f"CTC forced alignment failed: {e}")
-
-        num_frames = emission.shape[1]
-        audio_length = waveform.shape[0] / 16000
-        ratio = audio_length / num_frames
 
         # 자막 앵커 2패스는 **이 안에** 둔다 — `_ctc_log_emission`은 `_align_cjk` 진입마다
         # 모델 forward를 다시 돌리므로(캐시 없음, 4.7분 곡 ~9s) 바깥에서 align()을 다시 부르면
@@ -1503,6 +1531,7 @@ class CTCEngine(BaseAlignmentEngine):
         referee_margins: dict[int, float] | None = None,
         forbidden_spans: list[tuple[float, float]] | None = None,
         line_starts: dict[int, float] | None = None,
+        vocal_presence: tuple | None = None,
     ) -> list[SyncResult]:
         """가사를 오디오에 강제정렬한다.
 
@@ -1525,12 +1554,19 @@ class CTCEngine(BaseAlignmentEngine):
             referee_margins: 라인별 마진(토큰당 평균 로그확률 차). 없는 라인은 설정
                 ``pron_referee_margin``을 쓴다. 사람이 쓴 발음이 기본값인 라인처럼 더 큰
                 마진을 요구해야 하는 경우에 쓴다.
+            vocal_presence: ``(times, presence)`` — f0 유성 지시자에서 만든 보컬 존재
+                신호 (``star_prior.vocal_presence_from_f0``). 주면 star 채널을 상수 0
+                대신 프레임별 ``-star_prior_weight × presence``로 성형한다 — 균일 바닥
+                posterior에서 «어디서 흡수할지» 동점을 없애는 가격 신호다. **선택적
+                인자다** — 주지 않으면(또는 star_tokens가 꺼져 있으면) 기존 동작과
+                완전히 동일하다.
         """
         # 심판·「들은 것」 기록은 정렬마다 새로 쓴다 — 이전 정렬(예: ko)의 기록이 다음
         # 정렬(ja) 뒤에 남아 있으면 호출부가 엉뚱한 라인 창의 텍스트를 보고한다.
         self._last_referee = []
         self._last_heard = {}
         self._last_caption_anchor = None
+        self._last_star_prior = None
         force_mms = False
         if language and language != "auto":
             resolved_lang = language
@@ -1570,6 +1606,7 @@ class CTCEngine(BaseAlignmentEngine):
                     referee_margins=referee_margins,
                     forbidden_spans=forbidden_spans,
                     line_starts=line_starts,
+                    vocal_presence=vocal_presence,
                 )
                 self._last_match_stats = self._calculate_match_stats(results)
                 return results
@@ -1587,6 +1624,11 @@ class CTCEngine(BaseAlignmentEngine):
                     logger.info(
                         f"Caption anchors skipped: MMS_FA path ({resolved_lang}) has no "
                         f"character-level emission to mask"
+                    )
+                if vocal_presence is not None:
+                    # star 성형도 같은 사정 — 이 경로는 star 채널 자체가 없다(with_star=False).
+                    logger.info(
+                        f"Star prior skipped: MMS_FA path ({resolved_lang}) has no star channel"
                     )
                 results = self._align_mms(waveform, lyrics, resolved_lang, progress_callback)
                 from everyric2.alignment.matcher import LyricsMatcher
