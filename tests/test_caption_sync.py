@@ -304,7 +304,10 @@ def test_fetch_lyrics_uses_selected_track_and_cleans_text():
     raw = _lines("[음악]", "隠しきれない", "隠しきれない", ">> 次の行", "三行目")
     with _ytdlp(info, {"ja": raw}) as calls:
         found = yc.fetch_lyrics_from_captions(VIDEO)
-    assert calls["tracks"] == ["ja"]  # 제목 문자와 맞는 트랙을 첫 번째로 받았다
+    # 제목 문자와 맞는 트랙을 첫 번째로 받고, 그 뒤 번역용 한국어 트랙을 한 번 더 본다
+    # (이 목에는 ko 본문이 없어 번역은 붙지 않는다)
+    assert calls["tracks"][0] == "ja"
+    assert found.translations is None
     assert found.lines == ["隠しきれない", "次の行", "三行目"]
     assert found.text == "隠しきれない\n次の行\n三行目"
     assert found.track.reason == "title_script"
@@ -398,6 +401,100 @@ def test_fetch_lyrics_rejects_latin_only_body_without_a_hint():
 def test_fetch_lyrics_rejects_malformed_video_id():
     with pytest.raises(yc.CaptionUnavailable):
         yc.fetch_lyrics_from_captions("too-short")
+
+
+# ── 같은 영상의 한국어 자막을 번역으로 ────────────────────────────
+#
+# 어젯밤 300곡 실측: 원문이 한국어가 아닌데 한국어 수동 자막이 있는 곡이 93곡(31%)이다.
+# 원문을 유튜브 자막에서 가져오는 곡이라면 같은 영상의 사람 번역이 기계 번역보다 낫고,
+# 시간축이 같아 줄 대응도 자연스럽다.
+
+
+def _ev(*triples):
+    return [{"start": s, "end": e, "text": t} for s, e, t in triples]
+
+
+def test_translation_matches_by_time_not_by_index():
+    """줄 순서로 맞출 수 없다 — 버려지는 줄(효과음·중복) 수가 트랙마다 다르다."""
+    originals = _ev((1.0, 3.0, "一行目"), (3.0, 5.0, "二行目"), (5.0, 7.0, "三行目"))
+    # 번역 트랙은 첫 줄이 없고(번역자가 안 옮겼다) 시각만 맞다
+    translations = _ev((3.1, 4.9, "둘째 줄"), (5.2, 6.8, "셋째 줄"))
+    assert yc.match_translation_lines(originals, translations) == ["", "둘째 줄", "셋째 줄"]
+
+
+def test_translation_picks_the_largest_overlap():
+    originals = _ev((10.0, 14.0, "원문"))
+    translations = _ev((9.0, 10.3, "스친 것"), (10.5, 13.8, "겹치는 것"))
+    assert yc.match_translation_lines(originals, translations) == ["겹치는 것"]
+
+
+def test_translation_ignores_a_barely_touching_neighbour():
+    """인접 줄의 꼬리에 0.2초 스친 것을 번역으로 오인하면 줄마다 엉뚱한 번역이 붙는다."""
+    originals = _ev((10.0, 14.0, "원문"))
+    assert yc.match_translation_lines(originals, _ev((9.8, 10.2, "이전 줄 꼬리"))) == [""]
+
+
+def test_translation_allows_one_line_to_cover_two_originals():
+    """번역자가 두 줄을 한 줄로 합쳐 적는 일이 흔하다 — 빈칸보다 같은 번역이 낫다."""
+    originals = _ev((1.0, 3.0, "前半"), (3.0, 5.0, "後半"))
+    merged = _ev((1.0, 5.0, "앞뒤를 합친 번역"))
+    assert yc.match_translation_lines(originals, merged) == [
+        "앞뒤를 합친 번역", "앞뒤를 합친 번역",
+    ]
+
+
+def test_translation_needs_timing_on_both_sides():
+    """시각이 없으면 맞출 근거가 없다 — 아무것도 붙이지 않는다."""
+    assert yc.match_translation_lines([{"text": "원문"}], _ev((1.0, 2.0, "번역"))) == [""]
+
+
+def test_korean_track_is_not_used_when_the_original_is_korean():
+    """원문이 한국어면 그 자막은 번역이 아니라 원문이다."""
+    info = {"subtitles": {"ko": [{}], "en": [{}]}}
+    assert yc._translation_track_key(info, "ko") is None
+    assert yc._translation_track_key(info, "ja") == "ko"
+
+
+def test_fetch_lyrics_attaches_the_korean_caption_as_translation():
+    info = {"subtitles": {"ja": [{}], "ko": [{}]}, "title": "初音ミク - メルト"}
+    bodies = {
+        "ja": _ev((1.0, 3.0, "隠しきれない"), (3.0, 5.0, "次の行"), (5.0, 7.0, "三行目")),
+        "ko": _ev((1.0, 3.0, "숨길 수 없는"), (3.0, 5.0, "다음 줄"), (5.0, 7.0, "셋째 줄")),
+    }
+    with _ytdlp(info, bodies) as calls:
+        found = yc.fetch_lyrics_from_captions(VIDEO)
+    assert found.lines == ["隠しきれない", "次の行", "三行目"]
+    assert found.translations == ["숨길 수 없는", "다음 줄", "셋째 줄"]
+    assert "ko" in calls["tracks"], "번역용 한국어 트랙을 받아야 한다"
+
+
+def test_fetch_lyrics_leaves_translations_none_without_a_korean_track():
+    info = {"subtitles": {"ja": [{}], "en": [{}]}, "title": "初音ミク - メルト"}
+    with _ytdlp(info, {"ja": _ev((1.0, 3.0, "隠しきれない"), (3.0, 5.0, "次の行"),
+                                 (5.0, 7.0, "三行目"))}):
+        found = yc.fetch_lyrics_from_captions(VIDEO)
+    assert found.translations is None
+
+
+def test_translation_failure_does_not_break_lyric_fetching():
+    """번역은 «있으면 좋은» 것이다 — 한국어 트랙을 못 받아도 가사는 나와야 한다."""
+    info = {"subtitles": {"ja": [{}], "ko": [{}]}, "title": "初音ミク - メルト"}
+    # ko는 bodies에 없으므로 목이 empty_caption을 던진다
+    with _ytdlp(info, {"ja": _ev((1.0, 3.0, "隠しきれない"), (3.0, 5.0, "次の行"),
+                                 (5.0, 7.0, "三行目"))}):
+        found = yc.fetch_lyrics_from_captions(VIDEO)
+    assert found.lines == ["隠しきれない", "次の行", "三行目"]
+    assert found.translations is None
+
+
+def test_clean_events_keep_timing_and_merge_duplicates():
+    """정리 규칙은 `clean_caption_lines`와 같아야 한다 — 한쪽만 고치면 번역 대응이 어긋난다."""
+    raw = _ev((1.0, 2.0, "[음악]"), (2.0, 3.0, "같은 줄"), (3.0, 4.5, "같은 줄"),
+              (5.0, 6.0, ">> 다음 줄"))
+    events = yc.clean_caption_events(raw)
+    assert [e["text"] for e in events] == ["같은 줄", "다음 줄"]
+    assert events[0]["end"] == 4.5, "연속 중복은 뒤엣것의 끝까지 한 줄로 본다"
+    assert yc.clean_caption_lines(raw) == [e["text"] for e in events]
 
 
 # ── 엔드포인트: 기존 잡 생성 경로 재사용 ──────────────────────────

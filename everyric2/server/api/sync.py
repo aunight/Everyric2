@@ -1034,16 +1034,40 @@ async def _translate_and_attach_line_meta(
     video_id: str,
     title: str | None,
     artist: str | None,
+    human_translations: list[str] | None = None,
 ) -> None:
     """자막 가사의 번역·독음을 만들어 잡에 붙인다 (서버가 가사를 조달한 경로 전용).
 
     **어떤 이유로 실패해도 반드시 한 번은 붙인다** — 빈 리스트가 "붙일 것 없음" 확정 신호라
     (worker._PENDING_LINE_META 규약) 아무것도 안 붙이면 워커가 정렬 진입 직전에 대기 상한
     (LINE_META_WAIT_SEC)을 통째로 헛되게 태운다. 그래서 예외는 여기서 끝내고 로그로만 남긴다.
+
+    `human_translations`는 같은 영상의 한국어 수동 자막에서 온 사람 번역이다(`lines`와 같은
+    길이, 빈 문자열은 «그 줄에는 없음»). 있으면 **그 줄의 기계 번역을 덮는다** — 사람이 옮긴
+    번역이 더 낫고, 같은 영상 자막이라 맥락도 맞다. 독음은 사람 자막에 없으므로 여전히 만든다.
     """
     from starlette.concurrency import run_in_threadpool
 
     from everyric2.server.api.translate import TranslateRequest, translate_lyrics
+
+    human = human_translations if human_translations and any(human_translations) else None
+    wants_pron = _expects_pronunciation(lines)
+
+    # 독음이 필요 없고 번역은 사람 것이 있으면 LLM을 부를 이유가 없다 — 한국어 원문 곡에
+    # 한국어 자막이 붙어 있는 경우가 아니라(그때는 번역 자체를 안 만든다), 원문이 라틴 문자인
+    # 곡에 한국어 팬 자막이 있는 경우가 여기 걸린다.
+    if human and not wants_pron:
+        meta = [
+            LineMeta(text=src, pronunciation=None, translation=tr)
+            for src, tr in zip(lines, human)
+            if tr
+        ]
+        applied = await _attach_line_meta_to_job(job_id, meta)
+        logger.info(
+            "Job %s: caption line_meta from human captions only (%d/%d lines, applied=%s)",
+            job_id, len(meta), len(lines), getattr(applied, "applied", None),
+        )
+        return
 
     meta: list[LineMeta] = []
     try:
@@ -1056,7 +1080,7 @@ async def _translate_and_attach_line_meta(
             TranslateRequest(
                 text="\n".join(lines),
                 source_lang=source_lang or "auto",
-                include_pronunciation=_expects_pronunciation(lines),
+                include_pronunciation=wants_pron,
                 title=title,
                 artist=artist,
                 video_id=video_id,
@@ -1065,13 +1089,23 @@ async def _translate_and_attach_line_meta(
         # LLM이 echo한 original이 아니라 넘긴 원문으로 text를 채운다 — 병합(merge_line_meta)은
         # 정규화 텍스트 매칭이라 한 글자만 달라도 그 줄은 붙지 않는다. 줄 수가 같아 인덱스로
         # 대응시킬 수 있고, 짧은 응답이 와도 zip이 남는 줄을 조용히 버린다.
-        for src, line in zip(lines, result.lines):
+        for i, (src, line) in enumerate(zip(lines, result.lines)):
             pron = (line.pronunciation or "").strip() or None
             trans = (line.translation or "").strip() or None
+            # 사람 번역이 그 줄에 있으면 기계 번역을 덮는다
+            if human and i < len(human) and human[i]:
+                trans = human[i]
             if pron or trans:
                 meta.append(LineMeta(text=src, pronunciation=pron, translation=trans))
     except Exception:
         logger.exception("Job %s: caption line_meta translation failed", job_id)
+        # LLM이 죽어도 사람 번역은 살아 있다 — 그것만이라도 붙인다
+        if human:
+            meta = [
+                LineMeta(text=src, pronunciation=None, translation=tr)
+                for src, tr in zip(lines, human)
+                if tr
+            ]
 
     applied = await _attach_line_meta_to_job(job_id, meta)
     if applied is None:
@@ -1094,6 +1128,7 @@ async def _process_caption_job(
     title: str | None,
     artist: str | None,
     pipeline: BackgroundTasks,
+    human_translations: list[str] | None = None,
 ) -> None:
     """번역·독음 생성과 잡 처리(인프로세스 파이프라인 또는 원격 큐 진입)를 **동시에** 돌린다.
 
@@ -1103,7 +1138,9 @@ async def _process_caption_job(
     "다운로드·보컬 분리와 번역이 겹친다"가 성립하지 않는다.
     """
     await asyncio.gather(
-        _translate_and_attach_line_meta(job_id, lines, source_lang, video_id, title, artist),
+        _translate_and_attach_line_meta(
+            job_id, lines, source_lang, video_id, title, artist, human_translations
+        ),
         pipeline(),
     )
 
@@ -1189,6 +1226,7 @@ async def generate_sync_from_caption(
             request.title,
             request.artist,
             pipeline,
+            found.translations,
         )
     return CaptionGenerateResponse(
         **base.model_dump(),

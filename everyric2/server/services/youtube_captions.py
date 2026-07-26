@@ -101,6 +101,9 @@ class CaptionLyrics:
 
     track: TrackChoice
     lines: list[str]
+    # 같은 영상의 한국어 수동 자막에서 가져온 번역. `lines`와 같은 길이이고, 붙일 번역이
+    # 없는 자리는 빈 문자열이다. 없으면 None — 그때는 기존대로 서버가 기계 번역을 만든다.
+    translations: list[str] | None = None
 
     @property
     def text(self) -> str:
@@ -463,10 +466,10 @@ def _clean_line(raw: str) -> str:
     return text
 
 
-def clean_caption_lines(
+def clean_caption_events(
     lines: list[dict[str, Any]] | list[str], merge_rolling: bool = False
-) -> list[str]:
-    """자막 라인 → 가사 텍스트 줄. 타임스탬프는 버린다 (정렬은 서버가 새로 한다).
+) -> list[dict[str, Any]]:
+    """자막 라인 → 정리된 `[{start, end, text}]`. 정리 규칙의 **정본**이다.
 
     걸러내는 것: 효과음/상황 표기(`[음악]`), 화자 표기(`>>`, `이름:`), 장식 음표,
     빈 줄, **연속 중복 줄**. 같은 가사가 후렴으로 다시 나오는 것은 진짜 반복이므로
@@ -475,24 +478,138 @@ def clean_caption_lines(
     merge_rolling=True(자동 생성 자막)면 롤링 자막이 만드는 «앞부분 → 앞부분+뒷부분»
     누적 이벤트를 마지막 형태 하나로 합친다. 업로더 자막은 롤링하지 않고, 반대로
     앞 줄이 뒷 줄의 접두사인 진짜 가사(«君は» → «君は僕を»)가 존재하므로 기본은 끈다.
+
+    시각을 남기는 이유: 같은 영상의 한국어 자막을 번역으로 붙일 때 **원문 줄과 번역 줄을
+    시간으로 맞춰야** 한다. 줄 순서로 맞출 수 없다 — 여기서 버려지는 줄(효과음·중복)의
+    개수가 두 트랙에서 다르므로 인덱스가 어긋난다. 정렬용 가사에는 시각이 필요 없고
+    (`clean_caption_lines`가 텍스트만 꺼낸다) 서버가 오디오에서 새로 잡는다.
     """
-    out: list[str] = []
+    out: list[dict[str, Any]] = []
     for item in lines:
-        raw = item.get("text", "") if isinstance(item, dict) else str(item)
+        if isinstance(item, dict):
+            raw = item.get("text", "")
+            start, end = item.get("start"), item.get("end")
+        else:
+            raw, start, end = str(item), None, None
         text = _clean_line(raw)
         if not text:
             continue
         if out:
             prev = out[-1]
-            if text == prev:
+            if text == prev["text"]:
+                # 연속 중복은 같은 줄이 이어진 것 — 뒤엣것의 끝까지 한 줄로 본다
+                if end is not None and prev.get("end") is not None:
+                    prev["end"] = max(prev["end"], end)
                 continue
-            if merge_rolling and text.startswith(prev):
-                out[-1] = text
+            if merge_rolling and text.startswith(prev["text"]):
+                prev["text"] = text
+                if end is not None and prev.get("end") is not None:
+                    prev["end"] = max(prev["end"], end)
                 continue
-            if merge_rolling and prev.startswith(text):
+            if merge_rolling and prev["text"].startswith(text):
                 continue
-        out.append(text)
+        out.append({"start": start, "end": end, "text": text})
     return out
+
+
+def clean_caption_lines(
+    lines: list[dict[str, Any]] | list[str], merge_rolling: bool = False
+) -> list[str]:
+    """자막 라인 → 가사 텍스트 줄. 타임스탬프는 버린다 (정렬은 서버가 새로 한다)."""
+    return [e["text"] for e in clean_caption_events(lines, merge_rolling)]
+
+
+# ── 같은 영상의 한국어 자막을 번역으로 ────────────────────────────
+
+# 원문 줄 하나에 번역을 붙이려면 겹침이 이만큼은 되어야 한다. 인접 줄의 꼬리에 스친 것을
+# 번역으로 오인하지 않기 위한 하한이고, 둘 중 **하나만** 넘으면 된다 — 짧은 원문 줄
+# («ねぇ» 한 마디)은 절대 시간으로는 작고, 긴 원문 줄은 비율로는 작기 때문이다.
+_TRANSLATION_MIN_OVERLAP_SEC = 0.5
+_TRANSLATION_MIN_OVERLAP_RATIO = 0.3
+
+
+def match_translation_lines(
+    originals: list[dict[str, Any]], translations: list[dict[str, Any]]
+) -> list[str]:
+    """원문 줄마다 시간이 겹치는 번역 자막을 골라 원문과 같은 길이의 목록으로 돌려준다.
+
+    같은 영상의 자막이라 두 트랙은 **같은 시간축**을 쓴다. 그래서 시간 겹침이 가장 큰
+    번역 이벤트를 고르는 것으로 대응이 된다. 줄 순서로 맞출 수 없는 이유는
+    `clean_caption_events`에 적어 두었다(버려지는 줄 수가 트랙마다 다르다).
+
+    한 번역 줄이 여러 원문 줄에 걸리는 것은 허용한다 — 번역자가 두 줄을 한 줄로 합쳐 적는
+    일이 흔하고, 그때 두 원문 줄에 같은 번역이 붙는 것이 빈칸보다 낫다.
+
+    붙일 번역이 없는 자리는 빈 문자열이다. 시각이 없는 입력(문자열 목록)은 전부 빈칸이 된다
+    — 맞출 근거가 없으면 아무것도 붙이지 않는다.
+    """
+    out: list[str] = []
+    for orig in originals:
+        os_, oe = orig.get("start"), orig.get("end")
+        if os_ is None or oe is None or oe <= os_:
+            out.append("")
+            continue
+        span = oe - os_
+        best, best_overlap = "", 0.0
+        for tr in translations:
+            ts, te = tr.get("start"), tr.get("end")
+            if ts is None or te is None:
+                continue
+            overlap = min(oe, te) - max(os_, ts)
+            if overlap <= best_overlap:
+                continue
+            if overlap < _TRANSLATION_MIN_OVERLAP_SEC and (
+                overlap / span < _TRANSLATION_MIN_OVERLAP_RATIO
+            ):
+                continue
+            best, best_overlap = tr.get("text") or "", overlap
+        out.append(best)
+    return out
+
+
+def _fetch_translation_lines(
+    video_id: str,
+    info: dict[str, Any],
+    original_lang: str,
+    originals: list[dict[str, Any]],
+) -> list[str] | None:
+    """같은 영상의 한국어 수동 자막을 받아 원문 줄에 맞춰 돌려준다. 없거나 실패하면 None.
+
+    번역은 «있으면 좋은» 것이다 — 여기서 나는 어떤 실패도 가사 조달을 깨선 안 된다. 실패하면
+    None을 돌려주고, 기존대로 서버가 기계 번역을 만든다.
+
+    왜 이걸 하는가: 원문을 유튜브 자막에서 가져오는 곡이라면 같은 영상에 한국 팬이 붙인
+    자막이 있을 확률이 높고(어젯밤 300곡 실측: 원문이 한국어가 아닌데 한국어 수동 자막이
+    있는 곡이 93곡, 31%), 사람이 옮긴 번역이 기계 번역보다 낫다. 시간축도 같으므로 줄
+    대응이 자연스럽다.
+    """
+    key = _translation_track_key(info, original_lang)
+    if not key or not LANG_RE.match(key):
+        return None
+    try:
+        raw = download_track_lines(video_id, key, auto=False)
+    except Exception:
+        logger.info("번역용 한국어 자막을 받지 못했어요 — 기계 번역으로 갑니다 (video %s)", video_id)
+        return None
+    matched = match_translation_lines(originals, clean_caption_events(raw))
+    filled = sum(1 for m in matched if m)
+    logger.info(
+        f"caption translation for {video_id}: track={key} matched={filled}/{len(matched)}"
+    )
+    # 한 줄도 못 붙였으면 없는 것과 같다 — 빈 번역을 line_meta에 실어 보내지 않는다
+    return matched if filled else None
+
+
+def _translation_track_key(info: dict[str, Any], original_lang: str) -> str | None:
+    """번역으로 쓸 한국어 수동 자막 트랙. 없거나 원문이 한국어면 None.
+
+    왜 한국어만인가: 지금 싱크 스키마에 번역의 언어를 적을 자리가 없어서 표시 쪽이 한국어를
+    가정한다. 다른 언어를 넣으면 한국어 자리에 그 언어가 나온다.
+    """
+    if base_lang(original_lang) == "ko":
+        return None
+    keys = [k for k in manual_track_keys(info) if base_lang(k) == "ko"]
+    return sorted(keys)[0] if keys else None
 
 
 # ── 원어 판정 오류로 인한 가사 오염 게이트 ────────────────────────
@@ -606,7 +723,9 @@ def fetch_lyrics_from_captions(video_id: str) -> CaptionLyrics:
         except CaptionUnavailable as e:
             rejected.append((key, e.code))
             continue
-        lines = clean_caption_lines(raw_lines, merge_rolling=False)
+        # 시각을 남긴 채로 정리한다 — 한국어 자막을 번역으로 붙일 때 필요하다
+        events = clean_caption_events(raw_lines, merge_rolling=False)
+        lines = [e["text"] for e in events]
         if len(lines) < MIN_LYRIC_LINES:
             rejected.append((key, "too_short"))
             continue
@@ -634,6 +753,9 @@ def fetch_lyrics_from_captions(video_id: str) -> CaptionLyrics:
                 language=lang or base_lang(key),
             ),
             lines=lines,
+            translations=_fetch_translation_lines(
+                video_id, info, lang or base_lang(key), events
+            ),
         )
 
     logger.warning(

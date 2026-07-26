@@ -83,13 +83,15 @@ def _clear_stashes() -> None:
 
 
 @contextlib.contextmanager
-def _captions(monkeypatch, texts=CAPTION_TEXTS, language="ja"):
+def _captions(monkeypatch, texts=CAPTION_TEXTS, language="ja", translations=None):
     """자막 조달만 목으로 — 트랙 판정·정리는 건너뛰고 최종 결과를 그대로 준다."""
     track = yc.TrackChoice(
-        lang=language, auto=False, label=language.upper(), reason="asr_orig", language=language
+        lang=language, auto=False, label=language.upper(), reason="title_script", language=language
     )
     monkeypatch.setattr(
-        yc, "fetch_lyrics_from_captions", lambda vid: yc.CaptionLyrics(track=track, lines=texts)
+        yc,
+        "fetch_lyrics_from_captions",
+        lambda vid: yc.CaptionLyrics(track=track, lines=texts, translations=translations),
     )
     yield
 
@@ -155,7 +157,7 @@ def test_caption_generate_marks_line_meta_pending(monkeypatch):
             assert (resp.lang, resp.auto, resp.reason, resp.line_count) == (
                 "ja",
                 False,
-                "asr_orig",
+                "title_script",
                 3,
             )
             async with sm() as s:
@@ -246,6 +248,96 @@ def test_korean_captions_do_not_request_pronunciation(monkeypatch):
             assert calls[0].include_pronunciation is False
             # 번역도 독음도 없으면 빈 리스트가 붙는다 — 워커는 기다리지 않고 원문 정렬로 간다
             assert worker_core._PENDING_LINE_META[resp.job_id] == []
+
+    asyncio.run(body())
+
+
+def test_human_caption_translation_overrides_the_machine_one(monkeypatch):
+    """같은 영상의 한국어 수동 자막이 있으면 그 줄의 기계 번역을 덮는다.
+
+    독음은 사람 자막에 없으므로 여전히 LLM이 만든다 — 그래서 호출은 그대로 일어나고
+    번역만 갈린다. 실측(어젯밤 300곡): 원문이 한국어가 아닌데 한국어 수동 자막이 있는 곡이
+    93곡(31%)이다.
+    """
+
+    async def body():
+        async with _env(local_worker=False):
+            calls: list = []
+            monkeypatch.setattr(sync_api, "_dispatch_job", _noop_dispatch())
+            monkeypatch.setattr(
+                "everyric2.server.api.translate.translate_lyrics", _fake_translate(calls)
+            )
+            bg = BackgroundTasks()
+            # 가운데 줄만 사람 번역이 있다 — 빈 자리는 기계 번역이 남아야 한다
+            with _captions(monkeypatch, translations=["", "사람이 옮긴 불꽃놀이", ""]):
+                resp = await generate_sync_from_caption(
+                    GenerateFromCaptionRequest(video_id=VIDEO), bg
+                )
+            await _run_background(bg)
+
+            meta = worker_core._PENDING_LINE_META[resp.job_id]
+            assert [m["translation"] for m in meta] == [
+                "여름의 냄새", "사람이 옮긴 불꽃놀이", "너의 옆모습",
+            ]
+            # 독음은 그대로 LLM이 만든 것이 붙는다
+            assert [m["pronunciation"] for m in meta] == [
+                "나츠노 니오이", "토오이 하나비", "키미노 요코가오",
+            ]
+            assert len(calls) == 1, "독음이 필요하므로 LLM은 여전히 부른다"
+
+    asyncio.run(body())
+
+
+def test_human_translation_skips_the_llm_when_no_pronunciation_is_needed(monkeypatch):
+    """독음이 필요 없고 번역은 사람 것이 있으면 LLM을 부를 이유가 없다."""
+
+    async def body():
+        async with _env(local_worker=False):
+            calls: list = []
+            monkeypatch.setattr(sync_api, "_dispatch_job", _noop_dispatch())
+            monkeypatch.setattr(
+                "everyric2.server.api.translate.translate_lyrics", _fake_translate(calls)
+            )
+            bg = BackgroundTasks()
+            latin = ["Wow oh yeah", "Come on baby", "One more time"]
+            with _captions(
+                monkeypatch, texts=latin, language="en",
+                translations=["와 예", "이리 와", "한 번 더"],
+            ):
+                resp = await generate_sync_from_caption(
+                    GenerateFromCaptionRequest(video_id=VIDEO), bg
+                )
+            await _run_background(bg)
+
+            assert calls == [], "LLM을 불렀다"
+            meta = worker_core._PENDING_LINE_META[resp.job_id]
+            assert [m["translation"] for m in meta] == ["와 예", "이리 와", "한 번 더"]
+            assert all(m["pronunciation"] is None for m in meta)
+
+    asyncio.run(body())
+
+
+def test_human_translation_survives_an_llm_failure(monkeypatch):
+    """LLM이 죽어도 사람 번역은 살아 있다 — 그것만이라도 붙여야 한다."""
+
+    async def body():
+        async with _env(local_worker=False):
+            monkeypatch.setattr(sync_api, "_dispatch_job", _noop_dispatch())
+            monkeypatch.setattr(
+                "everyric2.server.api.translate.translate_lyrics",
+                _fake_translate([], boom=True),
+            )
+            bg = BackgroundTasks()
+            with _captions(monkeypatch, translations=["첫 줄", "", "셋째 줄"]):
+                resp = await generate_sync_from_caption(
+                    GenerateFromCaptionRequest(video_id=VIDEO), bg
+                )
+            await _run_background(bg)
+
+            meta = worker_core._PENDING_LINE_META[resp.job_id]
+            assert [(m["text"], m["translation"]) for m in meta] == [
+                ("夏の匂い", "첫 줄"), ("君の横顔", "셋째 줄"),
+            ]
 
     asyncio.run(body())
 
