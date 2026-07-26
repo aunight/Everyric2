@@ -86,9 +86,10 @@ class AudioSettings(BaseSettings):
     cache_max_gb: float = Field(
         default=20.0,
         description="Cache size ceiling in GiB; least-recently-used files are deleted past "
-        "it. yt-dlp produces wav (preferredcodec='wav'), which runs ~30MB per song — the "
-        "measured average in /tmp/everyric2 was 32MB across 19 files — so 20GiB holds "
-        "roughly 600 songs. 0 or less means no ceiling.",
+        "it. yt-dlp produces wav (preferredcodec='wav'), so one song is tens of MB and the "
+        "ceiling is effectively a song count: the average across 19 files left in "
+        "/tmp/everyric2 was 32MB, but a single measured 3.5-minute song came to 51.9MB, so "
+        "20GiB holds roughly 400-600 songs. 0 or less means no ceiling.",
     )
 
     # YouTube cookie settings
