@@ -107,12 +107,20 @@ Everyric은 YouTube/YouTube Music에서 재생 중인 곡의 시간 동기화 �
 <ul>
 <li><strong>IP 원문은 저장하지 않습니다.</strong> 솔트를 넣은 해시만 남깁니다 &mdash; 솔트가
     없으면 IPv4 주소 공간이 좁아 해시에서 원래 주소를 되찾을 수 있기 때문입니다.</li>
-<li>가사 <strong>조회</strong>는 세지 않습니다. 서버 자원을 쓰는 <strong>싱크 생성</strong>만
-    셉니다(이용자당 1일 한도).</li>
+<li><strong>1일 한도는 싱크 생성만 셉니다.</strong> 가사 조회는 한도에서 세지 않습니다
+    (서버 자원을 거의 쓰지 않기 때문입니다). 다만 <strong>조회 요청도 서버 운영 기록에는
+    남습니다</strong> &mdash; 한도에 세지 않는 것과 기록이 없는 것은 다릅니다.</li>
 <li>이 값은 사용량 제한에만 쓰이며, 이용자를 식별하거나 이용 내역을 프로필로 모으는 데
     쓰지 않습니다.</li>
 <li>설정에 API 키를 입력했다면 그 키가 제한 단위로 대신 쓰입니다.</li>
 </ul>
+<p>
+<strong>CDN 사업자를 거칩니다.</strong> 기본 서버 주소는 Cloudflare를 통해 연결되므로,
+확장의 요청은 우리 서버에 닿기 전에 그 사업자를 지나갑니다. 그 과정에서 사업자가 접속 IP를
+보게 되며 <strong>자체 로그를 남길 수 있습니다</strong> &mdash; 우리가 통제하지 않는
+영역이고, 그쪽 처리 방침은 Cloudflare의 정책을 따릅니다. 자체 호스팅 서버로 바꾸면 이
+경로를 거치지 않습니다.
+</p>
 <p>
 이 처리 때문에 <strong>확장이 새로 보내는 데이터는 없습니다</strong> &mdash; 이용자를 구분하기
 위해 확장이 식별자를 만들어 심는 방식(설치 ID·기기 지문 등)을 쓰지 않기로 한 결과입니다.
@@ -260,12 +268,21 @@ from that IP and uses it <strong>solely as a rate-limiting key</strong>.
 <ul>
 <li><strong>The raw IP is not stored.</strong> Only a salted hash is kept &mdash; without a salt
     the IPv4 address space is small enough to recover the original address from the hash.</li>
-<li>Lyrics <strong>lookups</strong> are not counted. Only <strong>sync generation</strong>, which
-    consumes server resources, is counted (a daily per-user cap).</li>
+<li><strong>The daily cap counts sync generation only.</strong> Lyrics lookups are not counted
+    against it (they consume almost no server resources). However, <strong>lookup requests do
+    appear in server operational logs</strong> &mdash; not counting toward a cap is not the same
+    as leaving no record.</li>
 <li>The value is used for rate limiting only. It is not used to identify users or to build a
     profile of what anyone listens to.</li>
 <li>If an API key is entered in settings, that key is used as the rate-limiting key instead.</li>
 </ul>
+<p>
+<strong>Requests pass through a CDN provider.</strong> The default server address is served via
+Cloudflare, so requests traverse that provider before reaching our server. In doing so the
+provider sees the connecting IP and <strong>may keep its own logs</strong> &mdash; that is outside
+our control and governed by Cloudflare's own policies. Pointing the extension at a self-hosted
+server avoids this path entirely.
+</p>
 <p>
 Because of this design the <strong>extension sends no additional data</strong> &mdash; a
 deliberate choice not to mint an identifier (install ID, device fingerprint) to tell users apart.
