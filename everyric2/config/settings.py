@@ -199,9 +199,14 @@ class AlignmentSettings(BaseSettings):
         "misplacement on zyRt-nBM3dY). Pricing star at -star_prior_weight×presence makes "
         "absorbing an interlude cheaper than absorbing sung audio — a per-frame price, not a "
         "prohibition, so unlike the hard -1e4 mask it removes the tie instead of relocating "
-        "it (alignment/star_prior.py). Needs star_tokens and the melody f0 precompute; falls "
-        "back to the flat star when f0 is unavailable. OFF until the 3-song real-audio A/B "
-        "lands; flip with measured numbers.",
+        "it (alignment/star_prior.py). STAYS OFF — the 3-song A/B (2026-07-27, "
+        "scripts/align_bench.py) measured no accuracy gain (zyRt/VWVtIg caption-referenced "
+        "Wilcoxon p=0.59/0.14, medians identical). Root cause: in real emissions blank is "
+        "the nearly-free filler (CTC blank prior ~0.8 → ~-0.1 nats/frame), so pricing only "
+        "the star channel reroutes the placement tie through blank instead of removing it. "
+        "Its one measured benefit — dispersion 13.0→8.0s median under nondeterministic "
+        "separation — became moot when audio.demucs_shifts=0 made the whole pipeline "
+        "bit-exact (dispersion 0). Kept as an experimental primitive with tests.",
     )
     star_prior_weight: float = Field(
         default=2.0,
