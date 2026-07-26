@@ -57,6 +57,18 @@ class AudioSettings(BaseSettings):
 
     # Demucs settings
     demucs_model: str = Field(default="htdemucs", description="Demucs model for vocal separation")
+    demucs_shifts: int = Field(
+        default=0,
+        description="Demucs --shifts (random equivariant-stabilization shifts). The CLI "
+        "default is 1, which applies ONE random 0–0.5s time shift — no averaging benefit, "
+        "just randomness: two separations of the same input hash differently, and that "
+        "run-to-run delta is the actual contamination source behind the alignment's "
+        "nondeterminism (measured 2026-07-27 on zyRt-nBM3dY: emission is bit-exact given the "
+        "same vocals, TF32 on or off, but σ=1e-3 emission noise already moves flat-posterior "
+        "lines by up to 2.48s). 0 makes separation bit-exact across runs (verified: identical "
+        "sha256 twice) at the same compute cost. Raise past 1 only if you want the paper's "
+        "quality averaging (10 shifts = 10× separation time).",
+    )
 
     # Temp directory
     temp_dir: Path = Field(

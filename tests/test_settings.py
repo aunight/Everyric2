@@ -43,6 +43,9 @@ class TestAudioSettings:
 
         assert settings.target_sample_rate == 24000  # Qwen-Omni native
         assert settings.demucs_model == "htdemucs"
+        # 0이어야 분리가 실행 간 비트 단위로 같다 — CLI 기본 1은 무작위 시프트 «1회»라
+        # 품질 이득 없이 정렬 비결정성의 오염원이 된다 (AudioSettings.demucs_shifts 근거).
+        assert settings.demucs_shifts == 0
         assert settings.temp_dir == Path("/tmp/everyric2")
 
     def test_temp_dir_created(self, tmp_path):

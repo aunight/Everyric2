@@ -159,6 +159,11 @@ class VocalSeparator:
                 model,
                 "--two-stems",
                 "vocals",
+                # CLI 기본 --shifts 1은 무작위 시프트 «1회»라 평균 이득 없이 무작위성만
+                # 넣는다 — 같은 입력의 두 분리가 다른 파형이 되고, 그 차이가 정렬
+                # 비결정성의 실제 오염원이었다 (근거는 AudioSettings.demucs_shifts).
+                "--shifts",
+                str(getattr(self.config, "demucs_shifts", 0)),
                 "-o",
                 str(output_dir),
             ]
