@@ -503,10 +503,11 @@ def over_length_message(duration_sec: float, max_audio_sec: int) -> str:
 class JobInput:
     """run_pipeline 입력 — 인프로세스는 스태시를 peek해, 원격은 claim 응답으로 채운다.
 
-    오디오 확보 우선순위(_acquire_audio): audio_path(인프로세스가 미디어 캐시에서 추출해 둔
-    로컬 파일) > audio_url(원격 워커가 서버 캐시 파일을 HTTP로 받음) > yt-dlp 다운로드.
-    앞의 두 경로가 실패하면 yt-dlp로 폴백한다. audio_hash는 어느 경로든 **받은 파일 바이트**로
-    계산하므로 경로가 다르면 같은 영상도 다른 해시가 된다 (_acquire_audio의 실측 주석 참고).
+    오디오 확보 우선순위(_acquire_audio): **video_id 오디오 캐시** > audio_path(인프로세스가
+    미디어 캐시에서 추출해 둔 로컬 파일) > audio_url(원격 워커가 서버 캐시 파일을 HTTP로 받음)
+    > yt-dlp 다운로드. 앞의 경로가 실패하면 뒤로 폴백한다. audio_hash는 어느 경로든 **받은
+    파일 바이트**로 계산하므로 경로가 다르면 같은 영상도 다른 해시가 되는데, 캐시가 맨 앞에
+    서면 한 영상이 항상 한 파일을 내므로 그 흔들림이 사라진다 (_acquire_audio의 주석 참고).
     """
 
     job_id: str
@@ -849,7 +850,16 @@ async def _stage_monitor(report, stage_holder: dict[str, str], start: int, inter
 
 
 def _acquire_audio(job: "JobInput") -> dict:
-    """오디오 확보 — audio_path(로컬 캐시 추출) > audio_url(서버 캐시 HTTP) > yt-dlp.
+    """오디오 확보 — video_id 캐시 > audio_path(로컬 캐시 추출) > audio_url(서버 캐시 HTTP) > yt-dlp.
+
+    **video_id 캐시가 맨 앞에 선다.** 그 뒤의 세 경로는 어느 것이든 성공하면 결과를 캐시에
+    보관하므로, 같은 영상의 두 번째 요청부터는 유튜브에 닿지 않는다. 확보 전체를 영상별 락으로
+    감싸 동시 요청을 한 번으로 병합한다(single-flight) — 캐시는 두 번째 요청부터 듣지만 락은
+    첫 순간부터 듣고, 공개 트래픽은 인기곡에 동시에 몰린다.
+
+    ``force``(강제 재생성)는 오디오 캐시를 무시하지 **않는다**. force가 뜻하는 것은 «같은
+    (audio_hash, lyrics) 싱크를 재사용하지 말고 정렬을 다시 돌려라»이고, 그 정렬에 쓸 오디오를
+    다시 받아 올 이유는 없다. 덕분에 트랙 선택 수정 같은 회귀 검증을 재다운로드 0으로 돌린다.
 
     앞선 캐시 경로가 실패하면 조용히 yt-dlp로 폴백한다(INFO 로그 1줄).
 
@@ -869,7 +879,34 @@ def _acquire_audio(job: "JobInput") -> dict:
     미디어 캐시는 원본 컨테이너의 스트림)에서 출발하므로 어떤 정확 해시로도 일치시킬 수 없다.
     일치시키려면 지문(chromaprint류)이 필요한데, 그것은 새 의존성이고 **오탐(다른 곡을 같다고
     보는 것)** 을 들여온다 — 미스는 GPU 재정렬(무해)이고 오탐은 남의 가사를 붙이는 사고라
-    비대칭이 크다. 그래서 미스를 감수하고 바이트 해시를 유지한다."""
+    비대칭이 크다. 그래서 미스를 감수하고 바이트 해시를 유지한다.
+
+    (위 비대칭은 video_id 캐시가 앞에 서면서 실질적으로 사라진다 — 한 영상은 한 파일이다.
+    캐시가 꺼진 배포에서는 예전 그대로다.)"""
+    from everyric2.audio import cache as audio_cache
+    from everyric2.config.settings import get_settings
+
+    temp_dir = get_settings().audio.temp_dir
+    tag = job.job_id[:8]
+
+    # 락 밖에서 먼저 본다 — 캐시에 있으면 남을 기다릴 이유가 없다
+    hit = audio_cache.take(job.video_id, temp_dir, tag)
+    if hit is not None:
+        return {"audio_path": str(hit), "audio_hash": compute_audio_hash(hit)}
+
+    with audio_cache.video_lock(job.video_id):
+        # 락을 기다리는 동안 앞선 잡이 받아 뒀을 수 있다 (병합이 실제로 일어나는 지점)
+        hit = audio_cache.take(job.video_id, temp_dir, tag)
+        if hit is not None:
+            return {"audio_path": str(hit), "audio_hash": compute_audio_hash(hit)}
+        acquired = _acquire_audio_uncached(job)
+        # 보관은 락 안에서 — 대기 중인 잡이 락을 얻는 순간 캐시가 이미 채워져 있어야 한다
+        audio_cache.put(job.video_id, Path(acquired["audio_path"]))
+    return acquired
+
+
+def _acquire_audio_uncached(job: "JobInput") -> dict:
+    """캐시를 거치지 않는 확보 경로 — audio_path > audio_url > yt-dlp."""
     # 인프로세스: 서버가 미디어 캐시에서 추출해 넘긴 로컬 파일 직사용
     if job.audio_path:
         p = Path(job.audio_path)

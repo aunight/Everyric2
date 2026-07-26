@@ -42,11 +42,29 @@ def hermetic_env():
 
 
 @pytest.fixture(autouse=True)
-def reset_settings_before_test(hermetic_env):
+def no_audio_cache(hermetic_env):
+    """오디오 캐시를 기본으로 꺼 둔다 — 켜려는 테스트는 스스로 켠다.
+
+    끄지 않으면 두 가지가 깨진다. ① `audio.cache_dir` 기본값이 `~/.cache/everyric2/audio`라
+    테스트를 돌리는 것만으로 **사용자 홈에 오디오가 쌓인다**. ② 캐시는 프로세스 수명보다
+    오래 살므로 `_download_and_hash`를 세는 테스트끼리 서로의 캐시를 히트해
+    **실행 순서에 따라 결과가 갈린다**. 검증이 실행 환경·순서마다 다른 결과를 내면 배포 전
+    검증으로서 의미가 없다(위 `hermetic_env`와 같은 이유다).
+    """
+    os.environ["EVERYRIC_AUDIO_CACHE_ENABLED"] = "false"
+    try:
+        yield
+    finally:
+        # hermetic_env가 되돌리기 전에 우리가 넣은 값을 치운다
+        os.environ.pop("EVERYRIC_AUDIO_CACHE_ENABLED", None)
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_before_test(no_audio_cache):
     """Reset settings before each test.
 
-    `hermetic_env`를 인자로 받아 **환경을 비운 뒤에** 설정 캐시를 지운다 — 순서가
-    뒤바뀌면 캐시가 오염된 환경으로 다시 채워진다.
+    `no_audio_cache`(→`hermetic_env`)를 인자로 받아 **환경을 비우고 캐시를 끈 뒤에** 설정
+    캐시를 지운다 — 순서가 뒤바뀌면 캐시가 오염된 환경으로 다시 채워진다.
     """
     reset_settings()
     yield

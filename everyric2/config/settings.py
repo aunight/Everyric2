@@ -63,6 +63,34 @@ class AudioSettings(BaseSettings):
         default=Path("/tmp/everyric2"), description="Temporary directory for processing"
     )
 
+    # video_id-keyed audio cache — the point is to stop touching YouTube for a video we
+    # already fetched. The pre-existing cache is keyed on (audio_hash, lyrics_hash), and a
+    # hash needs the file, and the file needs a download: it saved the GPU alignment but
+    # never saved one single download. Measured on the 2026-07-26 overnight batch: 182 syncs
+    # generated, 275 YouTube downloads; re-running the same songs would fetch all 275 again.
+    cache_enabled: bool = Field(
+        default=True,
+        description="Keep fetched audio keyed by video_id so the same video is never "
+        "downloaded twice. Also stabilises audio_hash: that hash is over the file BYTES, so "
+        "the same video acquired via the media cache (m4a stream copy) and via yt-dlp (wav "
+        "transcode) hashes differently and the (audio_hash, lyrics) cache misses — with this "
+        "cache in front, one video always yields one file.",
+    )
+    cache_dir: Path = Field(
+        default=Path.home() / ".cache" / "everyric2" / "audio",
+        description="Where fetched audio is kept. DELIBERATELY NOT UNDER temp_dir: on the "
+        "deployment server /tmp is a tmpfs (63G of RAM), so caching there would spend RAM "
+        "and lose everything on reboot. This directory is created on first use, not at "
+        "import, so a disabled cache leaves no trace.",
+    )
+    cache_max_gb: float = Field(
+        default=20.0,
+        description="Cache size ceiling in GiB; least-recently-used files are deleted past "
+        "it. yt-dlp produces wav (preferredcodec='wav'), which runs ~30MB per song — the "
+        "measured average in /tmp/everyric2 was 32MB across 19 files — so 20GiB holds "
+        "roughly 600 songs. 0 or less means no ceiling.",
+    )
+
     # YouTube cookie settings
     cookies_from_browser: str | None = Field(
         default=None,

@@ -153,9 +153,13 @@ uv run everyric2 worker --server https://everyric.example.com --key <워커 키>
 
 이 구조 그대로 두고 얹을 수 있게 접점만 정리해 둔다:
 
-- **yt-dlp 캐시 공유(2단계)**: `EVERYRIC_AUDIO_TEMP_DIR`을 플랫폼 캐시 디렉터리로
-  바꾸고, 다운로더에 video_id 기준 "받기 전 캐시 조회"를 추가(소규모 수정 — 현재는
-  잡마다 `{video_id}-{job_id}` 파일명으로 새로 받는다).
+- ~~**yt-dlp 캐시 공유(2단계)**~~ → **구현됨**. `video_id` 오디오 캐시가 확보 경로 맨 앞에
+  서고(`everyric2/audio/cache.py`), 같은 영상의 동시 요청은 락으로 한 번으로 병합된다.
+  설정은 `EVERYRIC_AUDIO_CACHE_*`(위 `.env.example`) — **`EVERYRIC_AUDIO_TEMP_DIR`과 같은
+  곳으로 지정하지 말 것**(`/tmp`가 tmpfs면 RAM을 먹고 재부팅에 사라진다).
+  왜 필요했는지: 기존 캐시는 `(audio_hash, lyrics_hash)` 키라 해시를 구하려면 파일이,
+  파일을 구하려면 다운로드가 필요했다. 2026-07-26 밤샘 배치 실측으로 **싱크 생성 182건에
+  유튜브 다운로드 275회**가 확인됐다 — GPU만 아끼고 유튜브 접촉은 하나도 아끼지 못했다.
 - **원곡 참조 연동(3단계)**: 플랫폼이 `X-API-Key` 헤더로 everyric2 REST를 호출.
   `GET /api/sync/{video_id}`(싱크·linked 조회), SyncLink(원곡 video_id+offset+rate)가
   이미 있어 everyric2 쪽 수정 없이 연계 기능을 만들 수 있다.
