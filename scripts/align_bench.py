@@ -221,13 +221,22 @@ def main() -> None:
                 )
             for cfg in configs:
                 t0 = time.time()
-                results = engine.align(
-                    audio if cfg.startswith("nosep") else vocals,
-                    lyric_lines,
-                    language=args.language,
-                    forbidden_spans=forbidden or None,
-                    vocal_presence=presence if cfg == "star" else None,
-                )
+                try:
+                    results = engine.align(
+                        audio if cfg.startswith("nosep") else vocals,
+                        lyric_lines,
+                        language=args.language,
+                        forbidden_spans=forbidden or None,
+                        vocal_presence=presence if cfg == "star" else None,
+                    )
+                except Exception as exc:  # OOM 등 — 한 실행이 벤치 전체를 죽이면 안 된다
+                    song["runs"][cfg].append({"error": repr(exc)[:300]})
+                    print(f"{vid} run{run} {cfg}: ERROR {exc!r}", flush=True)
+                    import torch as _t
+
+                    if _t.cuda.is_available():
+                        _t.cuda.empty_cache()
+                    continue
                 starts = {
                     i: r.start_time for i, r in enumerate(results) if r.start_time is not None
                 }
