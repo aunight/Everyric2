@@ -11,6 +11,7 @@ import { installEngine } from "./engine-install";
 import { inspectEnvironment, readJsonFile, runLocalSync } from "./local-sync";
 import { normalizeSyncPayload, planLayerFill, planLineLyrics, planTypography } from "./planner";
 import { fetchServerSync } from "./server-client";
+import { compKey, forgetSyncForComp, loadSyncForComp, saveSyncForComp } from "./sync-store";
 import { fetchLatestManifest, openExternal, panelUpdate, RELEASES_URL } from "./updater";
 import type { LatestManifest } from "./updater";
 import { isNewerVersion, parseVersion, satisfiesRange, SUPPORTED_ENGINE_RANGE } from "./version";
@@ -298,6 +299,10 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusServerFetching: "서버에서 싱크를 가져오는 중…",
     statusServerFetched: "서버 싱크 {count}줄을 불러왔습니다.",
     statusServerLinked: "다른 영상({source})의 싱크를 빌려온 것입니다. 오프셋이 이 영상과 맞는지 확인하세요.",
+    syncStoreNote: "싱크는 컴포지션마다 저장돼, 패널을 닫았다 열어도 그대로 돌아옵니다.",
+    forgetSync: "저장된 싱크 지우기",
+    statusSyncRestored: "이 컴포지션에 저장해 둔 싱크 {count}줄을 불러왔습니다.",
+    statusSyncForgotten: "이 컴포지션의 저장된 싱크를 지웠습니다.",
   },
   ja: {
     settingsAria: "設定",
@@ -481,6 +486,10 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusServerFetching: "サーバーから同期データを取得中…",
     statusServerFetched: "サーバーの同期データ {count} 行を読み込みました。",
     statusServerLinked: "別の動画({source})の同期データを借りたものです。オフセットがこの動画と合うか確認してください。",
+    syncStoreNote: "同期データはコンポジションごとに保存され、パネルを閉じても戻ってきます。",
+    forgetSync: "保存した同期データを削除",
+    statusSyncRestored: "このコンポジションに保存された同期データ {count} 行を読み込みました。",
+    statusSyncForgotten: "このコンポジションの保存済み同期データを削除しました。",
   },
   en: {
     settingsAria: "Settings",
@@ -664,6 +673,10 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusServerFetching: "Fetching the sync from the server…",
     statusServerFetched: "Loaded {count} lines from the server.",
     statusServerLinked: "This sync is borrowed from another video ({source}). Check that the offset fits this one.",
+    syncStoreNote: "Syncs are stored per composition, so closing the panel does not lose them.",
+    forgetSync: "Forget stored sync",
+    statusSyncRestored: "Restored {count} lines stored for this composition.",
+    statusSyncForgotten: "Removed the sync stored for this composition.",
   },
 };
 
@@ -688,6 +701,8 @@ class EveryricStudioPanel {
   private cutPoints: CutPoint[] = [];
   private cutSelectionTimer: number | null = null;
   private lastCutSelectionSignature = "";
+  /** 지금 보고 있는 컴포지션의 저장 열쇠. 바뀌면 싱크를 갈아탄다. */
+  private compStorageKey: string | null = null;
 
   constructor() {
     this.bindUI();
@@ -726,6 +741,7 @@ class EveryricStudioPanel {
     this.bindClick("refreshCompBtn", () => this.refreshComp());
     this.bindClick("loadJsonBtn", () => this.loadJson());
     this.bindClick("fetchServerBtn", () => this.fetchFromServer());
+    this.bindClick("forgetSyncBtn", () => this.forgetStoredSync());
     this.bindClick("checkEngineBtn", () => this.checkEngine());
     this.bindClick("runSyncBtn", () => this.runSync());
     this.bindClick("cancelSyncBtn", () => this.cancelSync());
@@ -888,7 +904,12 @@ class EveryricStudioPanel {
     this.setText("#cancelSyncBtn", "cancel");
     this.setText("#environmentReport span", "envHint");
     this.setText(".progress-head small", "progressRecent");
-    this.setText("#view-sync .microcopy", "syncMicro");
+    this.setText("#view-sync > .microcopy:not(.sync-store-note)", "syncMicro");
+    const storeNote = document.querySelector<HTMLElement>(".sync-store-note");
+    if (storeNote) {
+      storeNote.childNodes[0]!.textContent = `${this.t("syncStoreNote")} `;
+    }
+    this.setText("#forgetSyncBtn", "forgetSync");
     this.setText("#view-fill .section-heading h1", "fillTitle");
     this.setText("#view-fill .section-heading p", "fillIntro");
     this.setText(".principle-card span", "preserve");
@@ -1080,11 +1101,21 @@ class EveryricStudioPanel {
     try {
       this.comp = await evalHost<CompInfo>("everyricGetCompInfo");
       this.renderComp();
+      // 컴포지션이 바뀌었으면 그 컴포지션에 매어 둔 싱크로 갈아탄다. 같은 컴포지션을 보고
+      // 있는 동안에는 손대지 않는다 — 방금 불러온 것을 덮어쓰면 안 된다.
+      const key = compKey(this.comp.projectPath, this.comp.compId);
+      let restored = false;
+      if (key !== this.compStorageKey) {
+        this.compStorageKey = key;
+        restored = this.adoptSyncForCurrentComp();
+      }
       if (preserveStatus) {
         return;
       }
       if (!this.comp.hasComp) {
         this.statusKey("ready", "statusNeedActiveComp");
+      } else if (restored) {
+        // 복원했다는 사실이 컴포지션 안내보다 알릴 값어치가 크다 — 덮어쓰지 않는다.
       } else {
         this.statusKey("ready", "statusCompReady", {
           name: this.comp.name ?? "Untitled",
@@ -1095,6 +1126,31 @@ class EveryricStudioPanel {
     } catch (error) {
       this.statusKey("error", "statusParseError", { error: errorMessage(error) });
     }
+  }
+
+  /**
+   * 지금 컴포지션에 저장된 싱크를 꺼내 온다. 없으면 비운다 — 다른 컴포지션의 가사를
+   * 그대로 들고 있으면 엉뚱한 곳에 텍스트를 채우게 된다.
+   */
+  private adoptSyncForCurrentComp(): boolean {
+    if (!this.comp?.hasComp) return false;
+    const restored = loadSyncForComp(this.comp.projectPath, this.comp.compId);
+    if (restored) {
+      this.setSyncDocument(restored, { persist: false, restored: true });
+      return true;
+    }
+    if (!this.syncDocument) return false;
+    this.syncDocument = null;
+    this.typographyPlan = null;
+    this.fillAssignments = [];
+    this.cutSession = null;
+    this.cutPoints = [];
+    this.lastCutSelectionSignature = "";
+    element<HTMLElement>("dataBadge").textContent = "NO DATA";
+    element<HTMLElement>("dataBadge").classList.remove("ready");
+    this.renderEmptyState();
+    this.renderCut();
+    return false;
   }
 
   private renderComp(): void {
@@ -1124,7 +1180,10 @@ class EveryricStudioPanel {
     element<HTMLButtonElement>("generateTypeBtn").disabled = true;
   }
 
-  private setSyncDocument(documentValue: SyncDocument): void {
+  private setSyncDocument(
+    documentValue: SyncDocument,
+    options: { persist?: boolean; restored?: boolean } = {},
+  ): void {
     this.syncDocument = documentValue;
     this.typographyPlan = null;
     this.fillAssignments = [];
@@ -1146,7 +1205,15 @@ class EveryricStudioPanel {
     `;
     element<HTMLElement>("dataBadge").textContent = documentValue.sourceLabel;
     element<HTMLElement>("dataBadge").classList.add("ready");
-    this.statusKey("success", "statusSyncReady", { count: documentValue.lines.length });
+    // 이 컴포지션에 매어 둔다. 패널을 닫았다 열어도 다시 불러오지 않아도 되게.
+    if (options.persist !== false) {
+      saveSyncForComp(this.comp?.projectPath, this.comp?.compId, documentValue, this.comp?.name);
+    }
+    if (options.restored) {
+      this.statusKey("ready", "statusSyncRestored", { count: documentValue.lines.length });
+    } else {
+      this.statusKey("success", "statusSyncReady", { count: documentValue.lines.length });
+    }
     this.scheduleTypographyPlan();
     if (this.currentView() === "fill") this.scheduleFillPreview();
   }
@@ -1335,6 +1402,11 @@ class EveryricStudioPanel {
     } catch (error) {
       this.statusKey("error", "statusParseError", { error: errorMessage(error) });
     }
+  }
+
+  private forgetStoredSync(): void {
+    forgetSyncForComp(this.comp?.projectPath, this.comp?.compId);
+    this.statusKey("ready", "statusSyncForgotten");
   }
 
   private async fetchFromServer(): Promise<void> {

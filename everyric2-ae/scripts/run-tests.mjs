@@ -385,6 +385,54 @@ try {
     "a zero-width piece means the font has no glyph for it; the measurement cannot be trusted",
   );
 
+  const storeOutfile = path.join(temp, "sync-store.mjs");
+  await build({
+    entryPoints: [path.join(root, "src/panel/sync-store.ts")],
+    outfile: storeOutfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+  });
+  // 실제 캐시를 건드리지 않도록 저장 뿌리를 임시 폴더로 돌린다.
+  const storeHome = fs.mkdtempSync(path.join(os.tmpdir(), "everyric-store-"));
+  const realLocalAppData = process.env.LOCALAPPDATA;
+  process.env.LOCALAPPDATA = storeHome;
+  try {
+    const { compKey, saveSyncForComp, loadSyncForComp, forgetSyncForComp } = await import(
+      `${pathToFileURL(storeOutfile).href}?v=${Date.now()}`
+    );
+    assert.equal(compKey("C:/a/b.aep", undefined), null, "a composition without an id cannot be keyed");
+    assert.equal(compKey(undefined, 12), compKey("", 12), "an unsaved project keys on the composition id alone");
+    assert.notEqual(compKey("C:/one.aep", 12), compKey("C:/two.aep", 12), "same comp id in different projects must not collide");
+    assert.equal(compKey("C:/One.aep", 12), compKey("c:/one.aep", 12), "windows paths differing only in case are the same project");
+
+    const storedDocument = normalizeSyncPayload({
+      language: "ja",
+      timestamps: [
+        { text: "君の名前", start: 10, end: 12, pronunciation: "키미노 나마에",
+          words: Array.from("君の名前").map((word, index) => ({ word, start: 10 + index * 0.5, end: 10.5 + index * 0.5 })) },
+      ],
+    });
+    assert.equal(loadSyncForComp("C:/p.aep", 7), null, "nothing is stored yet");
+    saveSyncForComp("C:/p.aep", 7, storedDocument, "Comp 1");
+    const restored = loadSyncForComp("C:/p.aep", 7);
+    assert.ok(restored, "the sync comes back for the same composition");
+    assert.equal(restored.lines.length, 1);
+    assert.equal(restored.lines[0].pronunciation, "키미노 나마에", "pronunciation survives the round trip");
+    assert.equal(restored.lines[0].atoms.length, 4, "character timings survive the round trip");
+    assert.equal(loadSyncForComp("C:/p.aep", 8), null, "another composition in the same project has its own slot");
+    assert.equal(loadSyncForComp("C:/other.aep", 7), null, "the same comp id in another project is a different slot");
+    forgetSyncForComp("C:/p.aep", 7);
+    assert.equal(loadSyncForComp("C:/p.aep", 7), null, "forgetting removes it");
+    // 저장이 실패해도 예외로 작업을 끊지 않는다.
+    saveSyncForComp(undefined, undefined, storedDocument);
+  } finally {
+    if (realLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = realLocalAppData;
+    fs.rmSync(storeHome, { recursive: true, force: true });
+  }
+
   const engineInstallSource = fs.readFileSync(path.join(root, "src/panel/engine-install.ts"), "utf8");
   // 주석은 "왜 건드리지 않는지"를 설명하므로 검사 대상이 아니다. 실제 코드만 본다.
   const engineInstallCode = engineInstallSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");

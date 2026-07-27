@@ -118,9 +118,21 @@ function everyricGetCompInfo(): string {
   try {
     var comp = activeComp();
     if (!comp) return response({ ok: true, hasComp: false });
+    var compId = 0;
+    try {
+      compId = Number(comp.id) || 0;
+    } catch (error) {}
+    var projectPath = "";
+    try {
+      projectPath = app.project.file ? app.project.file.fsName : "";
+    } catch (error) {}
     return response({
       ok: true,
       hasComp: true,
+      // 싱크 데이터를 이 컴포지션에 매어 두기 위한 신원. 저장 전 프로젝트는 경로가 비고,
+      // 그때는 컴포지션 id만으로 구분한다(AE를 다시 켜면 흩어지지만 세션 안에서는 맞다).
+      compId: compId,
+      projectPath: projectPath,
       name: comp.name,
       width: comp.width,
       height: comp.height,

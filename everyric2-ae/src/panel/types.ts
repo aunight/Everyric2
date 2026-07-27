@@ -90,6 +90,9 @@ export interface TextLayerInfo {
 
 export interface CompInfo {
   hasComp: boolean;
+  /** 컴포지션 고유 id. 프로젝트 경로와 함께 싱크 데이터를 매어 두는 열쇠가 된다. */
+  compId?: number;
+  projectPath?: string;
   name?: string;
   width?: number;
   height?: number;
