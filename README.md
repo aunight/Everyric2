@@ -18,6 +18,92 @@
                                          └───────────────────────────┘
 ```
 
+**[한국어](#한국어-사용-안내)** | **[English](#english-guide)** | **[日本語](#日本語ガイド)**
+
+## 한국어 사용 안내
+
+### ① 확장 설치
+
+1. [Releases](https://github.com/onpe5679/Everyric2/releases)에서 최신 `Everyric-Chrome-<버전>.zip`을 받아 압축을 풉니다.
+2. 주소창에 `chrome://extensions`를 입력하고 우측 상단 **개발자 모드**를 켭니다.
+3. **압축해제된 확장 프로그램을 로드합니다**를 눌러 방금 압축 해제한 폴더를 선택합니다.
+
+### ② 첫 사용
+
+유튜브에서 곡 영상을 열면 가사 패널이 자동으로 뜹니다. 서버에 이미 등록된 곡은 즉시 표시되고, 처음 보는 곡이면 패널의 **✨ 싱크 생성** 버튼으로 만들 수 있습니다.
+번역을 보려면 패널 설정(⚙)에서 **가사 번역 표시**를 켜고 언어(한국어·English·日本語)를 고르세요 — 이후엔 제목바의 언어 칩을 눌러 언제든 바로 전환할 수 있습니다.
+
+### ③ 기능 요약
+
+- **3개 언어 번역**: 한국어·영어·일본어를 서로 번역 — 곡의 원어와 같은 언어는 자동으로 생략됩니다
+- **발음 표기**: 원문에 맞춰 한글(hangul)·로마자(romaji)·가나(kana) 표기를 자동으로 골라 보여줍니다
+- **가라오케 음정 바 (PiP)**: 항상 위에 뜨는 별도 창에 멜로디 노트·계이름·발음·번역이 타이밍에 맞춰 정렬됩니다
+- **언어 칩**: 제목바에서 이 곡에 어떤 언어가 준비돼 있는지 한눈에 보고 클릭 한 번으로 전환합니다
+
+### ④ 서버
+
+기본 서버 주소는 `https://everyric.moref.co`이며 **API 키를 입력할 필요가 없습니다** — 설정의 키 칸은 비워 두세요. 가사 조회는 무제한이고, 새 싱크 생성만 이용자당 하루 15건으로 제한됩니다.
+직접 서버를 구동하고 싶다면 아래 [자체 호스팅](#자체-호스팅-개발자용) 절을 참고하세요.
+개인정보처리방침: <https://everyric.moref.co/privacy>
+
+---
+
+## English Guide
+
+### ① Install the extension
+
+1. Download the latest `Everyric-Chrome-<version>.zip` from [Releases](https://github.com/onpe5679/Everyric2/releases) and unzip it.
+2. Open `chrome://extensions` and turn on **Developer mode** (top right).
+3. Click **Load unpacked** and select the folder you just unzipped.
+
+### ② First use
+
+Open a song's video on YouTube and the lyrics panel opens automatically. Songs the server already knows show up instantly; for a new one, use the **✨ Generate sync** button in the panel.
+To see translations, open the panel's settings (⚙), turn on **Show translation**, and pick a language (한국어 · English · 日本語) — after that, switch languages anytime with the chips in the title bar.
+
+### ③ Features
+
+- **Three-language translation** — Korean, English, and Japanese, translated into each other; a song already in your language skips translation automatically
+- **Pronunciation** — shown in Hangul, romaji, or kana, chosen automatically to match the original text
+- **Karaoke pitch lane (PiP)** — a separate always-on-top window with melody notes, solfège labels, pronunciation, and translation lined up to the beat
+- **Language chips** — the title bar shows which languages are ready for this song; one click switches between them
+
+### ④ Server
+
+The default server is `https://everyric.moref.co` and **no API key is required** — leave the key field empty. Lookups are unlimited; generating a new sync is capped at 15 per user per day.
+Want to run your own server instead? See [Self-Hosting](#self-hosting-for-developers) below.
+Privacy policy: <https://everyric.moref.co/privacy>
+
+---
+
+## 日本語ガイド
+
+### ① 拡張機能のインストール
+
+1. [Releases](https://github.com/onpe5679/Everyric2/releases)から最新の`Everyric-Chrome-<バージョン>.zip`をダウンロードして解凍します。
+2. `chrome://extensions`を開き、右上の**デベロッパーモード**をオンにします。
+3. **パッケージ化されていない拡張機能を読み込む**をクリックし、解凍したフォルダを選択します。
+
+### ② はじめての使い方
+
+YouTubeで曲の動画を開くと、歌詞パネルが自動で表示されます。サーバーに既に登録されている曲はすぐに表示され、初めての曲はパネルの**✨ 同期を生成**ボタンで作成できます。
+翻訳を表示するには、パネルの設定(⚙)で**歌詞の翻訳を表示**をオンにし、言語(한국어・English・日本語)を選んでください — その後はタイトルバーの言語チップでいつでも切り替えられます。
+
+### ③ 主な機能
+
+- **3言語翻訳** — 韓国語・英語・日本語を相互に翻訳。曲の原語と同じ言語は自動的にスキップされます
+- **発音表記** — 原文に合わせてハングル・ローマ字・かなの表記を自動的に選んで表示します
+- **カラオケ音程バー(PiP)** — 常に最前面に表示される別ウィンドウに、メロディノート・階名・発音・翻訳がタイミングに合わせて並びます
+- **言語チップ** — この曲がどの言語で準備できているかタイトルバーで一目で分かり、クリック一つで切り替えられます
+
+### ④ サーバー
+
+デフォルトのサーバーは`https://everyric.moref.co`で、**APIキーの入力は不要です** — 設定のキー欄は空のままにしてください。歌詞の検索は無制限、新規同期の生成のみ1ユーザーあたり1日15件までです。
+自分でサーバーを立てたい場合は、下記の[セルフホスティング](#セルフホスティング-開発者向け)を参照してください。
+プライバシーポリシー: <https://everyric.moref.co/privacy>
+
+---
+
 ## 주요 기능
 
 ### Chrome 확장 (`everyric2-chrome/`)
@@ -48,10 +134,13 @@
 | 구성 요소 | 파일 | 설치 |
 |---|---|---|
 | Chrome 확장 | `Everyric-Chrome-<버전>.zip` | 압축 해제 → `chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드** |
-| 서버/엔진 | `everyric2-<버전>-py3-none-any.whl` | `pip install <경로/URL>` (소스 설치는 아래 빠른 시작 참고) |
+| 서버/엔진 | `everyric2-<버전>-py3-none-any.whl` | `pip install <경로/URL>` (소스 설치는 아래 [자체 호스팅](#자체-호스팅-개발자용) 참고) |
 | After Effects 패널 | `Everyric-Studio-<버전>.zxp` | [aescripts ZXP Installer](https://aescripts.com/learn/zxp-installer/)로 열기 (AE 2024+) |
 
-## 빠른 시작
+## 자체 호스팅 (개발자용)
+
+기본 서버(`everyric.moref.co`) 대신 직접 서버를 구동하고 싶은 경우입니다. 그냥 확장을 쓰고
+싶다면 위 [설치 안내](#한국어-사용-안내)만으로 충분합니다 — 이 절은 필요 없습니다.
 
 ### 1. 서버
 
@@ -92,19 +181,22 @@ export NVIDIA_API_KEY=nvapi-...   # 또는 저장소 루트에 nvapi.txt (gitign
 > 강제 재생성·싱크 초기화 같은 파괴적 행위를 영상당 하루 한도로 제한하고, 어드민 키
 > 보유자만 무제한으로 둘 수 있습니다.
 
-### 2. Chrome 확장
+### 2. Chrome 확장을 소스에서 빌드
 
-[Releases](https://github.com/onpe5679/Everyric2/releases)의 `Everyric-Chrome-<버전>.zip`을 받아 압축 해제하거나, 소스에서 빌드합니다:
+자체 서버를 확장에 연결하려면 소스에서 빌드하거나(아래) [Releases](https://github.com/onpe5679/Everyric2/releases)의
+`Everyric-Chrome-<버전>.zip`을 그대로 씁니다:
 
 ```bash
 cd everyric2-chrome
 npm install && npm run build
 ```
 
-`chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드** → 압축 해제한 폴더(또는 `everyric2-chrome/dist`) 선택.
-유튜브에서 음악 영상을 열면 자동으로 패널이 뜹니다 (툴바 아이콘으로 수동 토글).
+`chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드** → `everyric2-chrome/dist` 선택.
+설정(⚙)에서 서버 URL을 자체 서버 주소로 바꾸고, 처음 한 번은 확장의 권한 설정 페이지에서
+로컬(또는 자체 도메인) 접근을 허용해야 합니다 — 기본 서버(everyric.moref.co)만 쓰는 대부분의
+설치에는 필요 없는 절차입니다.
 
-> Windows에서 서버 URL은 `http://127.0.0.1:8000`을 쓰세요 — `localhost`는 IPv6 선시도로 요청당 ~2초 지연될 수 있습니다 (확장 기본값이 이미 127.0.0.1).
+> Windows에서 서버 URL은 `http://127.0.0.1:8000`을 쓰세요 — `localhost`는 IPv6 선시도로 요청당 ~2초 지연될 수 있습니다.
 
 ## 서버 API 요약
 
@@ -151,7 +243,7 @@ npm install && npm run build
 | `EVERYRIC_SERVER_ADMIN_API_KEY` | - | 설정 시 파괴적 행위(재생성·초기화)에 일일 한도 적용, 이 키는 면제 |
 | `EVERYRIC_SERVER_DAILY_DESTRUCTIVE_LIMIT` | 2 | 비어드민의 영상당 24시간 한도 |
 
-공개 배포 시 권장 설정은 위의 [보안 경고](#빠른-시작) 참고.
+공개 배포 시 권장 설정은 위의 [보안 경고](#자체-호스팅-개발자용) 참고.
 
 ## CLI (서버 없이 단독 사용)
 
@@ -190,8 +282,8 @@ cd everyric2-chrome && npm run build   # 확장 (tsc + vite)
 
 ## 크레딧·라이선스
 
-- MIT License
+- **코드**: [Apache License 2.0](LICENSE)
+- **가사·발음·번역 출처**: [보카로 가사 위키](http://vocaro.wikidot.com/) (CC BY 4.0), [VocaloidLyrics Wiki](https://vocaloidlyrics.miraheze.org/) (CC BY-SA 4.0), [LRCLIB](https://lrclib.net/) — 확장이 조회·저장 시 출처를 함께 표기합니다
 - 정렬: [MMS wav2vec2](https://huggingface.co/facebook/mms-300m) — 모델 가중치 라이선스(CC-BY-NC)는 상업 배포 시 별도 확인 필요
 - 멜로디: RMVPE (추론 코드 MIT 포팅, 가중치 별도 다운로드), [torchfcpe](https://github.com/CNChTu/FCPE)
 - 보컬 분리: [demucs](https://github.com/facebookresearch/demucs)
-- 가사·발음: [보카로 가사 위키](http://vocaro.wikidot.com/) (CC BY — 확장이 출처를 함께 저장·표기), [LRCLIB](https://lrclib.net/)
