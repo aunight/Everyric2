@@ -371,6 +371,7 @@ def derive_anchor_plan(
     audio_sec: float = 0.0,
     max_forbidden_ratio: float = 0.35,
     positive_min_match: float = 0.85,
+    span_min_match: float | None = None,
 ) -> AnchorPlan:
     """가장 그럴듯한 트랙을 **먼저 맞혀 보고**, 기준을 넘으면 그것으로 제약을 만든다.
 
@@ -429,11 +430,19 @@ def derive_anchor_plan(
     if rate >= positive_min_match:
         # 같은 자막 이벤트에 우리 두 줄이 붙으면 둘의 시각이 같다. 그대로 둔다 — 창 정렬이
         # 순서를 지켜 순차 배치하므로 같은 시각이 모순을 만들지 않는다.
-        # (자막 스캐폴드는 공유 이벤트의 후속 줄을 자체적으로 보간으로 돌린다)
         line_starts = {a.line_idx: a.start for a in anchors}
-        line_spans = {a.line_idx: (a.start, a.end) for a in anchors}
     else:
         debug["positive_skipped"] = "low_match"
+    # line_spans(자막 스캐폴드용)는 하한이 따로다: 양성 제약은 틀린 앵커가 DP 블록을 통째로
+    # 끌고 가지만, 스캐폴드는 kept(관용치 안 CTC 유지)·보간의 최소 개입 구조라 앵커 하나의
+    # 오류가 그 줄에서 끝난다. 실측 근거: 消失이 76.9%로 0.85에 걸려 스킵됐는데 그 매칭
+    # 미달의 원인은 반복 병합·표기차(같은 곡)였다. None이면 positive_min_match와 같다.
+    span_gate = positive_min_match if span_min_match is None else span_min_match
+    if rate >= span_gate:
+        # (스캐폴드는 공유 이벤트의 후속 줄을 자체적으로 보간으로 돌린다)
+        line_spans = {a.line_idx: (a.start, a.end) for a in anchors}
+    elif "positive_skipped" not in debug:
+        debug["span_skipped"] = "low_match"
 
     # ── 음성 제약: 금지 구간 ──
     candidates = span_candidates(anchors, events, lyric_texts, min_gap_sec, margin_sec)

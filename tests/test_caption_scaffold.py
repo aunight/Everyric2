@@ -188,6 +188,23 @@ def test_worker_gate_drift_alone_triggers_even_with_ok_conf():
     assert meta["applied"] is True
 
 
+def test_span_gate_is_lower_than_positive_gate():
+    """매칭 0.7~0.85 구간: 양성 제약(line_starts)은 접고 스캐폴드(line_spans)만 선다 —
+    消失(76.9%, 병합·표기차로 미달)이 스킵되던 실측 사고의 회귀 고정."""
+    from everyric2.alignment.caption_anchors import derive_anchor_plan
+
+    lines = [f"かなり長い歌詞の行{i}です" for i in range(10)]
+    events = [
+        {"text": lines[i], "start": 10.0 * i, "end": 10.0 * i + 3.0} for i in range(8)
+    ]  # 8/10 = 0.8 매칭
+    plan = derive_anchor_plan(
+        lines, [("ja", events)], positive_min_match=0.85, span_min_match=0.7
+    )
+    assert plan.line_starts == {}  # 양성 제약은 0.85 미달로 접힌다
+    assert len(plan.line_spans) == 8  # 스캐폴드는 0.7 하한으로 선다
+    assert plan.debug["positive_skipped"] == "low_match"
+
+
 def test_worker_gate_reports_missing_anchor_reason():
     from everyric2.alignment.caption_anchors import AnchorPlan
     from everyric2.server.worker import _apply_caption_scaffold

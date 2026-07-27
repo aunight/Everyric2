@@ -1808,7 +1808,8 @@ def _apply_caption_scaffold(
     if not anchor_plan.line_spans:
         return {
             "applied": False,
-            "skipped": anchor_plan.debug.get("positive_skipped")
+            "skipped": anchor_plan.debug.get("span_skipped")
+            or anchor_plan.debug.get("positive_skipped")
             or anchor_plan.debug.get("skipped")
             or "no_anchors",
         }
@@ -2724,6 +2725,7 @@ def _caption_forbidden_spans(video_id: str | None, lyric_lines, audio_sec: float
             audio_sec=audio_sec,
             max_forbidden_ratio=align_settings.caption_anchor_max_forbidden_ratio,
             positive_min_match=align_settings.caption_anchor_positive_min_match,
+            span_min_match=getattr(align_settings, "caption_scaffold_min_match", None),
         )
     except Exception:
         logger.exception("Caption anchor derivation failed; aligning without anchors")

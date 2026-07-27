@@ -496,6 +496,17 @@ class AlignmentSettings(BaseSettings):
         "re-timed lines carry the 'scaffold' fix label (ghost overlay in the extension debug "
         "lane).",
     )
+    caption_scaffold_min_match: float = Field(
+        default=0.7,
+        description="Caption-to-lyrics match rate required before the scaffold may use a "
+        "track — deliberately LOWER than caption_anchor_positive_min_match (0.85) because "
+        "the failure shapes differ: a wrong positive constraint drags a whole DP block, while "
+        "a wrong scaffold anchor mis-times only its own line (kept/interp absorb the rest). "
+        "Measured basis: 消失 matches at 76.9% purely from merged repeats and orthography "
+        "differences (same song) and was wrongly skipped at 0.85. Do not drop below the "
+        "track-selection floor caption_anchor_min_match (0.5) — under that the track may be a "
+        "different song/version and every anchor is suspect.",
+    )
     caption_scaffold_max_conf: float = Field(
         default=0.002,
         description="Collapse gate ① for caption_scaffold: average line confidence below this "
