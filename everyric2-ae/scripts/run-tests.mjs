@@ -338,7 +338,13 @@ try {
 
   const hostSource = fs.readFileSync(path.join(root, "src/jsx/host.ts"), "utf8");
   assert.ok(hostSource.includes('layer.comment = "EV2|"'), "generated ownership metadata must remain in layer comments");
-  assert.ok(hostSource.includes('layer.name = "EV2 " + block.id + " · "'), "generated layer names should expose card-block ids and lyric text");
+  // 텍스트 레이어의 이름은 AE 기본대로 내용을 따라가야 한다. layer.name에 무엇이든 쓰는
+  // 순간 그 연결이 끊기고 타임라인에 "EV2 C01-B01 · …" 같은 껍데기가 남는다.
+  // 생성물 식별은 comment(EV2|)가 전담한다.
+  assert.ok(
+    !/\blayer\.name\s*=/.test(hostSource) && !/\bclone\.name\s*=/.test(hostSource),
+    "generated text layers must not be renamed: AE keeps a text layer's name in sync with its content until something assigns a name",
+  );
   assert.ok(hostSource.includes("if (payload.autoLabelColors)"), "label color cycling must be optional");
   assert.ok(hostSource.includes("layer.label = 1 + (cardNumber % 16)"), "optional label color cycling should still be available");
   assert.ok(hostSource.includes("function everyricRemoveGeneratedLayers"), "cleanup tool must remove generated Everyric layers explicitly");

@@ -17,7 +17,10 @@ import { build } from "esbuild";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const syncPath = path.resolve(process.argv[2] ?? path.join(root, "artifacts", "real-song-sync.json"));
 const JAPANESE_FONT = process.env.EVERYRIC_TEST_FONT || "YuGothic-Medium";
-const LINES_TO_CUT = 6;
+// 곡 전체를 자른다. 앞 몇 줄만 보면 후렴 반복 같은 실제 구조가 드러나지 않는다.
+const LINES_TO_CUT = Number(process.env.EVERYRIC_TEST_LINES || 0) || Infinity;
+// 오디오가 있으면 컴포지션에 얹는다 — 소리 없이는 타이밍이 맞는지 볼 방법이 없다.
+const audioPath = process.env.EVERYRIC_TEST_AUDIO ?? path.join(root, "artifacts", "audio", "9UFU4VmcNrA.wav");
 
 if (!fs.existsSync(syncPath)) {
   console.error(`[real-song] 싱크 JSON이 없습니다: ${syncPath}`);
@@ -49,8 +52,8 @@ export { buildCutSession, computePieces, defaultCutTime, toggleCut, pieceWarning
 
   // 자를 보람이 있는 줄만 고른다: 글자가 넉넉하고 atom이 실제로 붙어 있는 줄.
   const candidates = document.lines
-    .filter((line) => Array.from(line.text.replace(/\s/g, "")).length >= 8 && line.atoms.length >= 6)
-    .slice(0, LINES_TO_CUT);
+    .filter((line) => Array.from(line.text.replace(/\s/g, "")).length >= 4 && line.atoms.length >= 3)
+    .slice(0, LINES_TO_CUT === Infinity ? undefined : LINES_TO_CUT);
   if (candidates.length === 0) {
     console.error("[real-song] 자를 만한 줄이 없습니다.");
     process.exit(1);
@@ -60,7 +63,8 @@ export { buildCutSession, computePieces, defaultCutTime, toggleCut, pieceWarning
   const plans = candidates.map((line, index) => {
     const layer = {
       index: index + 1,
-      name: `LINE_${String(index + 1).padStart(2, "0")}`,
+      // AE에서 텍스트 레이어의 이름은 내용이다. 패널이 보는 것과 같은 값을 넘긴다.
+      name: line.text,
       inPoint: line.start,
       outPoint: line.end,
       text: line.text,
@@ -87,19 +91,30 @@ export { buildCutSession, computePieces, defaultCutTime, toggleCut, pieceWarning
     };
   });
 
-  for (const plan of plans) {
-    console.log(`  ${plan.layerName} [${plan.line.start.toFixed(2)}-${plan.line.end.toFixed(2)}] ${plan.line.text}`);
-    console.log(`     매칭 ${plan.session.matchQuality} · 발음 ${plan.session.pronunciation ?? "(없음)"}`);
-    for (const piece of plan.pieces) {
-      console.log(`     조각 「${piece.text}」 ${piece.start.toFixed(2)}–${piece.end.toFixed(2)}`);
-    }
-    if (plan.warnings.length) console.log(`     경고: ${plan.warnings.join(" / ")}`);
+  const pieceTotal = plans.reduce((sum, plan) => sum + plan.pieces.length, 0);
+  const quality = plans.reduce((acc, plan) => {
+    acc[plan.session.matchQuality] = (acc[plan.session.matchQuality] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(`[real-song] ${plans.length}줄 → ${pieceTotal}조각 · 매칭 ${JSON.stringify(quality)}`);
+  // 조각이 자기 줄 구간을 벗어나면 커팅이 아니라 매칭이 깨진 것이다.
+  const strays = plans.filter((plan) =>
+    plan.pieces.some((piece) => piece.start < plan.line.start - 1e-6 || piece.end > plan.line.end + 1e-6),
+  );
+  console.log(`[real-song] 구간 이탈 조각이 있는 줄: ${strays.length}`);
+  for (const plan of plans.slice(0, 4)) {
+    console.log(`  [${plan.line.start.toFixed(2)}-${plan.line.end.toFixed(2)}] ${plan.line.text}`);
+    console.log(`     ${plan.pieces.map((piece) => `「${piece.text}」${piece.start.toFixed(2)}-${piece.end.toFixed(2)}`).join("  ")}`);
+  }
+  const warned = plans.filter((plan) => plan.warnings.length > 0);
+  if (warned.length) {
+    console.log(`[real-song] 경고 있는 줄 ${warned.length}개:`);
+    for (const plan of warned.slice(0, 6)) console.log(`  「${plan.line.text}」: ${plan.warnings.join(" / ")}`);
   }
 
   // ExtendScript 생성. 값은 전부 JSON으로 직렬화해 따옴표 사고를 없앤다.
   const jsxData = JSON.stringify(
     plans.map((plan) => ({
-      name: plan.layerName,
       text: plan.line.text,
       start: plan.line.start,
       end: plan.line.end,
@@ -115,15 +130,50 @@ export { buildCutSession, computePieces, defaultCutTime, toggleCut, pieceWarning
   const jsx = `(function () {
     var DATA = ${jsxData};
     var FONT = ${JSON.stringify(JAPANESE_FONT)};
+    var AUDIO = ${JSON.stringify(fs.existsSync(audioPath) ? audioPath.replace(/\\/g, "/") : "")};
+    var COMP_NAME = "EV2 실제곡 커팅";
     var out = [];
-    var comp = app.project.items.addComp("EV2 실제곡 커팅", 1920, 1080, 1, ${Math.ceil(document.duration + 2)}, 30);
+    var failures = [];
+    var okCount = 0;
+    var pieceCount = 0;
+    var warnCount = 0;
+    var fontUsed = "";
+
+    // 같은 이름의 이전 컴포지션은 지우고 새로 만든다. 겹쳐 두면 어느 것이 최신인지 모른다.
+    for (var existing = app.project.numItems; existing >= 1; existing -= 1) {
+        var item0 = app.project.item(existing);
+        if (item0.name === COMP_NAME) { try { item0.remove(); } catch (e0) {} }
+    }
+
+    var comp = app.project.items.addComp(COMP_NAME, 1920, 1080, 1, ${Math.ceil(document.duration + 2)}, 30);
     comp.openInViewer();
     app.beginUndoGroup("Everyric 실제곡 커팅 테스트");
     try {
+        // 오디오를 먼저 깔아 둔다. 소리가 없으면 타이밍이 맞는지 판단할 수 없다.
+        if (AUDIO) {
+            try {
+                var audioFile = new File(AUDIO);
+                if (audioFile.exists) {
+                    var footage = app.project.importFile(new ImportOptions(audioFile));
+                    var audioLayer = comp.layers.add(footage);
+                    audioLayer.name = "AUDIO";
+                    audioLayer.startTime = 0;
+                    audioLayer.locked = true;
+                    out.push("audio: " + footage.name + " (" + footage.duration.toFixed(1) + "s)");
+                } else {
+                    out.push("audio: 파일 없음 " + AUDIO);
+                }
+            } catch (audioError) {
+                out.push("audio: 실패 " + audioError);
+            }
+        }
+
         for (var i = 0; i < DATA.length; i += 1) {
             var item = DATA[i];
             var layer = comp.layers.addText(item.text);
-            layer.name = item.name;
+            // 이름은 손대지 않는다 — AE가 텍스트 내용에 맞춰 붙이고, 조각도 자기 텍스트를
+            // 이름으로 갖게 된다. 조각 추적은 레이어 id로 한다.
+            var idsBefore = {};
             var prop = layer.property("ADBE Text Properties").property("ADBE Text Document");
             var doc = prop.value;
             doc.fontSize = 64;
@@ -133,21 +183,26 @@ export { buildCutSession, computePieces, defaultCutTime, toggleCut, pieceWarning
             var appliedFont = prop.value.font;
             layer.inPoint = item.start;
             layer.outPoint = item.end;
-            layer.property("ADBE Transform Group").property("ADBE Position").setValue([960, 200 + i * 120]);
+            // 가라오케처럼 모든 줄을 한자리에. 각 줄은 자기 시간에만 보이므로 겹치지 않는다.
+            layer.property("ADBE Transform Group").property("ADBE Position").setValue([960, 820]);
 
             var originalRect = layer.sourceRectAtTime(Math.max(layer.inPoint, 0), false);
             var originalScreenLeft = 960 + originalRect.left;
 
+            for (var pre = 1; pre <= comp.numLayers; pre += 1) {
+                try { idsBefore[comp.layer(pre).id] = true; } catch (idError) {}
+            }
             var payload = { layerIndex: layer.index, keepOriginalPosition: false, pieces: item.pieces };
             var raw = everyricSplitTextLayer(payload.toSource ? toJson(payload) : "");
             var parsed = eval("(" + raw + ")");
 
+            // 새로 생긴 레이어가 조각이다. host가 뒤 조각부터 복제하므로 스택 순서는 역순.
             var made = [];
             for (var scan = 1; scan <= comp.numLayers; scan += 1) {
                 var candidate = comp.layer(scan);
-                if (candidate.name.indexOf(item.name + " ") === 0) made.push(candidate);
+                try { if (!idsBefore[candidate.id]) made.push(candidate); } catch (idError2) {}
             }
-            made.sort(function (a, b) { return Number(a.name.split(" ").pop()) - Number(b.name.split(" ").pop()); });
+            made.reverse();
 
             var joined = "";
             var timingOk = true;
@@ -163,19 +218,33 @@ export { buildCutSession, computePieces, defaultCutTime, toggleCut, pieceWarning
             var expectedJoined = item.text.replace(/\\s+/g, "");
             var textOk = joined.replace(/\\s+/g, "") === expectedJoined;
 
-            out.push(item.name + ": " + (parsed.ok ? "ok" : "FAIL " + parsed.error)
-                + " | font=" + appliedFont
-                + " | 조각 " + made.length + "/" + item.pieces.length
-                + " | text " + (textOk ? "ok" : "MISMATCH(" + joined + ")")
-                + " | timing " + (timingOk ? "ok" : "WRONG")
-                + " | " + spans.join(", ")
-                + (parsed.warnings && parsed.warnings.length ? " | 경고: " + parsed.warnings.join(";") : ""));
+            var problem = !parsed.ok || !textOk || !timingOk || made.length !== item.pieces.length;
+            if (problem) {
+                failures.push("「" + item.text + "」: " + (parsed.ok ? "ok" : "FAIL " + parsed.error)
+                    + " | 조각 " + made.length + "/" + item.pieces.length
+                    + " | text " + (textOk ? "ok" : "MISMATCH(" + joined + ")")
+                    + " | timing " + (timingOk ? "ok" : "WRONG")
+                    + " | " + spans.join(", "));
+            } else {
+                okCount += 1;
+                pieceCount += made.length;
+            }
+            if (parsed.warnings && parsed.warnings.length) warnCount += 1;
+            fontUsed = appliedFont;
         }
     } catch (e) {
         out.push("ERROR " + e + " @line " + e.line);
     } finally {
         app.endUndoGroup();
     }
+    out.push("줄 " + okCount + "/" + DATA.length + " 통과 · 조각 " + pieceCount
+        + " · 폰트 " + fontUsed + " · 위치경고 " + warnCount + "줄");
+    if (failures.length) {
+        out.push("--- 문제 있는 줄 ---");
+        for (var fi = 0; fi < failures.length && fi < 12; fi += 1) out.push("  " + failures[fi]);
+        if (failures.length > 12) out.push("  … 외 " + (failures.length - 12) + "줄");
+    }
+    out.push("컴포지션 «" + COMP_NAME + "» 를 남겨 두었습니다. 재생하며 확인하세요.");
     return out.join("\\n");
 
     function toJson(value) {

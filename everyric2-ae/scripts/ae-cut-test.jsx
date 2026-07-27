@@ -139,7 +139,9 @@
             try {
                 app.beginUndoGroup("EV2 cut test " + testCase.label);
                 var layer = comp.layers.addText(testCase.text);
-                layer.name = "SRC_" + testCase.label;
+                // 이름은 건드리지 않는다 — AE 기본대로 텍스트 내용이 곧 이름이어야 하고,
+                // 조각은 레이어 id로 찾는다.
+                var idsBefore = {};
                 var prop = layer.property("ADBE Text Properties").property("ADBE Text Document");
                 var doc = prop.value;
                 doc.fontSize = testCase.size;
@@ -176,6 +178,9 @@
                 entry.prefixWidthAlone = textWidth(comp, headTrimmed, layer).width;
                 entry.kerningGap = expectedPrefix - entry.prefixWidthAlone;
 
+                for (var pre = 1; pre <= comp.numLayers; pre += 1) {
+                    try { idsBefore[comp.layer(pre).id] = true; } catch (idError) {}
+                }
                 var raw = everyricSplitTextLayer(payloadJson(layer.index, false, [
                     { text: headTrimmed, head: headTrimmed, start: 1, end: 3 },
                     { text: tailTrimmed, head: testCase.text, start: 3, end: 5 }
@@ -191,16 +196,14 @@
                     continue;
                 }
 
-                // 만들어진 조각을 이름으로 찾는다. host가 붙이는 이름은 "<원본> <조각번호>"이고,
-                // 레이어 스택 순서는 조각 순서와 반대라 번호로 정렬해야 짝이 맞는다.
+                // 새로 생긴 레이어가 곧 조각이다. host는 뒤 조각부터 복제하므로 스택 위에서
+                // 아래로 훑으면 조각 역순이 된다 — 뒤집어야 짝이 맞는다.
                 var pieceLayers = [];
                 for (var scan = 1; scan <= comp.numLayers; scan += 1) {
                     var candidate = comp.layer(scan);
-                    if (candidate.name.indexOf("SRC_" + testCase.label + " ") === 0) pieceLayers.push(candidate);
+                    try { if (!idsBefore[candidate.id]) pieceLayers.push(candidate); } catch (idError2) {}
                 }
-                pieceLayers.sort(function (a, b) {
-                    return Number(a.name.split(" ").pop()) - Number(b.name.split(" ").pop());
-                });
+                pieceLayers.reverse();
                 entry.pieceCount = pieceLayers.length;
                 entry.pieces = [];
                 for (var p = 0; p < pieceLayers.length; p += 1) {

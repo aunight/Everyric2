@@ -331,7 +331,7 @@ function everyricCreateTypography(payloadJson?: string): string {
       var start = Math.max(0, Math.min(comp.duration - comp.frameDuration, Number(block.start)));
       var end = Math.max(start + comp.frameDuration, Math.min(comp.duration, Number(block.end)));
       var layer = comp.layers.addText(String(block.text || ""));
-      layer.name = "EV2 " + block.id + " · " + String(block.text || "").slice(0, 24);
+      // 이름은 AE 기본대로 텍스트 내용을 따라가게 둔다. 카드·블록 식별은 comment가 한다.
       layer.comment = "EV2|" + plan.groupId + "|" + block.cardId + "|" + block.id;
       if (payload.autoLabelColors) {
         try {
@@ -575,7 +575,8 @@ function everyricSplitTextLayer(payloadJson?: string): string {
     for (var index = pieces.length - 1; index >= 0; index -= 1) {
       var piece = pieces[index];
       var clone = layer.duplicate();
-      clone.name = baseName + " " + String(index + 1);
+      // 이름은 건드리지 않는다. AE는 이름을 직접 주지 않은 텍스트 레이어의 이름을 내용에
+      // 맞춰 따라가게 하고, 한 번 name을 쓰면 그 연결이 끊긴다. 조각 식별은 comment로 한다.
       if (baseComment.indexOf("EV2|") === 0) {
         clone.comment = baseComment + "|CUT" + String(index + 1);
       } else if (baseComment === "") {
