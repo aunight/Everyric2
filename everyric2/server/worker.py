@@ -662,11 +662,65 @@ def _attach_ja_kana_variant(
         seg.setdefault("pron_segs", {})["kana"] = segments
 
 
+def _ko_mixed_line_hangul(text: str) -> str | None:
+    """ko 곡 혼합 줄(가나·한자가 섞인 줄)의 hangul 표시 — ja 런만 독음으로 환전한다.
+
+    ko 곡은 원문=독음이라 순한글 줄엔 hangul 키를 안 만드는 게 공유 계약인데, 혼합
+    줄(«사랑해 デス» 등)의 ja 부분을 원문 그대로 두면 ko 사용자가 그 글자를 못 읽는다
+    (감사 2차 R2). 한글 부분은 원문 그대로 두고(이미 독음이다) ja 런만
+    ``kana_hangul.finalize_pronunciation``(한자→가나→한글 체인, LLM 발음 필드 마감에
+    쓰는 것과 같은 함수)으로 바꿔치기한다.
+
+    ja 글자가 하나도 없으면 None — 호출부가 그때는 hangul 키를 아예 만들지 않는다
+    (순한글 줄에 원문과 100% 같은 값을 또 저장하는 낭비 방지, 기존 설계 유지).
+
+    공백은 ja 청크에 넣지 않는다 — ``finalize_pronunciation``이 끝에서
+    ``" ".join(pron.split())``로 공백을 정규화하므로, 청크 선두 공백을 넣으면
+    조용히 삼켜져 원문의 한글·ja 사이 띄어쓰기가 사라진다.
+    """
+    if not _JA_CHAR_RE.search(text):
+        return None
+    try:
+        from everyric2.text.kana_hangul import finalize_pronunciation
+    except Exception:
+        logger.exception("ko mixed-line hangul rendering failed")
+        return None
+
+    out: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if not buf:
+            return
+        chunk = "".join(buf)
+        if _JA_CHAR_RE.search(chunk):
+            try:
+                out.append(finalize_pronunciation(chunk) or chunk)
+            except Exception:
+                logger.exception("ko mixed-line ja chunk rendering failed")
+                out.append(chunk)
+        else:
+            out.append(chunk)
+        buf.clear()
+
+    for ch in text:
+        if _HANGUL_CHAR_RE.match(ch) or ch.isspace():
+            flush()
+            out.append(ch)
+        else:
+            buf.append(ch)
+    flush()
+    return "".join(out)
+
+
 def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
     """한국어 곡 세그: 가타카나(일본어권)·RR 로마자(영어권) — 둘 다 결정론 생성.
 
     ``pronunciation``(독음) 필드가 없는 게 정상이다 — 원문 한글 자체가 표시이므로
-    "hangul" 표기 키는 만들지 않는다(공유 계약: 클라이언트는 script 하나만 고른다).
+    순한글 줄에는 "hangul" 표기 키를 만들지 않는다(공유 계약: 클라이언트는 script
+    하나만 고른다). 다만 혼합 줄(ja 글자가 섞인 줄)은 예외다 — ``_ko_mixed_line_hangul``이
+    ja 런만 독음으로 환전한 hangul 표시를 만든다(감사 2차 R2).
+
     두 표기(kana/romaji) 모두 시각 부착을 독립 시도한다 — 한쪽이 실패해도(예:
     words 불일치) 다른 쪽 타이밍은 살아남는다.
     """
@@ -679,7 +733,11 @@ def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
         logger.exception("ko pron rendering failed")
         return
 
-    seg["pron"] = {"kana": kana, "romaji": romaja}
+    pron: dict[str, str] = {"kana": kana, "romaji": romaja}
+    mixed_hangul = _ko_mixed_line_hangul(text)
+    if mixed_hangul:
+        pron["hangul"] = mixed_hangul
+    seg["pron"] = pron
 
     kana_segments = _kana_mora_segments_ko(seg, text)
     if kana_segments:

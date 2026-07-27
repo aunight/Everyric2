@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import re
 
+from everyric2.text.kana_hangul import _KANA_RE
+from everyric2.text.kana_romaji import kana_to_romaji
 from everyric2.text.latin_hangul import transliterate_latin
 from everyric2.text.reading import _decompose_hangul
 
@@ -300,14 +302,29 @@ def _rr_render_run(run: list[list]) -> list[tuple[str, int]]:
 
 
 def hangul_to_romaja(text: str) -> str:
-    """한국어 텍스트를 국립국어원 로마자 표기법으로 바꾼다. 비한글 문자는 그대로 통과."""
+    """한국어 텍스트를 국립국어원 로마자 표기법으로 바꾼다.
+
+    가나 런(«デス» 등)은 ``kana_to_romaji``로 환전한다 — 감사 2차 R1, M1(한글 런을
+    일본어 로마자 파이프라인에 태우는 것)의 정확한 역방향이다. 그 외 비한글 문자
+    (라틴·구두점)는 그대로 통과한다 — ``kana_to_romaji``는 가나가 없는 문자열을
+    원형 그대로 돌려주므로(``kana_romaji`` 모듈 계약) 매 청크에 그냥 걸어도 안전하다.
+    """
     out: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if buf:
+            out.append(kana_to_romaji("".join(buf)))
+            buf.clear()
+
     for is_hangul, payload in _hangul_runs(text):
         if is_hangul:
+            flush()
             for syllable, _idx in _rr_render_run(payload):
                 out.append(syllable)
         else:
-            out.append(payload[0])
+            buf.append(payload[0])
+    flush()
     return "".join(out)
 
 
@@ -318,16 +335,38 @@ def hangul_line_romaja_syllables(text: str) -> list[tuple[str, int, int]]:
     받침이 독립 모라로 갈라지는 kana와 달리 RR은 한 글자가 항상 로마자 한 덩이라
     (한→han, 국→guk) 한 글자에 토큰 2개를 만들지 않는다. 연음·설측음화(흘러→heulleo)는
     ``hangul_to_romaja``와 내부 함수(``_rr_render_run``)를 공유하므로 항상 일치한다.
+
+    가나 런(«デス» 등)은 ``kana_to_romaji``로 환전해 낱말 하나를 토큰 하나로 담는다
+    (감사 2차 R1 — ``hangul_to_romaja``의 표시와 같은 재료를 써서 표시=세그가 갈리지
+    않는다. ``hangul_line_moras``의 라틴 런 처리(M3)와 같은 패턴).
     """
     result: list[tuple[str, int, int]] = []
+    buf: list[tuple[str, int]] = []  # 연속된 비한글·비공백 (글자, 글자위치)
+
+    def flush() -> None:
+        if not buf:
+            return
+        chunk = "".join(ch for ch, _ in buf)
+        start_idx, end_idx = buf[0][1], buf[-1][1] + 1
+        if _KANA_RE.search(chunk):
+            result.append((kana_to_romaji(chunk), start_idx, end_idx))
+        else:
+            for ch, idx in buf:
+                result.append((ch, idx, idx + 1))
+        buf.clear()
+
     for is_hangul, payload in _hangul_runs(text):
         if is_hangul:
+            flush()
             for syllable, idx in _rr_render_run(payload):
                 result.append((syllable, idx, idx + 1))
         else:
             ch, idx = payload
-            if not ch.isspace():
-                result.append((ch, idx, idx + 1))
+            if ch.isspace():
+                flush()  # 공백이 런의 경계 — 낱말 단위로 끊는다
+            else:
+                buf.append((ch, idx))
+    flush()
     return result
 
 

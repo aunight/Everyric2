@@ -93,21 +93,26 @@ def test_romaji_segments_are_monotonic_and_rebuild_the_display():
 
 def test_mixed_line_branch_decision_by_character_majority():
     # M2: 문자 수 우세로 분기한다("일본어 글자가 하나라도 있으면 ja"였던 예전 규칙은
-    # 한글이 더 많은 혼합 줄까지 ja로 새게 했다).
+    # 한글이 더 많은 혼합 줄까지 ja로 새게 했다). 감사 2차 R2로 ko 분기도 혼합 줄이면
+    # hangul 키를 갖게 됐으니(ja 런만 독음 환전) 키 유무로는 더 이상 분기를 못 가른다
+    # — 대신 romaji 렌더 스타일로 가른다: ja 분기는 한글 구간을 가나 경유(카타카나
+    # 근사, M1)로 읽어 "choahe"류가 나오고, ko 분기는 RR을 직접 써 "saranghae"가
+    # 정확히 나온다(R1).
     tie_favors_ja = _seg("좋아해 きみが", "", words=True)  # 한글3=일본어3 → 동률은 ja
     tie_favors_ja["words"] = _full_words("좋아해 きみが")
     attach_pron_variants(tie_favors_ja)
-    assert "hangul" in tie_favors_ja["pron"]  # ja 분기(hangul 키가 ja 전용)
+    assert tie_favors_ja["pron"]["romaji"] == "choahe kimi ga"  # ja 분기의 가나 경유 근사
 
     ko_majority = _seg("사랑해 デス", "", words=True)  # 한글3 > 일본어2 → ko
     ko_majority["words"] = _full_words("사랑해 デス")
     attach_pron_variants(ko_majority)
-    assert "hangul" not in ko_majority["pron"]  # ko 분기
+    assert ko_majority["pron"]["romaji"] == "saranghae desu"  # ko 분기의 정확한 RR
+    assert ko_majority["pron"]["hangul"] == "사랑해 데스"  # R2: ja 런만 독음 환전
 
     ko_no_ja = _seg("사랑해 baby", "", words=True)  # 일본어 0 → ko(원래도 ko였다)
     ko_no_ja["words"] = _full_words("사랑해 baby")
     attach_pron_variants(ko_no_ja)
-    assert "hangul" not in ko_no_ja["pron"]
+    assert "hangul" not in ko_no_ja["pron"]  # ja 글자가 없으니 R2도 발동 안 함(순한글 취급)
 
 
 def test_mixed_line_no_deletion_and_display_equals_segments():
@@ -154,6 +159,36 @@ def test_mixed_ko_line_latin_run_is_transliterated_and_space_preserved():
 
     romaji_segments = seg["pron_segs"]["romaji"]
     assert _rebuild(romaji_segments) == seg["pron"]["romaji"] == "saranghae baby"
+
+
+def test_mixed_ko_line_kana_run_is_transliterated_to_romaji_and_hangul():
+    # 감사 2차 R1·R2(배포 전 마지막 관문): O1 실측 케이스 — «사랑해 デス»가 ko 분기로
+    # 온다(한글3>일본어2, M2). R1: romaji의 デス가 raw로 새지 않고 "desu"로 환전된다
+    # (M1의 정확한 역방향 — kana_to_romaji). R2: ko 곡은 원래 hangul 키를 안 만들지만
+    # 혼합 줄은 예외 — ja 런만 독음으로 환전한 hangul 표시가 붙는다.
+    text = "사랑해 デス"
+    seg = {"text": text, "start": 0.0, "end": len(text) * 0.5, "words": _full_words(text)}
+    attach_pron_variants(seg)
+
+    assert seg["pron"]["romaji"] == "saranghae desu"
+    assert seg["pron"]["hangul"] == "사랑해 데스"
+    assert seg["pron"]["kana"] == "サランヘ デス"
+
+    # 세그 정합(표시=재구성) — romaji 세그도 "デス" raw가 아니라 "desu"로 묶여야 한다
+    romaji_segments = seg["pron_segs"]["romaji"]
+    assert _rebuild(romaji_segments) == "saranghae desu"
+    assert romaji_segments[-1]["text"] == "desu"  # 가나 런 하나가 토큰 하나로 묶인다
+
+
+def test_pure_hangul_ko_line_still_has_no_hangul_key():
+    # R2는 혼합 줄(ja 글자가 있는 줄)에만 발동한다 — 순한글 줄에 원문과 똑같은 값을
+    # 또 저장하는 낭비를 만들면 안 된다(기존 설계 유지).
+    seg = _seg("사랑해", "", words=True)
+    attach_pron_variants(seg)
+
+    assert "hangul" not in seg["pron"]
+    assert seg["pron"]["kana"] == "サランヘ"
+    assert seg["pron"]["romaji"] == "saranghae"
 
 
 def test_ja_segment_gets_kana_display_and_shares_timing_with_romaji():
