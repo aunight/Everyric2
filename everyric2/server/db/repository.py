@@ -486,6 +486,50 @@ class TranslationLayerRepository:
         )
         return sorted(result.scalars().all())
 
+    # 재생성·가사 수정으로 지문이 바뀌어도 사람이 확인한 번역은 살아남아야 한다 — 크로스
+    # 지문 이관(_apply_translation_lang) 전용. llm은 대상이 아니다: 품질 보증이 없는
+    # 기계번역을 다른 줄 분할로 우격다짐 재정렬해 옮기느니 재생성이 낫다.
+    HUMAN_ORIGINS: tuple[str, ...] = ("wiki", "caption", "manual", "legacy")
+
+    async def find_human_layer_other_fingerprint(
+        self, video_id: str, target_lang: str, exclude_fingerprint: str
+    ) -> TranslationLayer | None:
+        """같은 (video_id, target_lang)의 **다른** 지문에 있는 사람 origin 레이어 중 가장
+        최근 것 — 없으면 None. 재생성·가사 오탈자 수정으로 지문이 바뀐 뒤에도, 예전 지문에
+        남아 있는 위키·자막·수동 번역을 찾아내는 데 쓴다(align_translation_lines로 새
+        세그에 재정렬하는 것은 호출부의 몫 — 이 메서드는 후보만 찾는다)."""
+        result = await self.session.execute(
+            select(TranslationLayer)
+            .where(
+                TranslationLayer.video_id == video_id,
+                TranslationLayer.target_lang == target_lang,
+                TranslationLayer.fingerprint != exclude_fingerprint,
+                TranslationLayer.origin.in_(self.HUMAN_ORIGINS),
+            )
+            .order_by(TranslationLayer.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_human_langs_other_fingerprint(
+        self, video_id: str, exclude_fingerprint: str
+    ) -> list[str]:
+        """이 영상의 **다른** 지문에 사람 origin 레이어가 있는 target_lang 목록 — 정렬·
+        중복 제거. 크로스 지문 이관 후보 탐색(어떤 언어를 재정렬해 볼 가치가 있는지)에
+        쓴다 — `find_human_layer_other_fingerprint`는 language 하나를 안다는 전제로
+        레이어 자체를 찾지만, 이 메서드는 "볼 가치가 있는 language가 뭐가 있나"부터
+        답한다."""
+        result = await self.session.execute(
+            select(TranslationLayer.target_lang)
+            .where(
+                TranslationLayer.video_id == video_id,
+                TranslationLayer.fingerprint != exclude_fingerprint,
+                TranslationLayer.origin.in_(self.HUMAN_ORIGINS),
+            )
+            .distinct()
+        )
+        return sorted(result.scalars().all())
+
 
 class LinkJobRepository:
     """링크 검증 잡 CRUD — 중복 쌍 병합·FIFO claim·결과 마감."""

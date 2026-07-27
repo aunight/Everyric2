@@ -126,6 +126,16 @@ async def require_api_key(request, call_next):
 # 401이 CORS 미들웨어를 거치지 않아 헤더가 빠지고, 브라우저는 그 응답을 통째로
 # 차단해 확장이 상태 코드조차 못 본다 — 실측으로 키가 틀렸을 때 확장이 401이 아니라
 # "Failed to fetch"를 받아 "서버 연결 실패"로 오표시하던 원인이었다.
+# 싱크 조회 응답이 다국어화로 세그당 3표기 발음+모라 타이밍을 실어 210~240KB에 달한다
+# (실측 2026-07-28). 압축 없이 게이트웨이·사용자 회선을 타면 확장의 조회 타임아웃을
+# 넘긴다 — JSON이라 gzip이 크게 줄인다(실측 4.5배). **CORS보다 먼저 등록**한다 —
+# 나중 등록이 바깥이라는 Starlette 규칙에서 CORS가 최외곽이어야 한다는 기존 불변식
+# (아래 주석·tests/test_cors_on_auth_failure)을 지키기 위함이고, 압축은 안쪽에서 돌아도
+# Content-Encoding이 그대로 실려 기능 차이가 없다.
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"chrome-extension://.*",
@@ -133,14 +143,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 싱크 조회 응답이 다국어화로 세그당 3표기 발음+모라 타이밍을 실어 210~240KB에 달한다
-# (실측 2026-07-28). 압축 없이 게이트웨이·사용자 회선을 타면 확장의 조회 타임아웃을
-# 넘긴다 — JSON이라 gzip이 ~10배를 줄인다. CORS보다 뒤(=바깥)에 등록해 압축이 마지막에
-# 적용되게 한다.
-from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
-
-app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.include_router(sync_router)
 app.include_router(job_router)

@@ -35,3 +35,122 @@ def lines_fingerprint(texts: list[str]) -> str:
     """
     joined = "\n".join(normalize_line(t) for t in texts)
     return hashlib.md5(joined.encode("utf-8")).hexdigest()
+
+
+# ── 순서 정렬 매칭 — 줄 분할이 다른 두 원문 시퀀스에서 번역을 옮겨 온다 ─────────
+#
+# 실증(H7PR): miraheze 기반 새 싱크(36줄)와 vocaro 위키 페이지(42줄)의 줄 분할이 달라
+# normalize_line 기준 줄 단위 동등 매칭이 50%를 못 넘겼다 — 위키에 번역이 있는데도 LLM이
+# 다시 불려 저품질 번역이 고착됐다. 두 소스가 **같은 곡을 같은 순서로** 담고 있다는 전제
+# 아래, 문장 결합(합침/쪼갬)만 감안하면 되므로 완전한 편집거리 DP는 필요 없다.
+
+# 합침/쪼갬 결합 탐색 상한 — 한 줄이 이보다 많은 조각으로 쪼개지는 정상 가사는 드물다
+# (제목·크레딧 블록이 우연히 이어붙는 오탐을 여기서 자른다).
+_ALIGN_MAX_COMBINE = 6
+
+# 재동기화 앵커 탐색 상한(양쪽 각각) — 그 이상 떨어진 완전 일치는 우연의 일치일 위험이
+# 커 신뢰하지 않는다. 곡 하나가 이 창보다 크게 밀리는 경우는 애초에 다른 곡이라고 본다.
+_ALIGN_RESYNC_WINDOW = 12
+
+
+def _find_combine(norm: list[str], start: int, target: str, length: int) -> int | None:
+    """``norm[start:start+k]``를 이어붙인 것이 ``target``과 같아지는 최소 k(>=2)를 찾는다.
+
+    못 찾으면 None. ``_ALIGN_MAX_COMBINE``까지만 시도하고, 이어붙인 길이가 이미
+    target을 넘어서면 더 붙여도 같아질 수 없으므로 조기 종료한다."""
+    acc = norm[start]
+    limit = min(_ALIGN_MAX_COMBINE, length - start)
+    for k in range(2, limit + 1):
+        acc += norm[start + k - 1]
+        if acc == target:
+            return k
+        if len(acc) > len(target):
+            break
+    return None
+
+
+def _find_resync_anchor(
+    seg_norm: list[str], wiki_norm: list[str], i: int, j: int
+) -> tuple[int, int] | None:
+    """``i``·``j`` 이후 제한된 창 안에서 다음 완전 일치 지점을 찾는다.
+
+    총 이동 거리(양쪽에서 건너뛰는 줄 수의 합)가 가장 작은 지점을 고른다 — 국소적으로
+    가장 그럴듯한 재동기화 지점이다. 창 안에 없으면 None(포기 — 남은 세그는 전부
+    매칭 없이 끝난다)."""
+    n, m = len(seg_norm), len(wiki_norm)
+    best: tuple[int, int] | None = None
+    best_cost: int | None = None
+    for ni in range(i, min(i + _ALIGN_RESYNC_WINDOW, n)):
+        for nj in range(j, min(j + _ALIGN_RESYNC_WINDOW, m)):
+            if seg_norm[ni] == wiki_norm[nj]:
+                cost = (ni - i) + (nj - j)
+                if best_cost is None or cost < best_cost:
+                    best_cost, best = cost, (ni, nj)
+    return best
+
+
+def align_translation_lines(
+    seg_texts: list[str], wiki_lines: list[dict[str, str]]
+) -> list[str | None]:
+    """세그 원문 순서를 기준으로, 다른 줄 분할(위키 등)의 원문·번역 쌍에서 정렬된 번역을
+    뽑아낸다. 반환은 ``seg_texts``와 길이가 같다 — 매칭된 번역 문자열, 매칭 실패는 None.
+
+    같은 곡·같은 순서라는 전제 아래 DP 없이 투 포인터로 정렬한다:
+
+    1. 정규화(``normalize_line``) 후 정확히 같으면 그대로 대응.
+    2. **위키가 합침** — 위키 한 줄이 세그 여러 줄의 연결과 같으면, 그 번역을 **첫
+       세그에만** 배정하고 나머지는 None(같은 번역을 여러 줄에 중복 배정하지 않는다).
+    3. **위키가 쪼갬** — 세그 한 줄이 위키 여러 연속 줄의 연결과 같으면, 그 줄들의
+       번역을 이어 붙여(구분자 없이 연결) 그 세그 하나에 배정한다.
+    4. 어느 쪽도 아니면(한쪽에만 있는 여분의 줄 등) **재동기화**한다 — 두 포인터를
+       각각 제한된 창(``_ALIGN_RESYNC_WINDOW``) 안에서 훑어 다음 완전 일치 지점을
+       찾고, 그 사이 세그는 매칭 없이 건너뛴다(위키에만 있던 여분 줄도 버려진다).
+       앵커를 못 찾으면 남은 세그는 전부 None으로 포기한다.
+
+    ``wiki_lines``는 ``TranslationLayer.lines``와 같은 모양 — ``[{"text": 원문,
+    "translation": 번역}, ...]``. 이 함수는 원문 텍스트끼리만 정렬을 판단하고 번역
+    내용 자체는 결과를 그대로 옮기는 데만 쓴다.
+
+    커버리지(반환값 중 None이 아닌 비율)로 이 정렬이 쓸 만한지 판정하는 것은 호출부의
+    몫이다(저장 문턱·이관 문턱이 서로 다를 수 있어 이 함수는 임계값을 모른다).
+    """
+    n = len(seg_texts)
+    if n == 0:
+        return []
+    m = len(wiki_lines)
+    result: list[str | None] = [None] * n
+    if m == 0:
+        return result
+
+    seg_norm = [normalize_line(t) for t in seg_texts]
+    wiki_norm = [normalize_line(w.get("text", "") or "") for w in wiki_lines]
+    wiki_trans = [w.get("translation", "") or "" for w in wiki_lines]
+
+    i = j = 0
+    while i < n and j < m:
+        if seg_norm[i] == wiki_norm[j]:
+            result[i] = wiki_trans[j]
+            i += 1
+            j += 1
+            continue
+
+        merged_k = _find_combine(seg_norm, i, wiki_norm[j], n)
+        if merged_k:
+            result[i] = wiki_trans[j]
+            i += merged_k
+            j += 1
+            continue
+
+        split_k = _find_combine(wiki_norm, j, seg_norm[i], m)
+        if split_k:
+            result[i] = "".join(wiki_trans[j : j + split_k])
+            i += 1
+            j += split_k
+            continue
+
+        anchor = _find_resync_anchor(seg_norm, wiki_norm, i, j)
+        if anchor is None:
+            break
+        i, j = anchor
+
+    return result

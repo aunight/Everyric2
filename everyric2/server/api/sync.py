@@ -25,7 +25,11 @@ from everyric2.server.db.repository import (
     VideoOffsetRepository,
     hash_lyrics,
 )
-from everyric2.server.text_fingerprint import lines_fingerprint, normalize_line
+from everyric2.server.text_fingerprint import (
+    align_translation_lines,
+    lines_fingerprint,
+    normalize_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +239,15 @@ class SyncLookupResponse(BaseModel):
     # target_lang + (세그에 레거시 ko 번역이 있으면 "ko" 포함), 중복 제거·정렬. lang
     # 지정/미지정 요청 모두 채운다 — 추가 필드라 구버전 클라이언트는 무시하면 그만이다.
     available_langs: list[str] | None = None
+    # 언어별 번역 배열 — {lang: [세그 순서로 정렬된 번역, ...]}. 각 배열은 timestamps와
+    # 길이가 같고, 매칭 안 된 세그는 None. 처음 로딩부터 (있는) 모든 언어를 다 받아두려는
+    # 확장이 lang= 재조회 없이 즉시 언어를 전환할 수 있게 한다. 이 지문에 이미 있는
+    # 레이어(+세그 레거시 ko) 뿐 아니라 크로스 지문 이관(다른 지문의 사람 번역을 지금
+    # 세그에 재정렬해도 커버리지가 되는 언어)도 포함한다 — lang 지정/미지정 요청 모두
+    # 채운다. 최대 _TRANSLATIONS_BY_LANG_MAX_LANGS개까지만(응답 크기 상한). found=False면
+    # None. lang 파라미터의 기존 동작(legacy 슬롯 오버레이·translation_lang)은 이 필드와
+    # 무관하게 그대로다 — 추가 필드라 구버전 클라이언트는 무시하면 그만이다.
+    translations_by_lang: dict[str, list[str | None]] | None = None
 
 
 class LineMeta(BaseModel):
@@ -675,23 +688,113 @@ async def _apply_translation_lang(
         for seg in segments:
             seg["translation"] = by_text.get(normalize_line(seg.get("text", "") or ""), "")
         resp.translation_lang = lang
-    elif lang == "ko":
-        # 레이어가 없으면 저장된 레거시 번역이 ko라는 이행 가정 — 그대로 둔다.
-        # 세그에 번역이 하나도 없으면 "ko"라고 우길 근거가 없으므로 None.
-        resp.translation_lang = "ko" if has_legacy_translation else None
-        if has_legacy_translation:
-            # 이번 조회로 레거시 ko가 노출되는 김에 레이어에 옮겨 백필한다 — 다음 번
-            # lang=en 등 비ko 조회·재생성에서도 이 번역이 살아남게 한다.
-            await _schedule_ko_backfill_if_needed(
-                session, background_tasks, video_id, segments, resp.attribution
-            )
     else:
-        # 비ko이고 레이어가 없으면 레거시 값이 어느 언어인지 알 수 없다 — 비운다
-        for seg in segments:
-            seg["translation"] = ""
-        resp.translation_lang = None
+        # 이 지문엔 레이어가 없다 — 같은 영상의 다른 지문(재생성·가사 수정으로 바뀐)에
+        # 사람이 단 번역이 있으면 지금 세그에 재정렬해 옮겨 쓴다(H7PR 실증). 링크 조회는
+        # 커버 자신의 지문 이력부터, 없으면 원곡의 지문 이력도 본다 — 정확 매칭의
+        # own→link 폴백과 같은 우선순위.
+        migrated = False
+        for search_vid in (video_id, *((link_source_video_id,) if link_source_video_id else ())):
+            if await _try_cross_fingerprint_migration(
+                repo, background_tasks, search_vid, video_id, fingerprint, lang, segments
+            ):
+                migrated = True
+                break
+        if migrated:
+            resp.translation_lang = lang
+        elif lang == "ko":
+            # 레이어가 없으면 저장된 레거시 번역이 ko라는 이행 가정 — 그대로 둔다.
+            # 세그에 번역이 하나도 없으면 "ko"라고 우길 근거가 없으므로 None.
+            resp.translation_lang = "ko" if has_legacy_translation else None
+            if has_legacy_translation:
+                # 이번 조회로 레거시 ko가 노출되는 김에 레이어에 옮겨 백필한다 — 다음 번
+                # lang=en 등 비ko 조회·재생성에서도 이 번역이 살아남게 한다.
+                await _schedule_ko_backfill_if_needed(
+                    session, background_tasks, video_id, segments, resp.attribution
+                )
+        else:
+            # 비ko이고 레이어가 없으면 레거시 값이 어느 언어인지 알 수 없다 — 비운다
+            for seg in segments:
+                seg["translation"] = ""
+            resp.translation_lang = None
     resp.timestamps = segments
     return resp
+
+
+# 크로스 지문 이관의 커버리지 문턱 — 저장(save_translation_layer)의 _MIN_TRANSLATION_
+# LAYER_MATCH_RATIO와 같은 "절반 이상" 기준. 다른 값을 쓸 이유가 없어 상수를 공유한다.
+_CROSS_FINGERPRINT_MIGRATION_MIN_COVERAGE = 0.5
+
+
+async def _persist_migrated_translation_layer(
+    video_id: str,
+    fingerprint: str,
+    target_lang: str,
+    lines: list[dict[str, Any]],
+    attribution: dict[str, Any] | None,
+    origin: str,
+) -> None:
+    """크로스 지문 이관 결과를 새 지문으로 upsert — BackgroundTasks 전용, 독립 세션.
+
+    이렇게 새 지문에 그대로 박아 두면 다음 조회부터는 정확 매칭(get_layer)으로 바로
+    찾아 재정렬 비용을 다시 치르지 않는다. 실패해도 이미 나간 응답에는 영향이 없으므로
+    로그만 남기고 삼킨다 — translate.py의 `_persist_translation_layer`와 같은 저장 패턴."""
+    try:
+        async with get_session() as session:
+            await TranslationLayerRepository(session).upsert_layer(
+                video_id, fingerprint, target_lang, lines=lines, attribution=attribution, origin=origin
+            )
+    except Exception:
+        logger.exception("Failed to persist migrated translation layer for video %s", video_id)
+
+
+async def _try_cross_fingerprint_migration(
+    repo: TranslationLayerRepository,
+    background_tasks: BackgroundTasks,
+    search_video_id: str,
+    store_video_id: str,
+    fingerprint: str,
+    lang: str,
+    segments: list[dict[str, Any]],
+) -> bool:
+    """`search_video_id`의 다른 지문에 사람이 단 번역(wiki/caption/manual/legacy)이 있으면
+    `align_translation_lines`로 지금 세그(`segments`)에 재정렬해 옮겨 쓴다.
+
+    llm origin은 대상이 아니다 — 품질 보증이 없는 기계번역을 다른 줄 분할로 우격다짐
+    재정렬해 옮기느니 재생성이 낫다. 성공(재정렬 커버리지 50% 이상)하면 `segments`를
+    in-place로 채우고 True, 새 지문으로도 `store_video_id` 키로 BackgroundTasks upsert
+    (origin 유지)해 다음부터 정확 매칭으로 바로 찾게 한다. `store_video_id`가 검색과
+    다를 수 있는 이유(링크 조회): 저장은 언제나 **보는 영상** 기준을 지킨다(#6과 동일
+    원칙) — 원곡에서 찾은 번역이어도 커버 video_id로 저장한다.
+
+    후보가 없거나 커버리지 미달이면 `segments`를 건드리지 않고 False."""
+    other = await repo.find_human_layer_other_fingerprint(search_video_id, lang, fingerprint)
+    if other is None:
+        return False
+    seg_texts = [seg.get("text", "") or "" for seg in segments]
+    if not seg_texts:
+        return False
+    remapped = align_translation_lines(seg_texts, other.lines or [])
+    matched = sum(1 for value in remapped if value is not None)
+    if matched / len(seg_texts) < _CROSS_FINGERPRINT_MIGRATION_MIN_COVERAGE:
+        return False
+    for seg, translation in zip(segments, remapped):
+        seg["translation"] = translation or ""
+    new_lines = [
+        {"text": text, "translation": translation}
+        for text, translation in zip(seg_texts, remapped)
+        if translation is not None
+    ]
+    background_tasks.add_task(
+        _persist_migrated_translation_layer,
+        store_video_id,
+        fingerprint,
+        lang,
+        new_lines,
+        other.attribution,
+        other.origin,
+    )
+    return True
 
 
 async def _persist_pron_variants(sync_id: str, attached_segments: list[dict[str, Any]]) -> None:
@@ -1126,9 +1229,16 @@ async def save_translation_layer(video_id: str, request: SaveTranslationLayerReq
     (job_id 필수)이다. 이 엔드포인트는 **완성된 싱크를 보는 중(잡이 없음)**에 확장이 이미
     가진 번역 텍스트를 그대로 옮긴다 — 재번역도, 워커 개입도 없다.
 
-    엉뚱한 가사(다른 곡·다른 버전)에 번역이 잘못 붙는 사고를 막기 위해 lines의 text가 이
-    영상의 **최신** 싱크 세그먼트 원문과 normalize_line 기준으로 절반 이상 일치해야
-    저장한다 — 미달이면 422와 함께 실제 매칭률을 알린다.
+    lines의 줄 분할이 이 영상 세그먼트의 줄 분할과 달라도(위키가 두 줄을 하나로 합쳤거나
+    한 줄을 여럿으로 쪼갠 경우) `align_translation_lines`(순서 보존 결합 매칭, text_
+    fingerprint.py)로 세그 텍스트 기준으로 재정렬해 저장한다 — 실증(H7PR): miraheze
+    기반 새 싱크(36줄)와 vocaro 위키(42줄)의 줄 분할이 달라 줄 단위 동등 매칭이 50%를
+    못 넘겨 위키 번역이 있는데도 LLM이 다시 불려 저품질 결과가 고착됐다. 엉뚱한 가사
+    (다른 곡·다른 버전)가 붙는 사고를 막기 위해 재정렬 커버리지(세그 중 번역이 매겨진
+    비율)가 절반 이상이어야 저장한다 — 미달이면 422와 함께 실제 커버리지를 알린다.
+    **저장되는 lines는 항상 세그 자신의 텍스트로 재키잉된다** — 지문(fingerprint)이
+    세그 텍스트 기준이므로, 원래 제출된(다른 분할의) 텍스트를 그대로 저장하면 이 조회가
+    쓰는 지문과 어긋나 저장은 되는데 못 찾는 레이어가 된다.
 
     기존 레이어가 있으면 그 origin이 이번 요청과 같거나("caption"을 다시 "caption"으로
     갱신 등) 기존이 "llm"일 때만 교체한다. 그 외(예: 기존이 "wiki"인데 "caption"으로
@@ -1156,11 +1266,13 @@ async def save_translation_layer(video_id: str, request: SaveTranslationLayerReq
             if not source_syncs:
                 raise HTTPException(status_code=404, detail="이 영상의 싱크를 찾을 수 없어요")
             segments = (source_syncs[0].timestamps or {}).get("segments", []) or []
-        seg_keys = {normalize_line(seg.get("text", "") or "") for seg in segments}
-        seg_keys.discard("")
 
-        total = len(request.lines)
-        matched = sum(1 for line in request.lines if normalize_line(line.text) in seg_keys)
+        seg_texts = [seg.get("text", "") or "" for seg in segments]
+        submitted = [{"text": ln.text, "translation": ln.translation} for ln in request.lines]
+        remapped = align_translation_lines(seg_texts, submitted)
+
+        total = len(seg_texts)
+        matched = sum(1 for value in remapped if value is not None)
         if total == 0 or matched / total < _MIN_TRANSLATION_LAYER_MATCH_RATIO:
             raise HTTPException(
                 status_code=422,
@@ -1170,7 +1282,7 @@ async def save_translation_layer(video_id: str, request: SaveTranslationLayerReq
                 ),
             )
 
-        fingerprint = lines_fingerprint([seg.get("text", "") or "" for seg in segments])
+        fingerprint = lines_fingerprint(seg_texts)
         repo = TranslationLayerRepository(session)
         existing = await repo.get_layer(video_id, fingerprint, request.target_lang)
         if existing is not None and existing.origin not in (request.origin, "llm"):
@@ -1182,7 +1294,12 @@ async def save_translation_layer(video_id: str, request: SaveTranslationLayerReq
             video_id,
             fingerprint,
             request.target_lang,
-            lines=[{"text": ln.text, "translation": ln.translation} for ln in request.lines],
+            # 세그 텍스트로 재키잉 — 지문과 정합되게(위 docstring 참고)
+            lines=[
+                {"text": text, "translation": translation}
+                for text, translation in zip(seg_texts, remapped)
+                if translation is not None
+            ],
             attribution=request.attribution.model_dump() if request.attribution else None,
             origin=request.origin,
         )

@@ -790,13 +790,23 @@ def test_save_translation_layer_stores_attribution():
 
 
 def test_save_translation_layer_rejects_low_match_rate():
-    """lines의 text가 세그 원문과 절반 미만 일치하면 422 — 엉뚱한 가사 방지."""
+    """재정렬 커버리지(세그 중 번역이 매겨진 비율)가 절반 미만이면 422 — 엉뚱한 가사 방지.
+
+    커버리지는 **세그 개수** 기준이다(align_translation_lines 도입 이후 — 예전엔 제출된
+    lines 개수 기준이었다). 4개 세그 중 1개만 매칭되도록 구성해 25%로 명백히 미달시킨다."""
 
     async def body():
         async with _env() as sm:
             async with sm() as s:
                 await SyncRepository(s).create(
-                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                    video_id=VIDEO,
+                    lyrics_hash="h1",
+                    timestamps=[
+                        {"text": "첫 줄", "translation": "", "start": 0.0, "end": 1.0},
+                        {"text": "둘째 줄", "translation": "", "start": 1.0, "end": 2.0},
+                        {"text": "셋째 줄", "translation": "", "start": 2.0, "end": 3.0},
+                        {"text": "넷째 줄", "translation": "", "start": 3.0, "end": 4.0},
+                    ],
                 )
                 await s.commit()
 
@@ -805,22 +815,18 @@ def test_save_translation_layer_rejects_low_match_rate():
                     VIDEO,
                     SaveTranslationLayerRequest(
                         target_lang="en",
-                        # 2줄 중 1줄만 이 영상의 가사와 일치 — 50% 미만이 아니라 정확히
-                        # 50%면 통과해야 하므로, 3줄 중 1줄(약 33%)로 명백히 미달시킨다
+                        # 첫 줄만 이 영상의 가사와 일치 — 나머지 3개 세그는 대응 없음(1/4=25%)
                         lines=_layer_lines(
-                            [
-                                ("첫 줄", "First line"),
-                                ("전혀 다른 곡의 가사", "Wrong song"),
-                                ("이것도 다른 곡", "Also wrong"),
-                            ]
+                            [("첫 줄", "First line"), ("전혀 다른 곡의 가사", "Wrong song")]
                         ),
                         origin="caption",
                     ),
                 )
             assert exc.value.status_code == 422
 
+            fp4 = lines_fingerprint(["첫 줄", "둘째 줄", "셋째 줄", "넷째 줄"])
             async with sm() as s:
-                assert await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en") is None
+                assert await TranslationLayerRepository(s).get_layer(VIDEO, fp4, "en") is None
 
     asyncio.run(body())
 
@@ -1578,5 +1584,291 @@ def test_lazy_attach_persist_gives_up_if_segment_count_changed_meanwhile():
                 stored = await s.get(SyncResult, sync_id)
                 assert len(stored.timestamps["segments"]) == 2
                 assert "pron" not in stored.timestamps["segments"][0]
+
+    asyncio.run(body())
+
+
+# ── H7PR 실증: 순서 정렬 매칭(A) + 저장 재매핑(B) + 크로스 지문 이관(C) ─────────
+#
+# 실화: miraheze 기반 새 싱크(36줄)와 vocaro 위키 페이지(42줄)의 줄 분할이 달라 줄 단위
+# 동등 매칭이 50%를 못 넘겼다 — 위키 번역이 있는데도 LLM이 다시 불려 저품질 번역이
+# 고착됐다. 아래는 축소된 재현 픽스처(합침 1건 + 쪼갬 1건 + 정확 매칭 1건)로 실제
+# 42/36줄 규모를 그대로 옮기는 대신 같은 부류의 분할 불일치를 검증한다.
+
+
+# ── A: align_translation_lines 단위 테스트 ───────────────────────────────
+
+
+def test_align_merges_when_wiki_line_matches_several_seg_lines():
+    # 위키가 합침: 위키 한 줄 "AB"가 세그 "A"+"B"의 연결과 같다 — 번역은 첫 세그에만
+    from everyric2.server.text_fingerprint import align_translation_lines
+
+    wiki = [{"text": "AB", "translation": "T_AB"}, {"text": "C", "translation": "T_C"}]
+    segs = ["A", "B", "C"]
+    assert align_translation_lines(segs, wiki) == ["T_AB", None, "T_C"]
+
+
+def test_align_splits_when_seg_line_matches_several_wiki_lines():
+    # 위키가 쪼갬: 세그 한 줄 "CD"가 위키 "C"+"D"의 연결과 같다 — 번역을 이어 붙여 배정
+    from everyric2.server.text_fingerprint import align_translation_lines
+
+    wiki = [
+        {"text": "AB", "translation": "T_AB"},
+        {"text": "C", "translation": "T_C"},
+        {"text": "D", "translation": "T_D"},
+        {"text": "E", "translation": "T_E"},
+    ]
+    segs = ["A", "B", "CD", "E"]
+    assert align_translation_lines(segs, wiki) == ["T_AB", None, "T_CT_D", "T_E"]
+
+
+def test_align_resyncs_past_an_extra_wiki_only_line():
+    # 위키에만 있는 여분 줄("intro")은 버려지고, 그 다음부터 다시 정상 매칭된다
+    from everyric2.server.text_fingerprint import align_translation_lines
+
+    wiki = [
+        {"text": "intro", "translation": "T_intro"},
+        {"text": "hello", "translation": "T_hello"},
+        {"text": "world", "translation": "T_world"},
+    ]
+    segs = ["hello", "world"]
+    assert align_translation_lines(segs, wiki) == ["T_hello", "T_world"]
+
+
+def test_align_gives_up_on_remaining_segs_when_no_anchor_found():
+    from everyric2.server.text_fingerprint import align_translation_lines
+
+    wiki = [{"text": "completely unrelated", "translation": "T_x"}]
+    segs = ["hello", "world"]
+    assert align_translation_lines(segs, wiki) == [None, None]
+
+
+def test_align_handles_empty_inputs():
+    from everyric2.server.text_fingerprint import align_translation_lines
+
+    assert align_translation_lines([], [{"text": "a", "translation": "A"}]) == []
+    assert align_translation_lines(["a", "b"], []) == [None, None]
+    assert align_translation_lines([], []) == []
+
+
+def test_align_exact_match_is_unaffected_by_normalize_line_whitespace():
+    # 정확 매칭은 normalize_line 정규화를 그대로 쓴다 — 공백 위치 차이는 무시된다
+    from everyric2.server.text_fingerprint import align_translation_lines
+
+    wiki = [{"text": "Are  you ready ?", "translation": "준비됐어?"}]
+    segs = ["Are you ready?"]
+    assert align_translation_lines(segs, wiki) == ["준비됐어?"]
+
+
+# ── B: 저장 엔드포인트가 재정렬을 쓰는지(세그 텍스트로 재키잉) ────────────────
+
+
+def test_save_translation_layer_remaps_split_and_merged_lines_to_segment_text():
+    """H7PR 축소 재현 — 제출된 lines의 줄 분할이 세그와 달라도(합침+쪼갬 혼재) 재정렬해
+    저장하고, 저장되는 lines는 세그 자신의 텍스트로 재키잉된다(지문과 정합)."""
+
+    async def body():
+        async with _env() as sm:
+            seg_texts = ["A", "B", "CD", "E"]
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h1",
+                    timestamps=[{"text": t, "translation": ""} for t in seg_texts],
+                )
+                await s.commit()
+
+            resp = await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines(
+                        [("AB", "T_AB"), ("C", "T_C"), ("D", "T_D"), ("E", "T_E")]
+                    ),
+                    origin="wiki",
+                ),
+            )
+            assert resp.saved is True
+            assert (resp.matched, resp.total) == (3, 4)  # A·B는 합쳐서 1매칭, CD·E는 각 1매칭
+
+            fp = lines_fingerprint(seg_texts)
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, fp, "en")
+                # 저장된 lines는 세그 텍스트("A","CD","E") 기준 — 제출 원문("AB","C","D")이 아니다
+                assert layer.lines == [
+                    {"text": "A", "translation": "T_AB"},
+                    {"text": "CD", "translation": "T_CT_D"},
+                    {"text": "E", "translation": "T_E"},
+                ]
+
+            # 지문이 세그 기준이므로 lang 조회가 바로 찾는다(재정렬 없이)
+            lookup = await get_sync(VIDEO, lang="en")
+            assert lookup.translation_lang == "en"
+            assert lookup.timestamps[0]["translation"] == "T_AB"
+            assert lookup.timestamps[1]["translation"] == ""  # B는 매칭 없음(합침의 나머지)
+            assert lookup.timestamps[2]["translation"] == "T_CT_D"
+            assert lookup.timestamps[3]["translation"] == "T_E"
+
+    asyncio.run(body())
+
+
+# ── C: 크로스 지문 이관 ───────────────────────────────────────────────
+
+
+def test_cross_fingerprint_migration_serves_and_persists_human_layer_under_new_fingerprint():
+    """실화 재현: 옛 지문(42줄류 분할)에 위키 ko 번역이 있고, 재생성으로 새 지문(36줄류
+    분할)이 됐다 — 새 지문 조회가 예전 위키 번역을 찾아 재정렬해 서빙하고, 다음부터
+    바로 찾도록 새 지문에도 저장(BackgroundTasks)한다."""
+
+    async def body():
+        async with _env() as sm:
+            old_seg_texts = ["one", "two", "three"]  # 예전(위키) 분할
+            new_seg_texts = ["onetwo", "three"]  # 새 싱크의 분할(합침)
+
+            async with sm() as s:
+                old_fp = lines_fingerprint(old_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    old_fp,
+                    "ko",
+                    lines=[
+                        {"text": "one", "translation": "하나"},
+                        {"text": "two", "translation": "둘"},
+                        {"text": "three", "translation": "셋"},
+                    ],
+                    attribution={"name": "위키", "url": None, "license": None, "source_id": "wiki"},
+                    origin="wiki",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h_new",
+                    timestamps=[{"text": t, "translation": ""} for t in new_seg_texts],
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            resp = await get_sync(VIDEO, lang="ko", background_tasks=bg)
+            assert resp.translation_lang == "ko"
+            assert resp.timestamps[0]["translation"] == "하나둘"  # "one"+"two" 합침 → 이어붙임
+            assert resp.timestamps[1]["translation"] == "셋"
+
+            await _run_background(bg)
+
+            new_fp = lines_fingerprint(new_seg_texts)
+            async with sm() as s:
+                migrated_layer = await TranslationLayerRepository(s).get_layer(VIDEO, new_fp, "ko")
+                assert migrated_layer is not None
+                assert migrated_layer.origin == "wiki"  # origin 유지
+                assert migrated_layer.attribution == {
+                    "name": "위키", "url": None, "license": None, "source_id": "wiki",
+                }
+                assert migrated_layer.lines == [
+                    {"text": "onetwo", "translation": "하나둘"},
+                    {"text": "three", "translation": "셋"},
+                ]
+
+            # 이관 후에는 정확 매칭으로 바로 찾는다 — 재정렬을 다시 치르지 않는다
+            resp2 = await get_sync(VIDEO, lang="ko")
+            assert resp2.translation_lang == "ko"
+            assert resp2.timestamps[0]["translation"] == "하나둘"
+
+    asyncio.run(body())
+
+
+def test_cross_fingerprint_migration_does_not_migrate_llm_origin():
+    # llm origin은 이관 대상이 아니다 — 품질 보증이 없어 재생성이 낫다. 새 싱크는 옛
+    # 지문(2줄)과 다른 지문이 되도록 한 줄로 합쳐 둔다(그래도 align은 성공할 수 있는
+    # 정도 — 검증 대상은 "성공해도 llm은 이관 안 된다"는 origin 필터 자체다).
+    async def body():
+        async with _env() as sm:
+            old_seg_texts = ["one", "two"]
+
+            async with sm() as s:
+                old_fp = lines_fingerprint(old_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    old_fp,
+                    "ko",
+                    lines=[
+                        {"text": "one", "translation": "머신원"},
+                        {"text": "two", "translation": "머신투"},
+                    ],
+                    attribution=None,
+                    origin="llm",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h_new",
+                    timestamps=[{"text": "onetwo", "translation": ""}],
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="ko")
+            # llm 레이어는 이관되지 않는다 — 세그에 레거시 번역도 없으므로 translation_lang None
+            assert resp.translation_lang is None
+            assert resp.timestamps[0]["translation"] == ""
+
+    asyncio.run(body())
+
+
+def test_cross_fingerprint_migration_skipped_when_coverage_too_low():
+    async def body():
+        async with _env() as sm:
+            old_seg_texts = ["one", "two", "three", "four"]
+
+            async with sm() as s:
+                old_fp = lines_fingerprint(old_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    old_fp,
+                    "ko",
+                    lines=[{"text": t, "translation": f"번역_{t}"} for t in old_seg_texts],
+                    attribution=None,
+                    origin="wiki",
+                )
+                # 새 싱크는 완전히 다른 가사 — 정렬이 하나도 안 맞는다
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h_new",
+                    timestamps=[
+                        {"text": "완전히 다른 가사 줄 하나", "translation": ""},
+                        {"text": "완전히 다른 가사 줄 둘", "translation": ""},
+                    ],
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="ko")
+            assert resp.translation_lang is None
+            assert all(seg["translation"] == "" for seg in resp.timestamps)
+
+    asyncio.run(body())
+
+
+def test_cross_fingerprint_migration_prefers_exact_match_when_current_fingerprint_has_layer():
+    # 지금 지문에 이미 레이어가 있으면 이관 시도 자체를 안 한다(그럴 필요가 없다)
+    async def body():
+        async with _env() as sm:
+            seg_texts = ["one", "two"]
+            async with sm() as s:
+                fp = lines_fingerprint(seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, fp, "ko",
+                    lines=[{"text": "one", "translation": "정확매칭하나"}],
+                    attribution=None, origin="wiki",
+                )
+                # 다른 지문에도 사람 레이어가 있지만(이관 후보), 현재 지문이 이미 있으므로 무시돼야 한다
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, "deadbeef" * 4, "ko",
+                    lines=[{"text": "one", "translation": "이관후보"}],
+                    attribution=None, origin="wiki",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1",
+                    timestamps=[{"text": t, "translation": ""} for t in seg_texts],
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="ko")
+            assert resp.timestamps[0]["translation"] == "정확매칭하나"
 
     asyncio.run(body())
