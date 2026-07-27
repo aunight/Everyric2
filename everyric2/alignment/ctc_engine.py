@@ -552,6 +552,31 @@ def _greedy_text(ids: list[int], blank_id: int, id_to_token: dict[int, str]) -> 
     return " ".join("".join(out).split())
 
 
+def _greedy_spans(
+    frames: list[int],
+    blank_id: int,
+    id_to_token: dict[int, str],
+    frame_sec: float,
+    t0: float,
+) -> list[tuple[str, float]]:
+    """CTC greedy 열 → (토큰, 첫 프레임 시각) 목록. `_greedy_text`와 같은 반복 축약·blank
+    제거 규칙이지만 문자열로 뭉치지 않고 토큰별 시각을 남긴다 — heard 텍스트의 타임라인
+    버전이다(디버그 표시 전용, 정렬 결과와 무관).
+    """
+    spans: list[tuple[str, float]] = []
+    prev: int | None = None
+    for idx, tid in enumerate(frames):
+        if tid != prev:
+            prev = tid
+            if tid == blank_id:
+                continue
+            tok = id_to_token.get(tid)
+            if tok is None or tok in _SPECIAL_TOKENS:
+                continue
+            spans.append((" " if tok == "|" else tok, t0 + idx * frame_sec))
+    return spans
+
+
 class CTCEngine(BaseAlignmentEngine):
     def __init__(self, config: AlignmentSettings | None = None):
         super().__init__(config)
@@ -585,6 +610,8 @@ class CTCEngine(BaseAlignmentEngine):
         self._last_referee: list[dict] = []
         # 직전 정렬에서 모델이 라인 구간에서 "들은" greedy 디코딩 텍스트 (line_idx → 텍스트)
         self._last_heard: dict[int, str] = {}
+        # 위 텍스트의 글자별 시각 (line_idx → [(글자, 초)]) — heard_spans 디버그 타임라인 재료
+        self._last_heard_spans: dict[int, list[tuple[str, float]]] = {}
 
     def is_available(self) -> bool:
         try:
@@ -790,6 +817,35 @@ class CTCEngine(BaseAlignmentEngine):
             }
         except Exception:
             logger.warning("Greedy decode of heard text failed; continuing", exc_info=True)
+            return {}
+
+    def _heard_span_lines(
+        self,
+        emission: torch.Tensor,
+        base_dim: int,
+        blank_id: int,
+        vocab,
+        line_window: dict[int, tuple[int, int]],
+        frame_sec: float,
+    ) -> dict[int, list[tuple[str, float]]]:
+        """`_heard_lines`와 같은 emission·창을 훑어 라인별 「들은 것」의 글자별 시각을 낸다.
+
+        `_heard_lines`와 별개의 argmax·try/except다 — 한쪽이 실패해도 다른 쪽(heard 텍스트)은
+        살아야 한다. 정렬 결과를 **바꾸지 않는다**. 실패는 빈 dict로 삼킨다.
+        """
+        if not line_window:
+            return {}
+        try:
+            id_to_token = {tid: tok for tok, tid in vocab.items()}
+            greedy = emission[0, :, :base_dim].argmax(dim=-1).tolist()
+            return {
+                line_idx: _greedy_spans(
+                    greedy[f0:f1], blank_id, id_to_token, frame_sec, f0 * frame_sec
+                )
+                for line_idx, (f0, f1) in sorted(line_window.items())
+            }
+        except Exception:
+            logger.warning("Greedy span decode of heard text failed; continuing", exc_info=True)
             return {}
 
     def _referee_lines(
@@ -1271,6 +1327,9 @@ class CTCEngine(BaseAlignmentEngine):
         # greedy 디코딩을 뜬다. 정렬된 글자가 0개인 라인(전부 OOV)은 창이 없어 제외된다.
         line_window = _line_frame_windows(char_info, token_spans)
         self._last_heard = self._heard_lines(emission, base_dim, blank_id, vocab, line_window)
+        self._last_heard_spans = self._heard_span_lines(
+            emission, base_dim, blank_id, vocab, line_window, ratio
+        )
         # 이긴 후보의 슬라이스 정렬 결과를 그대로 쓴다 → 3패스가 필요 없다.
         referee_overrides, chosen_text = self._referee_lines(
             emission,
@@ -1565,6 +1624,7 @@ class CTCEngine(BaseAlignmentEngine):
         # 정렬(ja) 뒤에 남아 있으면 호출부가 엉뚱한 라인 창의 텍스트를 보고한다.
         self._last_referee = []
         self._last_heard = {}
+        self._last_heard_spans = {}
         self._last_caption_anchor = None
         self._last_star_prior = None
         force_mms = False
@@ -1701,6 +1761,10 @@ class CTCEngine(BaseAlignmentEngine):
     def get_last_heard_lines(self) -> dict[int, str]:
         """직전 정렬에서 모델이 각 라인 프레임 창에서 「들은」 greedy 디코딩 텍스트."""
         return dict(self._last_heard)
+
+    def get_last_heard_spans(self) -> dict[int, list[tuple[str, float]]]:
+        """직전 정렬에서 모델이 각 라인 프레임 창에서 「들은」 greedy 토큰의 글자별 시각."""
+        return dict(self._last_heard_spans)
 
     def get_last_transcription_data(self) -> tuple[list[WordTimestamp], MatchStats | None, str]:
         return (self._last_word_timestamps, self._last_match_stats, "ctc")

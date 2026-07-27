@@ -2825,7 +2825,8 @@ def _align_with_pronunciation(
 
     반환: (results, pron_data)
       results: 원문 텍스트 SyncResult 목록 (타이밍/word_segments는 독음 정렬 역매핑값).
-      pron_data: line_idx → {"pronunciation", "translation", "pron_segments", "heard", "referee"}.
+      pron_data: line_idx → {"pronunciation", "translation", "pron_segments", "heard",
+          "heard_spans", "referee"}.
     """
     from everyric2.inference.prompt import LyricLine, SyncResult, WordSegment
     from everyric2.text.reading import map_pron_alignment_to_line
@@ -2866,6 +2867,7 @@ def _align_with_pronunciation(
     # (pron_star_spans와 같은 사정).
     decisions = list(getattr(engine, "_last_referee", None) or [])
     heard = dict(getattr(engine, "_last_heard", None) or {})
+    heard_spans = dict(getattr(engine, "_last_heard_spans", None) or {})
     _log_referee_decisions(decisions)
     by_line_decision = {d["line"]: d for d in decisions}
 
@@ -2931,6 +2933,7 @@ def _align_with_pronunciation(
             # 노래 ASR은 약해서 heard로 발음을 만들면 안 되지만, 정렬 텍스트와의 불일치는
             # posterior 크기에 무관한 라인 단위 품질 지표다(conf는 곡 단위로만 유효).
             "heard": heard.get(i) or None,
+            "heard_spans": heard_spans.get(i) or None,
             "referee": (
                 {k: v for k, v in decision.items() if k != "line"} if decision else None
             ),
@@ -3149,6 +3152,7 @@ def _run_alignment(
         # ja를 나중에 채택하는 분기들은 이 dict를 비워 둔다(엉뚱한 라인 창의 텍스트를 보고하지
         # 않기 위해). 심판 진단은 독음 경로에서만 의미가 있으므로 손실이 없다.
         heard_by_line: dict[int, str] = {}
+        heard_spans_by_line: dict[int, list] = {}
         if settings.alignment.use_pronunciation and coverage >= 0.9:
             try:
                 results, pron_data = _align_with_pronunciation(
@@ -3168,11 +3172,13 @@ def _run_alignment(
                 )
                 pron_data = None
                 heard_by_line = dict(getattr(engine, "_last_heard", None) or {})
+                heard_spans_by_line = dict(getattr(engine, "_last_heard_spans", None) or {})
         else:
             if settings.alignment.use_pronunciation:
                 logger.info(f"Pronunciation coverage {coverage:.2f} < 0.9; using original text")
             results = _align_original(engine, align_audio, lyric_lines, language, anchor_kw)
             heard_by_line = dict(getattr(engine, "_last_heard", None) or {})
+            heard_spans_by_line = dict(getattr(engine, "_last_heard_spans", None) or {})
 
         # 자막 앵커 판정은 **ko 정렬 직후** 포착한다 — 아래 ja 교차정렬이 엔진의 직전-정렬
         # 기록을 덮는다(pron_star_spans·심판 판정과 같은 사정).
@@ -3577,6 +3583,11 @@ def _run_alignment(
             heard = pd.get("heard") if pron_data is not None else heard_by_line.get(i)
             if heard:
                 debug["heard"] = heard
+            heard_spans = (
+                pd.get("heard_spans") if pron_data is not None else heard_spans_by_line.get(i)
+            )
+            if heard_spans:
+                debug["heard_spans"] = [[ch, round(t, 2)] for ch, t in heard_spans]
             if pd.get("referee"):
                 debug["referee"] = pd["referee"]
             if debug:
