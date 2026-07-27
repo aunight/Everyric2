@@ -2059,3 +2059,193 @@ def test_translations_by_lang_is_none_when_sync_not_found():
             assert resp.translations_by_lang is None
 
     asyncio.run(body())
+
+
+# ── 사람 크로스 지문 번역이 현재 지문의 llm 정확 매칭을 이긴다 (H7PR 프로드 실측) ────
+#
+# 구멍: 이관(C)은 정확 매칭 "미스"에만 발동했다. 그런데 llm 레이어가 현재 지문 자리를
+# 이미 차지하고 있으면 get_layer가 값을 돌려주므로 "미스"가 아니다 — 그래서 다른 지문의
+# (ko,wiki,42) 같은 사람 번역이 (ko,llm,36) 자리를 절대 못 이겼다. 아래는 그 재현.
+
+
+def test_human_cross_fingerprint_layer_wins_over_exact_llm_match():
+    """현재 지문에 llm, 다른 지문에 wiki(줄 분할이 다름) — lang 조회가 wiki 값을 서빙하고
+    같은 (video,fp,lang) 자리를 origin=wiki로 교체한다. 재조회는 정확 매칭으로 바로 찾는다."""
+
+    async def body():
+        async with _env() as sm:
+            old_seg_texts = ["one", "two", "three"]  # 위키(옛 분할, 42줄류)
+            new_seg_texts = ["onetwo", "three"]  # 현재 싱크(새 분할, 36줄류 — 합침)
+
+            async with sm() as s:
+                # 현재 지문 자리를 llm이 이미 차지하고 있다 — 이게 구멍의 원인이었다
+                new_fp = lines_fingerprint(new_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    new_fp,
+                    "ko",
+                    lines=[
+                        {"text": "onetwo", "translation": "머신하나둘"},
+                        {"text": "three", "translation": "머신셋"},
+                    ],
+                    attribution=None,
+                    origin="llm",
+                )
+                # 다른(옛) 지문에 사람이 확인한 위키 번역이 살아 있다
+                old_fp = lines_fingerprint(old_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    old_fp,
+                    "ko",
+                    lines=[
+                        {"text": "one", "translation": "하나"},
+                        {"text": "two", "translation": "둘"},
+                        {"text": "three", "translation": "셋"},
+                    ],
+                    attribution={"name": "위키", "url": None, "license": None, "source_id": "wiki"},
+                    origin="wiki",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h_new",
+                    timestamps=[{"text": t, "translation": ""} for t in new_seg_texts],
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            resp = await get_sync(VIDEO, lang="ko", background_tasks=bg)
+            # 머신 번역("머신하나둘"/"머신셋")이 아니라 위키 값("one"+"two" 합침 이어붙임)이 나온다
+            assert resp.translation_lang == "ko"
+            assert resp.timestamps[0]["translation"] == "하나둘"
+            assert resp.timestamps[1]["translation"] == "셋"
+
+            await _run_background(bg)
+
+            # 같은 (video, new_fp, "ko") 자리가 llm → wiki로 교체됐다(새 행이 아니다)
+            async with sm() as s:
+                repo = TranslationLayerRepository(s)
+                layer = await repo.get_layer(VIDEO, new_fp, "ko")
+                assert layer is not None
+                assert layer.origin == "wiki"
+                assert layer.attribution == {
+                    "name": "위키", "url": None, "license": None, "source_id": "wiki",
+                }
+                assert layer.lines == [
+                    {"text": "onetwo", "translation": "하나둘"},
+                    {"text": "three", "translation": "셋"},
+                ]
+
+            # 재조회는 정확 매칭으로 바로 찾는다(이관 재시도 없이)
+            resp2 = await get_sync(VIDEO, lang="ko")
+            assert resp2.translation_lang == "ko"
+            assert resp2.timestamps[0]["translation"] == "하나둘"
+
+    asyncio.run(body())
+
+
+def test_llm_only_with_no_human_candidate_keeps_existing_behavior():
+    # 사람 후보가 아예 없으면(다른 지문에도 llm만 있거나 아무것도 없음) 기존 llm을 그대로 서빙
+    async def body():
+        async with _env() as sm:
+            seg_texts = ["one", "two"]
+            async with sm() as s:
+                fp = lines_fingerprint(seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, fp, "ko",
+                    lines=[
+                        {"text": "one", "translation": "머신하나"},
+                        {"text": "two", "translation": "머신둘"},
+                    ],
+                    attribution=None, origin="llm",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1",
+                    timestamps=[{"text": t, "translation": ""} for t in seg_texts],
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="ko")
+            assert resp.translation_lang == "ko"
+            assert resp.timestamps[0]["translation"] == "머신하나"
+            assert resp.timestamps[1]["translation"] == "머신둘"
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, fp, "ko")
+                assert layer.origin == "llm"  # 안 바뀜
+
+    asyncio.run(body())
+
+
+def test_human_cross_fingerprint_does_not_challenge_exact_human_match():
+    # 정확 매칭 자체가 이미 사람 origin이면 이관을 시도조차 하지 않는다(현재 지문 우선)
+    async def body():
+        async with _env() as sm:
+            seg_texts = ["one", "two"]
+            async with sm() as s:
+                fp = lines_fingerprint(seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, fp, "ko",
+                    lines=[{"text": "one", "translation": "현재캡션"}],
+                    attribution=None, origin="caption",
+                )
+                # 다른 지문에 더 "그럴듯해 보이는" 위키가 있어도 무시돼야 한다
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, "cafebabe" * 4, "ko",
+                    lines=[{"text": "one", "translation": "다른지문위키"}],
+                    attribution=None, origin="wiki",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1",
+                    timestamps=[{"text": t, "translation": ""} for t in seg_texts],
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="ko")
+            assert resp.timestamps[0]["translation"] == "현재캡션"
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_prefers_human_cross_fingerprint_over_exact_llm():
+    """translations_by_lang도 같은 우선순위를 따른다 — 읽기 전용(저장은 안 함)."""
+
+    async def body():
+        async with _env() as sm:
+            old_seg_texts = ["one", "two"]
+            new_seg_texts = ["onetwo"]
+
+            async with sm() as s:
+                new_fp = lines_fingerprint(new_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, new_fp, "ko",
+                    lines=[{"text": "onetwo", "translation": "머신하나둘"}],
+                    attribution=None, origin="llm",
+                )
+                old_fp = lines_fingerprint(old_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, old_fp, "ko",
+                    lines=[
+                        {"text": "one", "translation": "하나"},
+                        {"text": "two", "translation": "둘"},
+                    ],
+                    attribution=None, origin="wiki",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h_new",
+                    timestamps=[{"text": t, "translation": ""} for t in new_seg_texts],
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)  # lang 미지정
+            assert resp.translations_by_lang == {"ko": ["하나둘"]}
+
+            # 읽기 전용 확인 — 새 지문 자리의 llm 레이어는 그대로 남아 있다(교체되지
+            # 않는다). lang= 요청이 실제로 들어올 때만(_apply_translation_lang의 메인
+            # 서빙 경로) 그 자리가 사람 origin으로 교체된다.
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, new_fp, "ko")
+                assert layer is not None
+                assert layer.origin == "llm"
+                assert layer.lines == [{"text": "onetwo", "translation": "머신하나둘"}]
+
+    asyncio.run(body())
