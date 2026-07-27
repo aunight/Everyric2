@@ -573,6 +573,8 @@ async def submit_result(
             raise HTTPException(status_code=409, detail=f"잡이 이미 {job.status} 상태예요")
         from everyric2.server.worker import (
             job_target_lang,
+            layer_origin,
+            peek_attribution,
             peek_title,
             record_translation_layer,
             translation_layer_lines,
@@ -582,12 +584,15 @@ async def submit_result(
         # 이 원격 워커 경로로 생성되므로 여기 없으면 새 싱크의 레이어가 영영 안 남고,
         # 비ko 번역이 legacy 슬롯에 실려 한국어 사용자가 남의 언어를 받는다.
         target_lang = job_target_lang(job)
+        job_attr = peek_attribution(job_id)
         await record_translation_layer(
             session,
             job.video_id,
             [s.get("text") or "" for s in request.timestamps],
             translation_layer_lines(request.timestamps),
             target_lang,
+            origin=layer_origin(job_attr),
+            attribution=job_attr,
         )
         if target_lang != "ko":
             for seg in request.timestamps:

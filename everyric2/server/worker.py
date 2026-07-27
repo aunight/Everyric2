@@ -583,6 +583,30 @@ def translation_layer_lines(items: list[dict[str, Any]] | None) -> list[dict[str
     return lines
 
 
+def layer_origin(attribution: dict[str, Any] | None) -> str:
+    """생성 시 레이어 origin 판정 — 생성 경로의 세그먼트 번역은 전부 line_meta(위키·수동·
+    자막)에서 온다. 워커는 번역을 스스로 만들지 않으므로 여기서 "llm"이 나올 일은 없다
+    ("llm"은 /api/translate persist 경로 전용). source_id(신형 attribution)가 정본이고,
+    구형(vocaro url만 있던 시절)은 url 존재로, 자막 병합은 이름으로 근사한다."""
+    if not attribution:
+        return "manual"
+    sid = (attribution.get("source_id") or "").strip()
+    if sid in ("vocaro", "miraheze"):
+        return "wiki"
+    name = attribution.get("name") or ""
+    if "자막" in name or "caption" in name.lower():
+        return "caption"
+    if attribution.get("url"):
+        return "wiki"
+    return "manual"
+
+
+def peek_attribution(job_id: str) -> dict[str, Any] | None:
+    """스태시된 출처 표기 조회 (pop 없음) — 원격 워커 결과 수신부(api/worker.py)가
+    레이어 기록에 쓴다. peek_title과 같은 계약."""
+    return _PENDING_ATTRIBUTION.get(job_id)
+
+
 async def record_translation_layer(
     session: Any,
     video_id: str,
@@ -805,6 +829,8 @@ async def _complete_from_cache_db(
             [s.get("text") or "" for s in updated.get("segments", [])],
             translation_layer_lines(meta),
             target_lang,
+            origin=layer_origin(attr),
+            attribution=attr,
         )
         await JobRepository(session).update_status(
             job_id, "completed", progress=100, result_id=target.id
@@ -1089,12 +1115,15 @@ async def _process_job_inner(job_id: str, job) -> None:
             # 사용자가 lang 없이 조회했을 때 남의 언어 번역을 받는다 — 이 작업의 출발점인
             # 바로 그 사고다. target_lang을 안 싣는 구버전 요청은 "ko"라 기존 동작 그대로다.
             target_lang = job_target_lang(job)
+            job_attr = _PENDING_ATTRIBUTION.get(job_id)
             await record_translation_layer(
                 session,
                 job.video_id,
                 [s.get("text") or "" for s in result.timestamps],
                 translation_layer_lines(result.timestamps),
                 target_lang,
+                origin=layer_origin(job_attr),
+                attribution=job_attr,
             )
             if target_lang != "ko":
                 for seg in result.timestamps:
