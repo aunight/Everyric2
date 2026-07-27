@@ -1043,6 +1043,15 @@ async function loadTranslations(): Promise<void> {
   const data = currentData;
   const videoId = currentVideoId;
   if (!data || !videoId || !settings.showTranslation) return;
+  const srcLines = data.lines.map(l => l.text);
+  const lang = settings.translationLanguage;
+  // 대각선(J3) — 곡 원문 스크립트가 내 번역 언어와 같으면 서버는 번역을 만들지 않는다
+  // (expectsPronunciation의 `script === lang` 분기와 같은 사실을 여기서도 재사용할 뿐,
+  // 그 매트릭스 자체는 건드리지 않는다). 이전에는 이 사실을 모른 채 매 로딩마다 요청을
+  // 쏘고 "번역 생성 중…" 문구가 잠깐 떴다가 서버의 조용한 거절로 사라졌다 — 헛호출+깜빡임.
+  // 사용자가 칩·설정으로 방금 이 언어로 전환한 직후에도(handleSettingsChange → clearTranslations
+  // → loadTranslations 경로) 이 가드가 그대로 적용돼 같은 무요청·무깜빡임이 보장된다.
+  if (detectSongScript(srcLines) === lang) return;
   // 위키 사람 번역(내 번역 언어와 같을 때만)이 있으면 발동하지 않는다
   // (clearTranslations의 같은 가드와 규칙을 맞춘다)
   if (hasMatchingHumanTranslation(data)) return;
@@ -1057,9 +1066,7 @@ async function loadTranslations(): Promise<void> {
   // 있으면 충분)으로 폴백한다 — 그 경우 한국어권 밖 사용자는 여전히 남의 언어 번역을 보고
   // "이미 있다"고 오판될 수 있다. 확장의 로컬 캐시(translationKey)는 언어를 이미 구분하므로
   // 캐시 경로는 이 문제가 없다.
-  const srcLines = data.lines.map(l => l.text);
   const expectsPron = expectsPronunciation(srcLines);
-  const lang = settings.translationLanguage;
   // translationLang이 있으면(서버가 채워줬거나 이 세션에서 applyTranslations가 직접 채운
   // 값) 그 언어가 내 언어와 같을 때만 "이미 있음"으로 본다. 필드가 없으면(구서버·아직
   // 안 채워짐) 예전 규칙 그대로 — 모든 줄에 translation이 있으면 충분하다고 본다.
