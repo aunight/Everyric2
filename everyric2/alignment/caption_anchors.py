@@ -174,6 +174,9 @@ class AnchorPlan:
 
     spans: list[tuple[float, float]] = field(default_factory=list)
     line_starts: dict[int, float] = field(default_factory=dict)
+    # line_idx → (자막 시작, 자막 표시 종료) — line_starts와 같은 매칭·같은 게이트에서
+    # 나오지만 끝 시각까지 담는다. 자막 스캐폴드(caption_scaffold)가 줄 길이 추정에 쓴다.
+    line_spans: dict[int, tuple[float, float]] = field(default_factory=dict)
     debug: dict[str, Any] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
@@ -422,10 +425,13 @@ def derive_anchor_plan(
 
     # ── 양성 제약: 앵커 줄의 시각 그대로 ──
     line_starts: dict[int, float] = {}
+    line_spans: dict[int, tuple[float, float]] = {}
     if rate >= positive_min_match:
         # 같은 자막 이벤트에 우리 두 줄이 붙으면 둘의 시각이 같다. 그대로 둔다 — 창 정렬이
         # 순서를 지켜 순차 배치하므로 같은 시각이 모순을 만들지 않는다.
+        # (자막 스캐폴드는 공유 이벤트의 후속 줄을 자체적으로 보간으로 돌린다)
         line_starts = {a.line_idx: a.start for a in anchors}
+        line_spans = {a.line_idx: (a.start, a.end) for a in anchors}
     else:
         debug["positive_skipped"] = "low_match"
 
@@ -444,7 +450,7 @@ def derive_anchor_plan(
     else:
         debug["forbidden_sec"] = round(total, 2)
         debug["spans"] = [[s, e] for s, e in spans]
-    return AnchorPlan(spans=spans, line_starts=line_starts, debug=debug)
+    return AnchorPlan(spans=spans, line_starts=line_starts, line_spans=line_spans, debug=debug)
 
 
 def script_counts(text: str) -> dict[str, int]:

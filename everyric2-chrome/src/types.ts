@@ -155,6 +155,17 @@ export interface SyncDebugMeta {
   f0_curve?: F0Curve | null;
   /** 정렬에 쓴 텍스트: "pronunciation"(독음) | "original"(원문) */
   alignment_text?: string | null;
+  /** 자막 스캐폴드 판정 — 붕괴 곡의 줄 타이밍을 자막 시각으로 교체했는지와 그 근거.
+   *  applied=false면 skipped에 사유. sources = {caption: 자막 고정, interp: 보간, kept: CTC 유지} */
+  caption_scaffold?: {
+    applied?: boolean;
+    skipped?: string | null;
+    moved?: number;
+    sources?: { caption?: number; interp?: number; kept?: number };
+    rate?: number | null;
+    track?: string | null;
+    drift_median?: number | null;
+  } | null;
 }
 
 /** RAW f0 곡선 (다운샘플) — midi[i]의 시각 = t0 + i*dt */

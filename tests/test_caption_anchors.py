@@ -506,7 +506,7 @@ class _RecordingEngine:
         ]
 
 
-def _run_worker_alignment(monkeypatch, tmp_path, *, anchors_on: bool, tracks):
+def _run_worker_alignment(monkeypatch, tmp_path, *, anchors_on: bool, tracks, scaffold_on=None):
     """`_run_alignment`을 실제로 돌린다 — 오디오·보컬 분리·멜로디·자막 IO만 대역으로."""
     import numpy as np
 
@@ -539,9 +539,12 @@ def _run_worker_alignment(monkeypatch, tmp_path, *, anchors_on: bool, tracks):
     saved = {
         "melody": settings.melody.enabled,
         "anchors": settings.alignment.caption_anchors,
+        "scaffold": settings.alignment.caption_scaffold,
     }
     object.__setattr__(settings.melody, "enabled", False)
     object.__setattr__(settings.alignment, "caption_anchors", anchors_on)
+    if scaffold_on is not None:
+        object.__setattr__(settings.alignment, "caption_scaffold", scaffold_on)
     try:
         result = worker_mod._run_alignment(
             str(audio_file), "\n".join(LYRICS), "ja", video_id="zyRt-nBM3dY"
@@ -549,6 +552,7 @@ def _run_worker_alignment(monkeypatch, tmp_path, *, anchors_on: bool, tracks):
     finally:
         object.__setattr__(settings.melody, "enabled", saved["melody"])
         object.__setattr__(settings.alignment, "caption_anchors", saved["anchors"])
+        object.__setattr__(settings.alignment, "caption_scaffold", saved["scaffold"])
     return result, engine
 
 
@@ -575,9 +579,21 @@ def test_worker_records_why_anchors_were_not_used(monkeypatch, tmp_path):
     assert result["debug"]["caption_anchors"]["skipped"] == "low_match"
 
 
-def test_switch_off_keeps_the_call_and_the_debug_exactly_as_before(monkeypatch, tmp_path):
+def test_constraint_off_still_records_the_plan_for_the_scaffold(monkeypatch, tmp_path):
+    """제약(caption_anchors)이 꺼져도 스캐폴드(기본 ON)가 같은 조달·매칭을 쓴다 — 계획과
+    판정은 debug에 남되, **정렬 호출에는 아무 제약도 들어가지 않는다** (제약/골격 분리)."""
     result, engine = _run_worker_alignment(
         monkeypatch, tmp_path, anchors_on=False, tracks=[("ja", CAPTIONS)]
     )
+    assert engine.calls == [{}], "제약 스위치가 꺼졌는데 정렬 호출이 달라졌다"
+    assert "caption_anchors" in result["debug"]
+    assert "caption_scaffold" in result["debug"]
+
+
+def test_both_switches_off_keep_the_call_and_the_debug_exactly_as_before(monkeypatch, tmp_path):
+    result, engine = _run_worker_alignment(
+        monkeypatch, tmp_path, anchors_on=False, scaffold_on=False, tracks=[("ja", CAPTIONS)]
+    )
     assert engine.calls == [{}], "스위치가 꺼졌는데 정렬 호출이 달라졌다"
     assert "caption_anchors" not in result["debug"]
+    assert "caption_scaffold" not in result["debug"]

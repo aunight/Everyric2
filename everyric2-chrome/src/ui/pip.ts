@@ -214,6 +214,9 @@ const FIX_COLORS: Record<string, string> = {
   // 원문 글자 융합 — 라인 경계는 그대로 두고 라인 **안쪽** 글자 분포만 다시 만든다.
   // 채도 높은 핑크: 빨강 계열(stretch/repeat)·주황(tail)·보라(snap)와 색상이 뚜렷이 갈린다
   fuse: '#f06595',
+  // 자막 스캐폴드 — 붕괴 곡의 줄 시작을 사람이 찍은 자막 시각으로 교체 (CTC 결과 폐기).
+  // 노랑: 다른 보정과 달리 «음향이 아니라 자막이 낸 타이밍»이라 한눈에 구분돼야 한다
+  scaffold: '#fcc419',
 };
 
 /**
@@ -2174,6 +2177,19 @@ export class PipController {
           text: at === 'pronunciation' ? ' · 전사:독음(한국어 발음)' : ' · 전사:원문(원어)',
           color: '#868e96',
         });
+      }
+      const sc = this.debugMeta?.caption_scaffold;
+      if (sc?.applied) {
+        // 자막 골격이 타이밍을 교체했다 — 고스트 라벨(scaffold)과 같은 노랑으로 묶는다
+        const src = sc.sources ?? {};
+        parts.push({
+          text: ` · 자막골격 ${sc.moved ?? 0}줄(고정${src.caption ?? 0}·보간${src.interp ?? 0}·유지${src.kept ?? 0})`,
+          color: FIX_COLORS.scaffold,
+        });
+      } else if (sc?.skipped && sc.skipped !== 'not_collapsed') {
+        // 붕괴인데 골격을 못 쓴 이유(자막 없음·매칭 미달)는 진단 가치가 있어 표시한다.
+        // not_collapsed(정상 곡)는 소음이라 숨긴다.
+        parts.push({ text: ` · 자막골격 안 씀:${sc.skipped}`, color: '#868e96' });
       }
       ctx.font = '10px ui-monospace, monospace';
       ctx.textAlign = 'left';

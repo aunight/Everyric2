@@ -476,6 +476,48 @@ class AlignmentSettings(BaseSettings):
         "MeCab n-best candidate list (measured: it is the 7th distinct rendering).",
     )
 
+    caption_scaffold: bool = Field(
+        default=True,
+        description="Use HUMAN caption line timing as the timing BASELINE for collapsed songs — "
+        "a result override, not a DP constraint. The constraint route failed twice (see "
+        "caption_anchors below: masks only relocate ties on flat posteriors — zyRt pron(ko) "
+        "write path went 7.1s OFF -> 25.6s ON -> 29.1s ON+star pricing). This instead pins "
+        "line starts to matched caption times, keeps CTC timing wherever it already agrees "
+        "(within caption_scaffold_tolerance_sec, or fits order-consistently between anchors), "
+        "interpolates the rest, and re-synthesizes intra-line word/pron timing uniformly "
+        "(caption timing is line-resolution only). Fires ONLY when a manual original-language "
+        "track matched >= caption_anchor_positive_min_match AND the song is collapsed "
+        "(avg line conf < caption_scaffold_max_conf OR median |CTC start - caption start| >= "
+        "caption_scaffold_min_drift_sec). Measured basis: zyRt captions matched 92.9% with "
+        "anchor times accurate to ~0.2s while CTC was 7.1s off (2026-07-27 SRT audits); "
+        "caption display leading the voice is the perceptually tolerant direction (Deezer "
+        "ISMIR 2021 asymmetry: ahead -0.3s vs lagging +0.2s). Full decision (gates, drift, "
+        "per-source counts, or why it skipped) is recorded in debug.caption_scaffold and "
+        "re-timed lines carry the 'scaffold' fix label (ghost overlay in the extension debug "
+        "lane).",
+    )
+    caption_scaffold_max_conf: float = Field(
+        default=0.002,
+        description="Collapse gate ① for caption_scaffold: average line confidence below this "
+        "marks the song as posterior-collapsed. Corpus of 204 songs: p10=0.00125, median "
+        "0.013; every measured collapse case (熱異常 0.0003-0.0005, zyRt 0.0011, 消失 0.0012) "
+        "sits under 0.002 while 88% of the corpus sits above. 消失 aligns fine despite its "
+        "floor conf — harmless here, because its lines agree with captions and stay 'kept'.",
+    )
+    caption_scaffold_min_drift_sec: float = Field(
+        default=3.0,
+        description="Collapse gate ② for caption_scaffold: median |CTC line start - caption "
+        "start| at/above this triggers the scaffold even when confidence looks fine. A "
+        "well-matched human track is line-accurate to ~0.2-0.5s (measured), so a median "
+        "disagreement of seconds means the alignment, not the captions, is wrong.",
+    )
+    caption_scaffold_tolerance_sec: float = Field(
+        default=1.0,
+        description="Lines whose CTC start is within this of their caption anchor keep their "
+        "CTC timing ('kept'): when CTC is right it is finer-grained than caption display "
+        "times, which run slightly ahead of the voice. Above it the caption time wins.",
+    )
+
     caption_anchors: bool = Field(
         default=False,
         description="OFF BY DEFAULT AND MEASURED TO MAKE THINGS WORSE — do not turn this on "

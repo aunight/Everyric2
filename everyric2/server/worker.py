@@ -1791,6 +1791,77 @@ def _resynth_pron_segments(pron_segments, start: float, end: float) -> None:
         s["end"] = start + span * (k + 1) / n
 
 
+def _apply_caption_scaffold(
+    results, pron_data, fixes, anchor_plan, song_conf, audio_sec: float, align_settings
+) -> dict[str, Any]:
+    """자막 스캐폴드 적용 — 붕괴 곡의 줄 시작을 자막 시각으로 고정한다 (결과 교체).
+
+    제약(마스크) 경로가 두 번 실패한 뒤의 대안이고 근거·실패 이력은
+    ``alignment/caption_scaffold.py`` 모듈 주석에 있다. 항상 판정 dict를 돌려준다 —
+    발동하지 않은 경우에도 «왜»(skipped)를 남겨야 사후 감사가 된다(caption_anchors 규약).
+    움직인 줄은 «scaffold» 보정 라벨을 받아 확장 디버그 레인에 고스트로 표시된다.
+    """
+    from everyric2.alignment.caption_scaffold import drift_seconds, scaffold_plan
+
+    if anchor_plan is None:
+        return {"applied": False, "skipped": "no_plan"}
+    if not anchor_plan.line_spans:
+        return {
+            "applied": False,
+            "skipped": anchor_plan.debug.get("positive_skipped")
+            or anchor_plan.debug.get("skipped")
+            or "no_anchors",
+        }
+    spans = [(r.start_time, r.end_time) for r in results]
+    drifts = sorted(drift_seconds(spans, anchor_plan.line_spans))
+    drift_med = drifts[len(drifts) // 2] if drifts else None
+    max_conf = float(getattr(align_settings, "caption_scaffold_max_conf", 0.002))
+    min_drift = float(getattr(align_settings, "caption_scaffold_min_drift_sec", 3.0))
+    by_conf = song_conf is not None and song_conf < max_conf
+    by_drift = drift_med is not None and drift_med >= min_drift
+    meta: dict[str, Any] = {
+        "rate": anchor_plan.debug.get("rate"),
+        "track": anchor_plan.debug.get("track"),
+        "anchors": len(anchor_plan.line_spans),
+        "drift_median": round(drift_med, 2) if drift_med is not None else None,
+        "song_conf": round(song_conf, 6) if song_conf is not None else None,
+        "gates": {"conf": by_conf, "drift": by_drift},
+    }
+    if not (by_conf or by_drift):
+        meta.update({"applied": False, "skipped": "not_collapsed"})
+        return meta
+
+    plan = scaffold_plan(
+        spans,
+        anchor_plan.line_spans,
+        audio_sec,
+        float(getattr(align_settings, "caption_scaffold_tolerance_sec", 1.0)),
+    )
+    counts = {"caption": 0, "interp": 0, "kept": 0}
+    moved = 0
+    for i, (r, pl) in enumerate(zip(results, plan)):
+        counts[pl.source] += 1
+        if pl.source == "kept":
+            continue
+        r.start_time = pl.start
+        r.end_time = pl.end
+        # 줄 안 분포는 균등 재합성 — 붕괴 곡의 라인 내부 CTC 분포는 무의미하고,
+        # 자막은 줄 해상도까지만 신뢰한다 (SRT 해상도 실측)
+        _resynth_word_segments(r.word_segments, pl.start, pl.end)
+        if pron_data is not None and (pron_data.get(i) or {}).get("pron_segments"):
+            _resynth_pron_segments(pron_data[i]["pron_segments"], pl.start, pl.end)
+        fixes.setdefault(i, []).append("scaffold")
+        moved += 1
+    meta.update({"applied": True, "moved": moved, "sources": counts})
+    logger.warning(
+        f"Caption scaffold applied: {moved} line(s) re-timed to caption baseline "
+        f"(caption {counts['caption']}, interp {counts['interp']}, kept {counts['kept']}; "
+        f"drift median {meta['drift_median']}s, song conf {meta['song_conf']}, "
+        f"track {meta['track']} rate {meta['rate']})"
+    )
+    return meta
+
+
 def _impossible_word_distribution(word_segments, start: float, end: float, max_char_rate: float) -> bool:
     """라인 내부 word 분포가 물리적으로 불가능한지 — CTC 잔해 판별 (구조 신호).
 
@@ -2628,7 +2699,12 @@ def _caption_forbidden_spans(video_id: str | None, lyric_lines, audio_sec: float
         script_lang_hint,
     )
 
-    if not getattr(align_settings, "caption_anchors", False) or not video_id:
+    # 스캐폴드(caption_scaffold)도 같은 조달·매칭을 쓴다 — 제약(caption_anchors)이 꺼져
+    # 있어도 스캐폴드가 켜져 있으면 계획은 만들고, 제약으로 쓸지는 호출부가 스위치별로 정한다.
+    wanted = getattr(align_settings, "caption_anchors", False) or getattr(
+        align_settings, "caption_scaffold", False
+    )
+    if not wanted or not video_id:
         return AnchorPlan(debug={"skipped": "disabled" if video_id else "no_video_id"})
     texts = [ln.text for ln in lyric_lines]
     try:
@@ -2880,7 +2956,9 @@ def _run_alignment(
         # 자막 앵커 조달은 네트워크 IO(트랙당 yt-dlp 1회)라 보컬 분리와 **겹쳐서** 돌린다 —
         # 정렬 진입 전에만 있으면 되므로 분리 시간에 그대로 숨는다(f0 병렬과 같은 방식).
         anchor_future = None
-        if settings.alignment.caption_anchors and video_id:
+        if (
+            settings.alignment.caption_anchors or settings.alignment.caption_scaffold
+        ) and video_id:
             import concurrent.futures
 
             anchor_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -2937,9 +3015,11 @@ def _run_alignment(
         if anchor_future is not None:
             try:
                 anchor_plan = anchor_future.result()
-                # 양성 제약은 스위치가 따로다 — 실패 방향이 반대라 음성 제약과 함께 켜지지 않는다
+                # 제약별 스위치: 금지 구간·양성 제약 모두 스위치가 켜진 것만 정렬에 들어간다.
+                # 스캐폴드만 켜진 배포에서는 계획은 있되 DP 제약은 0개다 — 스캐폴드는
+                # 정렬 «결과»를 고치는 후처리라 여기서 아무것도 걸지 않는다.
                 anchor_kw = _anchor_kwargs(
-                    anchor_plan.spans,
+                    anchor_plan.spans if settings.alignment.caption_anchors else None,
                     anchor_plan.line_starts
                     if settings.alignment.caption_anchor_positive
                     else None,
@@ -3328,6 +3408,25 @@ def _run_alignment(
                     f"mapped onto each line's measured pron-syllable window)"
                 )
 
+        # 자막 스캐폴드 (모든 스냅·클램프 뒤, 재합성·직렬화 앞): 붕괴 곡의 줄 시작을
+        # 사람이 찍은 자막 시각으로 고정한다 — DP 제약이 아니라 결과 교체다. 발동 여부와
+        # 무관하게 판정 전체가 debug.caption_scaffold로 내려간다 (디버그 투명성).
+        scaffold_meta: dict[str, Any] | None = None
+        if settings.alignment.caption_scaffold:
+            try:
+                scaffold_meta = _apply_caption_scaffold(
+                    results,
+                    pron_data,
+                    fixes,
+                    anchor_plan,
+                    song_conf,
+                    audio.duration,
+                    settings.alignment,
+                )
+            except Exception:
+                logger.exception("Caption scaffold failed; keeping the aligned timing")
+                scaffold_meta = {"applied": False, "skipped": "error"}
+
         # 보정 마지막(스냅·클램프 이후, 직렬화 전): 붕괴 곡/누출 라인의 라인 내부 word/pron
         # 타이밍을 균등 비례로 재합성한다. 라인 경계는 유지하고 무의미한 CTC 내부 분포만 폐기.
         # 멜로디 노트는 라인 스팬 기반(word/pron 무소비)이라 영향 없음.
@@ -3504,6 +3603,10 @@ def _run_alignment(
         # (skipped)를 남긴다. 앵커 스위치가 꺼져 있으면 키 자체가 없다(기존 debug와 동일).
         if anchor_plan is not None:
             debug_meta["caption_anchors"] = {**anchor_plan.debug, "decision": anchor_decision}
+        # 자막 스캐폴드 판정 — 발동(줄 수·출처별 개수·게이트 값)이든 스킵(사유)이든 그대로.
+        # 스위치가 꺼져 있으면 키 자체가 없다 (caption_anchors와 동일 규약).
+        if scaffold_meta is not None:
+            debug_meta["caption_scaffold"] = scaffold_meta
 
         return {
             "timestamps": timestamps,
