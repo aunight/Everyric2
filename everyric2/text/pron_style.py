@@ -163,6 +163,20 @@ def _is_opening(ch: str) -> bool:
     return unicodedata.category(ch) in ("Ps", "Pi")
 
 
+# &(앤드)는 unicodedata 상 부호(Po)라 _is_punctuation에 걸리면 묵음 통과가 된다. 그런데
+# 실가창 청취로는 「あんど」/「と」로 부르는 사례를 못 찾았고 「앤」으로 듣는 사례가 다수였다
+# (사용자 실측 피드백, 2026-07) — 즉 &는 일본어 낱말을 잇는 조사가 아니라 **라틴 낱말
+# "and"** 그 자체다. 그래서 부호 분기로 새기 **전에** 여기서 가로채 진짜 "and" 토큰과
+# 완전히 같은 값(품사 포함, 실측: "君and僕"를 tokenize_reading하면 and가 名詞/普通名詞로
+# 나온다)으로 렌더 파이프라인에 넣는다 — 표기별 분기(hangul 조밀 음차 「앤」 / romaji·kana
+# 라틴 그대로 통과)는 기존 라틴 경로(_render 말미의 transliterate_latin)가 이미 하므로
+# 여기서 새로 만들 필요가 없다.
+_AMPERSAND_CHARS = frozenset({"&", "＆"})
+_AMPERSAND_LATIN_WORD = "and"
+_AMPERSAND_POS = "名詞"
+_AMPERSAND_POS2 = "普通名詞"
+
+
 def _starts_phrase(token: ReadingToken, prev_pos: str, prev_pos2: str) -> bool:
     """이 토큰에서 새 문절이 시작하는가."""
     if token.pos not in _PHRASE_HEAD_POS or token.pos2 == _AUX_STEM_POS2:
@@ -264,6 +278,19 @@ def _render_pronunciation(
             prev_pos = prev_pos2 = ""
             continue
 
+        if surface in _AMPERSAND_CHARS:
+            # &/＆는 부호가 아니라 라틴 낱말 "and"다(위 _AMPERSAND_CHARS 주석) — 品詞를
+            # 名詞/普通名詞로 대입해 _starts_phrase를 real "and" 토큰과 동일하게 판정한다
+            # (君&僕 → "키미 앤 보쿠", 독립 문절로 뜬다). char span은 건드리지 않는다 —
+            # 조각의 글자 수는 여전히 1(& 하나)이다.
+            new_group = _starts_phrase(
+                dataclasses.replace(token, pos=_AMPERSAND_POS, pos2=_AMPERSAND_POS2),
+                prev_pos, prev_pos2,
+            )
+            add((True, _AMPERSAND_LATIN_WORD), new_group=new_group)
+            prev_pos, prev_pos2 = _AMPERSAND_POS, _AMPERSAND_POS2
+            continue
+
         if _is_punctuation(surface):
             # 부호는 읽지 않고 원문 위치에 그대로(반자로) 남긴다
             for ch in surface:
@@ -317,6 +344,16 @@ def _has_japanese(text: str) -> bool:
 _LATIN_RE = re.compile(r"[A-Za-z]")
 
 
+def _has_latin_content(text: str) -> bool:
+    """이 라인에 라틴 음차 경로(latin_hangul)를 탈 거리가 있는가.
+
+    실제 A-Za-z 글자뿐 아니라 &/＆도 포함한다 — &는 이제 라틴 낱말 "and"로 렌더되므로
+    (``_AMPERSAND_CHARS``), "刃&刃"처럼 원문에 진짜 라틴 글자가 하나도 없이 &만 있는
+    줄도 라틴 축(느슨 후보 등)의 대상이어야 한다.
+    """
+    return bool(text) and (bool(_LATIN_RE.search(text)) or any(ch in _AMPERSAND_CHARS for ch in text))
+
+
 def wiki_pronunciation(text: str, *, script: str = "hangul") -> str:
     """라인의 발음 표기 (위키 표기 관례, 기본은 한글 + 라틴 조밀 음차). 읽을 것이 없으면 빈 문자열.
 
@@ -336,7 +373,7 @@ def wiki_pronunciation(text: str, *, script: str = "hangul") -> str:
     비어 있으면 그 줄은 독음(ko) 정렬에 아예 들어가지 못한다. 숫자는 여전히 그대로 둔다
     (1秒 → 「1뵤오」, 사람은 「이치뵤오」 — 별개 문제다).
     """
-    if not _has_japanese(text) and not _LATIN_RE.search(text or ""):
+    if not _has_japanese(text) and not _has_latin_content(text):
         return ""
     return _render_pronunciation(
         text, tokenize_reading(text, phonetic=True, adopt_ruby=True), script=script
@@ -595,7 +632,9 @@ def _pronunciation_candidates_with_tokens(
     # 테이크). tighten은 접기/버리기만 하므로 이 후보는 기본값보다 음절이 항상 많거나
     # 같다 — 예전 심판을 망친 삭제 편향(음절 지운 후보가 평평한 posterior에서 공짜로
     # 이김)과 무관한 축이라 안전하다. 독음은 기본값과 동일해 유일한 차이가 라틴 표기다.
-    if len(out) < max_candidates and _LATIN_RE.search(text):
+    # &(→"and")도 이 축에 실린다 — _has_latin_content가 &만 있고 진짜 라틴 글자가 없는
+    # 줄도 잡아서, 「앤」(조밀)↔「앤드」(느슨)를 새 후보 축 없이 이 기존 축이 중재한다.
+    if len(out) < max_candidates and _has_latin_content(text):
         loose = _render_pronunciation(text, default_tokens, latin_tight=False)
         if loose and loose not in rendered_set:
             out.append((loose, default_tokens))
@@ -695,7 +734,7 @@ def romaji_line(
     공백·구두점으로 건너뛴 글자 구간이 있어도 공백. 라틴/ASCII 모라는
     ``moras_to_romaji``의 표 미등록 통과 경로를 타 원형 그대로 나온다.
     """
-    if not _has_japanese(text) and not _LATIN_RE.search(text):
+    if not _has_japanese(text) and not _has_latin_content(text):
         return None
     if tokens is None:
         tokens = tokenize_reading(text, phonetic=True, adopt_ruby=True)

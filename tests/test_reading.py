@@ -224,3 +224,58 @@ def test_token_span_refinement_falls_back_on_mismatch():
 
     assert _token_mora_char_spans("は", 0, ["わ"]) is None
     assert _token_mora_char_spans("愛", 0, []) is None
+
+
+# ---------------------------------------------------------------------------
+# &(앤드) — pron_style.py가 라틴 낱말 "and"로 렌더하는 것과 짝을 맞춘 ASCII 유닛
+# 인식(2026-07). &는 品詞상 부호(補助記号)라 일본어 갈래로도, 예전 정규식으로는 ASCII
+# 갈래로도 못 갔다 — 모라가 아예 안 생겨 그 자리의 "앤"이 카라오케 타이밍 없이 통째로
+# 빠졌다(실측: pron_segments_for_line 결과에 그 세그먼트가 없었다). _ASCII_WORD_RE에
+# &/＆를 추가해 다른 ASCII 낱말과 같은 취급을 받게 한다.
+# ---------------------------------------------------------------------------
+
+
+def test_ampersand_gets_its_own_ascii_mora():
+    moras = text_to_moras("君&僕")
+    assert [(m.kana, m.char_start, m.char_end, m.is_ascii) for m in moras] == [
+        ("き", 0, 1, False), ("み", 0, 1, False),
+        ("&", 1, 2, True),
+        ("ぼ", 2, 3, False), ("く", 2, 3, False),
+    ]
+
+
+def test_ampersand_fullwidth_gets_its_own_ascii_mora_too():
+    moras = text_to_moras("君＆僕")
+    assert [m.kana for m in moras] == ["き", "み", "＆", "ぼ", "く"]
+    assert moras[2].is_ascii and (moras[2].char_start, moras[2].char_end) == (1, 2)
+
+
+def test_ampersand_does_not_merge_into_a_neighbouring_ascii_run_across_a_space():
+    # "Boy & Girl" — 공백으로 갈린 세 낱말은 별개 모라 3개다(하나로 뭉치지 않는다)
+    moras = text_to_moras("Boy & Girl")
+    assert [(m.kana, m.is_ascii) for m in moras] == [
+        ("Boy", True), ("&", True), ("Girl", True),
+    ]
+
+
+def test_ampersand_syllable_keeps_its_karaoke_timing_instead_of_vanishing():
+    """&가 렌더한 "앤" 음절이 pron_segments_for_line에서 사라지지 않는다.
+
+    수정 전 재현: text_to_moras가 &에 모라를 안 만들어 DP 정렬에 "앤"이 붙을 자리가
+    없었고, 그 세그먼트가 통째로 빠졌다(karaoke 하이라이트가 안 뜬다). ASCII 유닛으로
+    인식되면 다른 라틴 낱말과 똑같이 시간을 받는다.
+    """
+    text = "君&僕"
+    pron = "키미 앤 보쿠"
+    char_spans = [(c, 1.0 + i * 0.2, 1.2 + i * 0.2) for i, c in enumerate("君&僕")]
+
+    segments = pron_segments_for_line(char_spans, text, pron)
+
+    assert segments is not None
+    texts = [s["text"] for s in segments]
+    assert "앤" in texts, f"& 음절이 통째로 빠졌다 — {texts}"
+    ande = next(s for s in segments if s["text"] == "앤")
+    assert ande["start"] < ande["end"]  # 실제 시간 구간을 받는다(제로폭이 아니다)
+    # 단조 증가·전 커버 — 다른 회귀 테스트와 같은 기준
+    for prev, cur in zip(segments, segments[1:]):
+        assert cur["start"] >= prev["end"] - 1e-9

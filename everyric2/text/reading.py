@@ -52,8 +52,16 @@ class PronSyllable:
 # 직전 가나와 결합해 1모라를 이루는 소문자(요음/외래어 확장 모음)
 _SMALL_COMBINING = set("ゃゅょぁぃぅぇぉゎ")
 
-# 연속 ASCII(영단어/숫자, 아포스트로피·하이픈 포함)를 1 유닛으로 묶는 패턴
-_ASCII_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
+# 연속 ASCII(영단어/숫자, 아포스트로피·하이픈 포함)를 1 유닛으로 묶는 패턴. &/＆도 포함한다
+# — pron_style.py가 &를 라틴 낱말 "and"로 렌더하므로(품사를 名詞로 대입해 실제 and
+# 토큰과 같은 경로를 태운다) 여기서도 정렬 가능한 유닛으로 인식해야 그 "앤"/"and"
+# 음절이 붙을 모라가 생긴다. &가 品詞상 부호(補助記号)라 첫 갈래(_is_japanese_char)로는
+# 못 가고, 여기서 놓치면 카라오케 타이밍 백매핑(pron_segments_for_line)이 그 음절을
+# 통째로 빠뜨린다(실측: "君&僕"에서 「앤」 세그먼트가 사라짐). Mora.kana에 담기는 값은
+# DP 정렬(align_pron_to_moras)에서 is_ascii 모라 취급에만 쓰이고 내용 자체는 채점에
+# 안 쓰이므로("&" 그대로 담아도 무방) 굳이 "and"로 바꾸지 않는다 — 표면 그대로 담아야
+# 다른 ASCII 낱말과 동일한 계약(Mora.kana가 원문 글자 그대로)을 지킨다.
+_ASCII_WORD_RE = re.compile(r"[A-Za-z0-9&＆]+(?:['’-][A-Za-z0-9]+)*")
 
 def _is_japanese_char(ch: str) -> bool:
     """히라가나/가타카나/한자 범위인지 (일본어 유닛 판별용)."""

@@ -135,6 +135,19 @@ def test_rules_alone_reproduce_the_measured_words(word, expected):
     assert latin_word_to_hangul(word) == expected
 
 
+def test_and_needs_no_table_entry():
+    """"and" — &(앤드)를 라틴 낱말로 취급하는 pron_style 변경의 근거값.
+
+    사용자 실청취 피드백(2026-07): &를 「あんど」/「と」로 부르는 사례를 못 찾았고
+    「앤」으로 듣는 경우가 다수였다. 규칙 엔진이 표 없이 이미 정확한 tight/loose 값을
+    낸다 — _WORDS에 새 항목을 추가할 필요가 없다(추가했으면 회귀를 표가 가렸을 것이다).
+    """
+    assert latin_word_to_hangul("and", tight=True) == "앤"
+    assert latin_word_to_hangul("and", tight=False) == "앤드"
+    assert transliterate_latin("and") == "앤"
+    assert transliterate_latin("and", tight=False) == "앤드"
+
+
 @pytest.mark.parametrize(
     ("word", "expected"),
     [

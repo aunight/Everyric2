@@ -367,6 +367,66 @@ def test_multiple_ambiguous_words_in_one_line_each_get_their_own_candidate():
 
 
 # ---------------------------------------------------------------------------
+# &(앤드) = 라틴 낱말 "and" (사용자 실청취 피드백, 2026-07)
+# ---------------------------------------------------------------------------
+#
+# 첫 시도는 &를 「あんど」/「と」 심판 후보 축으로 만드는 것이었으나 사용자가 실제 곡을
+# 듣고 정정했다 — 안도나 토로 부르는 사례를 못 찾았고 앤으로 듣는 경우가 많았다. &는
+# 일본어를 잇는 조사가 아니라 **라틴 낱말 "and"** 그 자체였다. 그래서 지금은 기존 라틴
+# 음차 경로에 태우고(기본값 자체가 바뀐다), 새 후보 축을 만들지 않는다 — 조밀(앤)/느슨
+# (앤드)의 갈림은 기존 «라틴 느슨 후보» 축이 그대로 중재한다.
+
+
+def test_ampersand_line_defaults_to_and_transliterated_as_ae():
+    text = "君&僕"
+    default = wiki_pronunciation(text)
+    assert default == "키미 앤 보쿠"
+    cands = pronunciation_candidates(text)
+    assert cands[0] == default
+    # 묵음 후보(& 완전 삭제)는 절대 없다 — 삭제 편향(공짜로 이기는 짧은 후보) 방지
+    assert "키미 보쿠" not in cands
+    assert all("앤" in c for c in cands)
+
+
+def test_ampersand_loose_candidate_is_the_conventional_spelling():
+    # 조밀(앤)↔느슨(앤드)는 새 후보 축이 아니라 기존 라틴 느슨 후보 하나가 담당한다
+    cands = pronunciation_candidates("君&僕")
+    assert "키미 앤드 보쿠" in cands
+    assert len(cands) == 2  # 기본값(앤) + 느슨(앤드) — 그 외 후보는 없다
+
+
+def test_ampersand_fullwidth_is_treated_like_halfwidth():
+    assert wiki_pronunciation("君&僕") == wiki_pronunciation("君＆僕")
+    assert pronunciation_candidates("君&僕") == pronunciation_candidates("君＆僕")
+
+
+def test_ampersand_only_line_still_reaches_the_loose_candidate():
+    # 원문에 진짜 라틴 글자가 하나도 없이 &만 있어도(刃&刃) 라틴 느슨 후보 축이 켜져야
+    # 한다 — _has_latin_content가 &도 "라틴 낱말이 있다"로 본다.
+    text = "刃&刃"
+    cands = pronunciation_candidates(text)
+    assert wiki_pronunciation(text) in cands
+    assert any("앤드" in c for c in cands)
+
+
+def test_lines_without_an_ampersand_are_unaffected():
+    # 이 변경 전과 후보 개수·내용이 같아야 한다 — & 없는 줄엔 아무 영향이 없다.
+    assert pronunciation_candidates("私は歩く") == [wiki_pronunciation("私は歩く")]
+    assert pronunciation_candidates("三日月の夜") == [wiki_pronunciation("三日月の夜")]
+
+
+def test_ampersand_axis_does_not_interfere_with_the_ambiguous_word_axis():
+    # 弾く(애매어휘)와 &가 한 줄에 있어도 서로 독립적으로 후보를 낸다.
+    text = "刃を弾く&刃を弾く"
+    default = wiki_pronunciation(text)
+    cands = pronunciation_candidates(text)
+    assert cands[0] == default
+    assert "앤" in default
+    assert any("야이바" in c for c in cands)  # 刃 축은 여전히 동작한다
+    assert any("하지쿠" in c for c in cands)  # 弾く 축도 여전히 동작한다
+
+
+# ---------------------------------------------------------------------------
 # 라틴 음차 공유 (표기 규칙이 후보와 기본값에서 갈라지면 안 된다)
 # ---------------------------------------------------------------------------
 

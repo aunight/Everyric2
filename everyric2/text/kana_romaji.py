@@ -77,7 +77,13 @@ _DIGRAPHS: dict[str, str] = {
     "しぇ": "she", "じぇ": "je", "ちぇ": "che", "いぇ": "ye",
 }
 
-_MORA_ROMAJI: dict[str, str] = {**_SINGLES, **_DIGRAPHS}
+# &(앤드)는 가나가 아니지만 reading.py의 text_to_moras가 ASCII 낱말과 같은 유닛으로
+# 뽑아 준다(pron_style.py가 &를 라틴 낱말 "and"로 렌더하는 것과 짝을 맞춘 변경, 2026-07).
+# 여기서도 "and"로 환전해야 romaji_line이 그 자리를 "and"로 낸다 — 안 하면 표 미등록
+# 통과 경로가 리터럴 "&"를 그대로 흘린다.
+_LATIN_SYMBOLS = {"&": "and", "＆": "and"}
+
+_MORA_ROMAJI: dict[str, str] = {**_SINGLES, **_DIGRAPHS, **_LATIN_SYMBOLS}
 
 
 def _norm(mora: str) -> str:

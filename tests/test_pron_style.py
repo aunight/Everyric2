@@ -344,6 +344,42 @@ def test_latin_is_transliterated_and_digits_before_a_counter_are_read_aloud():
     assert wiki_pronunciation("0と1に還元され") == "0토 1니 칸겐사레"
 
 
+def test_ampersand_is_the_latin_word_and_not_a_silent_mark():
+    """&(앤드)는 부호 묵음이 아니라 라틴 낱말 "and"로 렌더된다(사용자 실청취 피드백, 2026-07).
+
+    &를 「あんど」/「と」 심판 후보로 만드는 첫 시도는 걷어냈다 — 실가창을 들어 보면
+    안도/토가 아니라 앤이었다. 그래서 이제 기존 라틴 경로(latin_hangul)를 그대로 탄다:
+    hangul은 조밀 음차(앤), romaji·kana는 라틴을 원문 그대로 통과시키는 기존 관례를
+    따라 "and"가 그대로 남는다. 여러 &가 있어도 각자 자기 자리에서 렌더된다(치환 위치).
+    """
+    assert wiki_pronunciation("君&僕") == "키미 앤 보쿠"
+    assert wiki_pronunciation("君＆僕") == "키미 앤 보쿠"  # 전각도 반각과 동일하게 렌더된다
+    assert wiki_pronunciation("君&僕&友") == "키미 앤 보쿠 앤 토모"  # 여럿이면 각자 자기 자리에
+    assert wiki_pronunciation("君&僕", script="romaji") == "kimi and boku"
+    assert wiki_pronunciation("君&僕", script="kana") == "きみ and ぼく"
+
+
+def test_ampersand_romaji_line_gives_and_its_own_mora_and_timing():
+    """romaji_line도 wiki_pronunciation(script="romaji")과 같은 값을 내야 한다.
+
+    reading.text_to_moras가 &/＆를 ASCII 유닛으로 인식하도록 고치기 전에는(reading.py
+    수정, 2026-07) &가 모라를 아예 못 만들어 romaji_line이 "kimi boku"처럼 and를
+    빠뜨렸다 — moras/spaces 목록과 표시 문자열이 단일 소스라는 불변식은 지켜졌지만
+    "and" 자체가 증발했다. 이제 &가 자기 모라를 갖고, kana_romaji._MORA_ROMAJI가
+    그 모라를 "and"로 환전한다.
+    """
+    from everyric2.text.pron_style import romaji_line
+
+    display, moras, spaces = romaji_line("君&僕")
+    assert display == "kimi and boku"
+    assert "and" in moras
+    assert "".join(m + (" " if s else "") for m, s in zip(moras, spaces)).strip() == display
+
+    # 전각도 동일, 여럿이면 각자 자기 자리에서 "and"로 나온다
+    assert romaji_line("君＆僕")[0] == "kimi and boku"
+    assert romaji_line("君&僕&友")[0] == "kimi and boku and tomo"
+
+
 def test_sokuon_and_n_cross_token_boundaries():
     # 토큰별로 변환하면 토큰 머리의 っ·ん이 앞 음절을 못 찾아 촉음이 사라지고 ん이 "응"이 된다
     assert wiki_pronunciation("ただ一緒にいたいんだ").endswith("이타인다")
