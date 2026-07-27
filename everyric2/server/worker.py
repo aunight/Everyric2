@@ -319,6 +319,12 @@ def _attach_pron_segments(seg: dict[str, Any]) -> None:
 # 문자 클래스의 경계 글자는 그 코드포인트의 실제 글자다(편집 시 치환 주의).
 _JA_CHAR_RE = re.compile("[぀-ヿ㐀-鿿]")
 
+# 한글 완성형 음절(U+AC00~D7A3). ko_reading._decompose_hangul과 같은 범위다.
+_HANGUL_CHAR_RE = re.compile("[가-힣]")
+
+# 라틴 알파벳 — ja/한글이 없는 세그에서 "라틴 곡"으로 분기할지 판별한다.
+_LATIN_CHAR_RE = re.compile("[A-Za-z]")
+
 
 def _romaji_mora_segments(
     seg: dict[str, Any],
@@ -359,26 +365,92 @@ def _romaji_mora_segments(
     return segments
 
 
-def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = None) -> None:
-    """세그먼트에 표기별 발음(``pron``)과 romaji 모라 스팬(``pron_segs``)을 얹는다.
+def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any]] | None:
+    """ko 곡 세그: ``hangul_line_moras`` + ``words``(글자별 스팬)로 kana 모라 시각을 만든다.
 
-    기존 ``pronunciation``/``pron_segments``(한글)는 손대지 않는다 — 구버전 확장은 그
-    필드만 읽으므로 새 표기는 **추가 필드로만** 올라간다(공유 계약).
+    ``words``는 원문(한글) 글자별 정렬 스팬이라 위치가 이미 1:1이다 — ja 쪽처럼 글자
+    매칭으로 스팬을 찾을 필요 없이, 순서대로 짝짓기만 하면 된다. 개수가 다르거나
+    글자 자체가 어긋나면(다른 줄의 words가 섞였거나 공백 처리가 다르면) None — 표시
+    문자열만 남기고 확장이 그라데이션으로 폴백한다(``_attach_pron_segments``와 같은
+    실패 규약).
+
+    받침이 독립 가나가 되어 한 글자에 모라 2개가 붙으면(한→ハ+ン), 그 글자의 시간
+    구간을 모라 개수만큼 균등 분할한다(``reading._build_mora_time``과 같은 방식).
+    """
+    words = seg.get("words")
+    if not words:
+        return None
+    non_space_idx = [i for i, ch in enumerate(text) if not ch.isspace()]
+    if len(words) != len(non_space_idx):
+        return None
+
+    char_time: dict[int, tuple[float, float]] = {}
+    for w, idx in zip(words, non_space_idx):
+        if w.get("word") != text[idx]:
+            return None
+        try:
+            char_time[idx] = (float(w.get("start", 0.0)), float(w.get("end", 0.0)))
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        from everyric2.text.ko_reading import hangul_line_moras
+
+        moras = hangul_line_moras(text)
+    except Exception:
+        logger.exception("ko mora computation failed; keeping the display string only")
+        return None
+    if not moras:
+        return None
+
+    segments: list[dict[str, Any]] = []
+    i, n = 0, len(moras)
+    while i < n:
+        j = i
+        span = (moras[i][1], moras[i][2])
+        while j + 1 < n and (moras[j + 1][1], moras[j + 1][2]) == span:
+            j += 1
+        cs, _ce = span
+        t = char_time.get(cs)
+        if t is None:
+            i = j + 1
+            continue
+        start, end = t
+        total = max(end - start, 0.0)
+        count = j - i + 1
+        for k in range(count):
+            segments.append(
+                {
+                    "text": moras[i + k][0],
+                    "start": round(start + total * k / count, 3),
+                    "end": round(start + total * (k + 1) / count, 3),
+                }
+            )
+        i = j + 1
+
+    if not segments:
+        return None
+    for idx in range(1, len(segments)):
+        if segments[idx]["start"] < segments[idx - 1]["end"]:
+            segments[idx]["start"] = segments[idx - 1]["end"]
+        if segments[idx]["end"] < segments[idx]["start"]:
+            segments[idx]["end"] = segments[idx]["start"]
+    return segments
+
+
+def _attach_ja_pron_variants(
+    seg: dict[str, Any], text: str, *, referee_tokens: list | None = None
+) -> None:
+    """일본어 곡 세그: hangul(기존 ``pronunciation`` 값) + romaji.
 
     ``referee_tokens``를 주면(오디오 심판이 이긴 후보의 토큰 열 —
     ``pron_style.candidate_token_sets``) 그 읽기로 romaji를 만든다. 주지 않았는데 심판이
     이 줄의 독음을 바꿨으면(``_referee_switched``) romaji를 **아예 붙이지 않는다**:
     기본 읽기로 렌더하면 화면의 한글 독음(심판이 오디오로 고른 읽기)과 다른 낱말을 읽는
     romaji가 나란히 찍힌다. 표기가 없으면 확장이 한글로 폴백하므로 손해는 표기 하나뿐이다.
-
-    멱등 — 이미 ``pron``이 있으면 아무것도 하지 않는다. 캐시 재사용·늦은 메타 병합이
-    직렬화 때 만든(심판 판정을 반영한) 값을 덮지 않게 하는 가드다.
     """
-    if seg.get("pron"):
-        return
     pron = (seg.get("pronunciation") or "").strip()
-    text = seg.get("text") or ""
-    if not pron or not _JA_CHAR_RE.search(text):
+    if not pron:
         return
 
     seg["pron"] = {"hangul": pron}
@@ -400,6 +472,78 @@ def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = N
     segments = _romaji_mora_segments(seg, text, mora_tokens, space_after, referee_tokens)
     if segments:
         seg.setdefault("pron_segs", {})["romaji"] = segments
+
+
+def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
+    """한국어 곡 세그: 가타카나(일본어권)·RR 로마자(영어권) — 둘 다 결정론 생성.
+
+    ``pronunciation``(독음) 필드가 없는 게 정상이다 — 원문 한글 자체가 표시이므로
+    "hangul" 표기 키는 만들지 않는다(공유 계약: 클라이언트는 script 하나만 고른다).
+    """
+    try:
+        from everyric2.text.ko_reading import hangul_to_kana, hangul_to_romaja
+
+        kana = hangul_to_kana(text)
+        romaja = hangul_to_romaja(text)
+    except Exception:
+        logger.exception("ko pron rendering failed")
+        return
+
+    seg["pron"] = {"kana": kana, "romaji": romaja}
+    segments = _kana_mora_segments_ko(seg, text)
+    if segments:
+        seg.setdefault("pron_segs", {})["kana"] = segments
+
+
+def _attach_latin_pron_variants(seg: dict[str, Any], text: str) -> None:
+    """라틴(영어) 곡 세그: 일본어권 사용자를 위한 가나 발음만 붙인다.
+
+    ``latin_hangul``의 느슨 음차를 거쳐 만든 결정론 근사라 글자 스팬을 신뢰할 근거가
+    없다 — CTC 정렬 자체가 라틴 위에서 약하다는 것이 기존 실측이다(``latin_hangul``
+    모듈 docstring). 그래서 ``pron_segs``는 붙이지 않고 표시 문자열만 남긴다.
+    """
+    try:
+        from everyric2.text.ko_reading import latin_to_kana
+
+        kana = latin_to_kana(text)
+    except Exception:
+        logger.exception("latin pron rendering failed")
+        return
+
+    seg["pron"] = {"kana": kana}
+
+
+def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = None) -> None:
+    """세그먼트에 표기별 발음(``pron``)과 가능하면 모라 스팬(``pron_segs``)을 얹는다.
+
+    기존 ``pronunciation``/``pron_segments``(한글, ja 곡 전용)는 손대지 않는다 — 구버전
+    확장은 그 필드만 읽으므로 새 표기는 **추가 필드로만** 올라간다(공유 계약).
+
+    곡 언어는 세그 원문 텍스트의 문자 구성으로 판정한다(문자 검사 순서가 우선순위다):
+
+    1. 일본어 글자(가나·한자, ``_JA_CHAR_RE``)가 있으면 **ja 곡** — 기존 동작(hangul+
+       romaji, ``pronunciation`` 필드 필요)을 그대로 쓴다.
+    2. 없고 한글(``_HANGUL_CHAR_RE``)이 있으면 **ko 곡** — 가타카나+RR 로마자를 그
+       자리에서 결정론 생성한다(``pronunciation`` 필드 불필요 — 원문 자체가 독음이다).
+    3. 둘 다 없고 라틴 알파벳(``_LATIN_CHAR_RE``)이 있으면 **라틴 곡** — 일본어권
+       사용자용 가나 근사만 표시로 붙인다.
+    4. 셋 다 없으면(숫자·기호뿐인 줄 등) 아무것도 붙이지 않는다.
+
+    멱등 — 이미 ``pron``이 있으면 아무것도 하지 않는다. 캐시 재사용·늦은 메타 병합이
+    직렬화 때 만든(심판 판정을 반영한) 값을 덮지 않게 하는 가드다.
+    """
+    if seg.get("pron"):
+        return
+    text = seg.get("text") or ""
+    if not text:
+        return
+
+    if _JA_CHAR_RE.search(text):
+        _attach_ja_pron_variants(seg, text, referee_tokens=referee_tokens)
+    elif _HANGUL_CHAR_RE.search(text):
+        _attach_ko_pron_variants(seg, text)
+    elif _LATIN_CHAR_RE.search(text):
+        _attach_latin_pron_variants(seg, text)
 
 
 def _referee_token_set(text: str, chosen: str) -> list | None:

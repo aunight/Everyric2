@@ -150,14 +150,67 @@ def test_display_survives_when_char_spans_do_not_match_the_text():
     assert "pron_segs" not in seg
 
 
-def test_skips_segments_without_japanese_or_pronunciation():
-    korean = _seg("좋아해 그대를", "좋아해 그대를")
-    attach_pron_variants(korean)
-    assert "pron" not in korean
-
+def test_skips_ja_segment_without_pronunciation():
+    # ja 곡 분기는 ``pronunciation``(독음) 필드가 필수다 — 없으면 hangul/romaji 둘 다 생략.
     no_pron = _seg(NEKURA, "")
     attach_pron_variants(no_pron)
     assert "pron" not in no_pron
+
+
+def test_skips_segment_without_ja_ko_or_latin_text():
+    # 숫자·기호뿐인 줄은 세 분기(ja/ko/라틴) 어디에도 안 걸린다.
+    symbols_only = {"text": "…！", "start": 0.0, "end": 0.5}
+    attach_pron_variants(symbols_only)
+    assert "pron" not in symbols_only
+
+
+def test_ko_segment_gets_kana_and_romaja():
+    # ko 곡 세그는 ``pronunciation`` 필드가 없어도(원문 한글 자체가 독음) kana/romaji가 붙는다.
+    seg = _seg("사랑해", "", words=True)
+    attach_pron_variants(seg)
+
+    assert seg["pron"] == {"kana": "サランヘ", "romaji": "saranghae"}
+    assert "hangul" not in seg["pron"]  # 원문이 이미 표시라 hangul 키는 만들지 않는다
+
+
+def test_ko_segment_kana_segs_are_monotonic_and_bisect_the_coda():
+    seg = _seg("사랑해", "", words=True)
+    attach_pron_variants(seg)
+
+    segments = seg["pron_segs"]["kana"]
+    # 사(1모라) + 랑(받침 ㅇ→independent ン, 2모라) + 해(1모라) = 4모라
+    assert [s["text"] for s in segments] == ["サ", "ラ", "ン", "ヘ"]
+    assert "".join(s["text"] for s in segments) == seg["pron"]["kana"]
+    for prev, cur in zip(segments, segments[1:]):
+        assert cur["start"] >= prev["end"]
+        assert cur["end"] >= cur["start"]
+    # 받침 이등분: 랑(글자 스팬 0.5~1.0)의 두 모라(ラ/ン)가 그 구간을 균등 분할한다
+    lang_span = _words("사랑해")[1]
+    ra, n = segments[1], segments[2]
+    assert ra["start"] == lang_span["start"]
+    assert ra["end"] == n["start"] == (lang_span["start"] + lang_span["end"]) / 2
+    assert n["end"] == lang_span["end"]
+
+
+def test_ko_segment_display_survives_when_timing_is_unavailable():
+    seg = _seg("좋아해 그대를", "", words=False)
+    attach_pron_variants(seg)
+
+    assert seg["pron"]["kana"] and seg["pron"]["romaji"]
+    assert "pron_segs" not in seg
+
+
+def test_latin_segment_gets_kana_display_only():
+    # 라틴 곡은 일본어권용 가나 근사만 표시로 붙는다 — CTC 정렬이 라틴 위에서 약해서
+    # (latin_hangul 모듈 실측) pron_segs는 만들지 않는다.
+    from everyric2.text.ko_reading import latin_to_kana
+
+    seg = _seg("Take it easy", "", words=True)
+    attach_pron_variants(seg)
+
+    assert seg["pron"] == {"kana": latin_to_kana("Take it easy")}
+    assert "pron_segs" not in seg
+    assert "romaji" not in seg["pron"]  # 라틴 곡 세그는 romaji 표기를 만들지 않는다(원문이 이미 로마자)
 
 
 def test_mora_segments_follow_the_given_tokens():
