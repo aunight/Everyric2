@@ -85,6 +85,44 @@ def test_romaji_segments_are_monotonic_and_rebuild_the_display():
     assert segments[-1]["end"] <= seg["end"]
 
 
+def test_ja_segment_gets_kana_display_and_shares_timing_with_romaji():
+    # 사용자 버그 보고: ja 세그의 pron dict에 kana가 없어 script=kana 설정에서 발음 줄이
+    # 통째로 사라졌다. 표시는 가타카나(항등 렌더러 + 히라가나→가타카나 정규화)이고,
+    # 모라 시각은 romaji와 완전히 같은 mora_segments_for_line 결과를 공유한다.
+    seg = _seg(NEKURA, NEKURA_HANGUL)
+    attach_pron_variants(seg)
+
+    assert seg["pron"]["kana"] == "アルバイトワ ネクラ モード"
+    kana_segments = seg["pron_segs"]["kana"]
+    romaji_segments = seg["pron_segs"]["romaji"]
+    assert len(kana_segments) == len(romaji_segments) == 12
+    assert [s["text"] for s in kana_segments] == [
+        "ア", "ル", "バ", "イ", "ト", "ワ", "ネ", "ク", "ラ", "モ", "ー", "ド",
+    ]
+    # 같은 모라 목록에서 나온 시각이라 start/end/space가 romaji와 글자 하나 안 어긋난다
+    for k, r in zip(kana_segments, romaji_segments):
+        assert k["start"] == r["start"]
+        assert k["end"] == r["end"]
+        assert k.get("space") == r.get("space")
+
+
+def test_ja_referee_switch_kana_follows_the_winning_reading():
+    # 심판이 刃를 やいば(6모라)로 뒤집은 줄 — kana도 は(4모라, 하오 토구)가 아니라
+    # 이긴 읽기(야이바오 토구)를 따라야 한다. text_to_moras(text, tokens=referee_tokens)가
+    # romaji·kana 둘의 재료라 심판 판정이 저절로 반영된다.
+    seg = _seg(YAIBA, YAIBA_CHOSEN_HANGUL)
+    attach_pron_variants(seg, referee_tokens=_chosen_tokens(YAIBA, YAIBA_CHOSEN_HANGUL))
+
+    assert seg["pron"]["romaji"] == "yaiba o togu"
+    kana_segments = seg["pron_segs"]["kana"]
+    romaji_segments = seg["pron_segs"]["romaji"]
+    assert len(kana_segments) == len(romaji_segments) == 6
+    assert [s["text"] for s in kana_segments] == ["ヤ", "イ", "バ", "オ", "ト", "グ"]
+    for k, r in zip(kana_segments, romaji_segments):
+        assert k["start"] == r["start"]
+        assert k["end"] == r["end"]
+
+
 def test_legacy_hangul_fields_are_untouched():
     seg = _seg(NEKURA, NEKURA_HANGUL)
     seg["pron_segments"] = [{"text": "아", "start": 0.0, "end": 0.5, "resolved": True}]

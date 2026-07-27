@@ -356,14 +356,30 @@ _HANGUL_CHAR_RE = re.compile("[가-힣]")
 _LATIN_CHAR_RE = re.compile("[A-Za-z]")
 
 
-def _romaji_mora_segments(
+def _hiragana_to_katakana(text: str) -> str:
+    """히라가나 → 가타카나 정규화. ``kana_hangul._to_hiragana``(가타카나→히라가나)의
+    역방향 한 줄이다. 범위 밖 문자(장음부 ー·공백·라틴·부호)는 그대로 통과한다.
+
+    ja 곡 발음 표기(``pron.kana``)는 ``pron_style``의 가나 런 환전이 항등이라(가나
+    읽기가 이미 히라가나 기준) 여기서 표시만 가타카나로 정규화한다 — 발음 전사가
+    원문(가나 섞인 일본어)과 시각적으로 구분되는 편이 읽기 편하다.
+    """
+    return "".join(chr(ord(ch) + 0x60) if "ぁ" <= ch <= "ゖ" else ch for ch in text)
+
+
+def _ja_mora_segments(
     seg: dict[str, Any],
     text: str,
-    mora_tokens: list[str],
+    render_tokens: list[str],
     space_after: list[bool],
     tokens: list | None,
 ) -> list[dict[str, Any]] | None:
-    """romaji 모라 토큰에 세그먼트의 글자 타이밍(``words``)으로 시각을 부여한다.
+    """ja 곡 세그의 모라 시각 계산 — romaji·kana 두 표기가 공유한다.
+
+    ``mora_segments_for_line``이 만드는 시각은 모라 경계에서 나오고 표기와 무관하다
+    (모라 하나가 romaji로도, 가타카나로도 렌더될 뿐 구간은 하나다) — ``render_tokens``만
+    표기별로 갈아 끼운다. 그래서 심판(``tokens``)이 바꾼 읽기도 두 표기 모두 자동으로
+    같이 따라온다(같은 ``text_to_moras(text, tokens=tokens)``가 재료라서).
 
     모라 수가 어긋나면(글자 스팬이 다른 읽기에서 왔거나 시각 환산이 실패) None —
     표시 문자열만 남기고 확장이 그라데이션으로 폴백하는 편이, 틀린 시각으로 엉뚱한
@@ -381,13 +397,13 @@ def _romaji_mora_segments(
         ]
         mora_times = mora_segments_for_line(char_spans, text, tokens=tokens)
     except Exception:
-        logger.exception("romaji mora timing failed; keeping the display string only")
+        logger.exception("ja mora timing failed; keeping the display string only")
         return None
-    if not mora_times or len(mora_times) != len(mora_tokens):
+    if not mora_times or len(mora_times) != len(render_tokens):
         return None
 
     segments: list[dict[str, Any]] = []
-    for (_, start, end), token, space in zip(mora_times, mora_tokens, space_after):
+    for (_, start, end), token, space in zip(mora_times, render_tokens, space_after):
         entry: dict[str, Any] = {"text": token, "start": round(start, 3), "end": round(end, 3)}
         if space:
             entry["space"] = True
@@ -521,13 +537,14 @@ def _romaja_syllable_segments_ko(seg: dict[str, Any], text: str) -> list[dict[st
 def _attach_ja_pron_variants(
     seg: dict[str, Any], text: str, *, referee_tokens: list | None = None
 ) -> None:
-    """일본어 곡 세그: hangul(기존 ``pronunciation`` 값) + romaji.
+    """일본어 곡 세그: hangul(기존 ``pronunciation`` 값) + romaji + kana(가타카나 표시).
 
     ``referee_tokens``를 주면(오디오 심판이 이긴 후보의 토큰 열 —
-    ``pron_style.candidate_token_sets``) 그 읽기로 romaji를 만든다. 주지 않았는데 심판이
-    이 줄의 독음을 바꿨으면(``_referee_switched``) romaji를 **아예 붙이지 않는다**:
-    기본 읽기로 렌더하면 화면의 한글 독음(심판이 오디오로 고른 읽기)과 다른 낱말을 읽는
-    romaji가 나란히 찍힌다. 표기가 없으면 확장이 한글로 폴백하므로 손해는 표기 하나뿐이다.
+    ``pron_style.candidate_token_sets``) 그 읽기로 romaji·kana 모라 시각을 만든다. 주지
+    않았는데 심판이 이 줄의 독음을 바꿨으면(``_referee_switched``) romaji·kana를
+    **아예 붙이지 않는다**: 기본 읽기로 렌더하면 화면의 한글 독음(심판이 오디오로 고른
+    읽기)과 다른 낱말을 읽는 표기가 나란히 찍힌다. 표기가 없으면 확장이 한글로
+    폴백하므로 손해는 표기뿐이다.
     """
     pron = (seg.get("pronunciation") or "").strip()
     if not pron:
@@ -549,9 +566,64 @@ def _attach_ja_pron_variants(
 
     display, mora_tokens, space_after = rendered
     seg["pron"]["romaji"] = display
-    segments = _romaji_mora_segments(seg, text, mora_tokens, space_after, referee_tokens)
+    romaji_segments = _ja_mora_segments(seg, text, mora_tokens, space_after, referee_tokens)
+    if romaji_segments:
+        seg.setdefault("pron_segs", {})["romaji"] = romaji_segments
+
+    _attach_ja_kana_variant(seg, text, space_after, referee_tokens)
+
+
+def _attach_ja_kana_variant(
+    seg: dict[str, Any], text: str, space_after: list[bool], referee_tokens: list | None
+) -> None:
+    """ja 곡 세그: 가타카나 발음 표시(``pron.kana``) + 가능하면 모라 시각.
+
+    표시는 ``wiki_pronunciation(text, script="kana")``(항등 렌더러라 히라가나로 나온다 —
+    ``pron_style._kana_run_renderer`` 참고)를 가타카나로 정규화한 것이다. **문절
+    띄어쓰기**를 그대로 쓴다 — romaji는 형태소(모라) 토큰 경계로 띄우지만(NEKURA에서
+    「~とは」의 は가 "wa"로 갈라짐) 여기는 위키 한글 표기와 같은 문절 경계로 띄운다.
+    표시 자체는 이 라인의 기본(비심판) 읽기다 — ``wiki_pronunciation``이 토큰 인자를
+    받지 않아서다. 심판이 바꾼 줄은 로마자·한글 표기와 문구 스타일이 다르므로 표시가
+    기본 읽기를 보여줄 수 있다는 뜻이지만(알려진 한계), 아래 **모라 시각은** 심판의
+    읽기를 그대로 따른다.
+
+    모라 시각은 romaji와 **같은 ``_ja_mora_segments`` 결과**를 쓴다 — 텍스트만 카타카나
+    모라로 바꿔 끼운다. 카타카나 모라 열은 ``referee_tokens``가 있으면 그 토큰 열로,
+    없으면 ``romaji_line``이 기본값일 때 쓰는 것과 **같은 phonetic=True 토큰화**로
+    ``text_to_moras``를 부른다 — ``text_to_moras(text)``의 무인자 기본값(phonetic=False)을
+    그냥 쓰면 は・を 같은 조사가 표기 그대로(하·워)로 남아 romaji가 읽는 소리(wa·o)와
+    짝이 어긋난다(실측: NEKURA의 は가 로마자로는 "wa"인데 무인자 모라는 literal "ハ"를
+    낸다 — 자모가 다른데 한 모라로 짝지어지는 사고). 그래서 기본값도 같은 phonetic
+    토큰화를 명시적으로 만들어 쓴다(``romaji_line``이 내부에서 하는 것과 동일).
+    """
+    try:
+        from everyric2.text.pron_style import wiki_pronunciation
+
+        kana_display = _hiragana_to_katakana(wiki_pronunciation(text, script="kana"))
+    except Exception:
+        logger.exception("kana display rendering failed")
+        return
+    if not kana_display:
+        return
+    seg["pron"]["kana"] = kana_display
+
+    try:
+        from everyric2.text.ja_reading import tokenize_reading
+        from everyric2.text.reading import text_to_moras
+
+        mora_tokens_source = referee_tokens
+        if mora_tokens_source is None:
+            mora_tokens_source = tokenize_reading(text, phonetic=True, adopt_ruby=True)
+        kana_tokens = [
+            _hiragana_to_katakana(m.kana) for m in text_to_moras(text, tokens=mora_tokens_source)
+        ]
+    except Exception:
+        logger.exception("kana mora tokens failed; keeping the display string only")
+        return
+
+    segments = _ja_mora_segments(seg, text, kana_tokens, space_after, referee_tokens)
     if segments:
-        seg.setdefault("pron_segs", {})["romaji"] = segments
+        seg.setdefault("pron_segs", {})["kana"] = segments
 
 
 def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
@@ -3191,14 +3263,27 @@ def _pron_by_text(line_meta: list[dict[str, Any]] | None) -> dict[str, dict[str,
     return _index_line_meta(line_meta)
 
 
+def _alignable_pron(pron: str | None) -> str:
+    """정렬 입력으로 쓸 수 있는 발음만 통과 — **한글이 한 글자라도 있어야 한다**.
+
+    독음(ko) 정렬은 kor 어댑터에 한글 텍스트를 넣는 계약이다. 다국어화 이후 비ko
+    사용자의 line_meta엔 romaji·가타카나 발음이 실릴 수 있는데(번역 API의 결정론
+    매트릭스), 라틴은 kor 어댑터에서 정렬되지 않고(latin_hangul.py 헤더 실측 —
+    conf<0.01이 90~99%) 가나도 마찬가지다. 그런 발음은 «없음»과 동일 취급해
+    게이트(coverage)와 정렬 입력 양쪽에서 원문 폴백을 태운다.
+    """
+    p = (pron or "").strip()
+    return p if p and _HANGUL_CHAR_RE.search(p) else ""
+
+
 def _pron_coverage(lyric_lines, by_text: dict[str, dict[str, Any]]) -> float:
-    """발음 표기가 붙은 라인 비율 (0~1)."""
+    """정렬 가능한(한글) 발음 표기가 붙은 라인 비율 (0~1)."""
     if not lyric_lines:
         return 0.0
     have = 0
     for ln in lyric_lines:
         m = by_text.get(_normalize_line(ln.text))
-        if m and (m.get("pronunciation") or "").strip():
+        if m and _alignable_pron(m.get("pronunciation")):
             have += 1
     return have / len(lyric_lines)
 
@@ -3349,7 +3434,7 @@ def _align_with_pronunciation(
     # 독음이 없는 줄은 사실상 **한글 전용 줄**이다(일어는 가나/한자에서, 라틴은 음차에서 항상
     # 독음이 나온다). 한글은 kor 어댑터 vocab이 덮으므로(1261자) 원문을 그대로 정렬하면 된다.
     pron_for_line = [
-        (by_text.get(_normalize_line(ln.text)) or {}).get("pronunciation") or ""
+        _alignable_pron((by_text.get(_normalize_line(ln.text)) or {}).get("pronunciation"))
         for ln in lyric_lines
     ]
     align_for_line = [pron or ln.text for pron, ln in zip(pron_for_line, lyric_lines)]
