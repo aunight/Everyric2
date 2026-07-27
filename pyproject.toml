@@ -7,7 +7,7 @@ name = "everyric2"
 version = "0.1.0"
 description = "Lyrics synchronization using CTC forced alignment"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "Everyric Team" }
