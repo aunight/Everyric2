@@ -554,8 +554,8 @@ export type BgRequest =
   | { type: 'GENERATE_SYNC'; payload: { videoId: string; lyrics: string; language?: string; lineMeta?: LineMeta[]; lineMetaPending?: boolean; attribution?: SourceAttribution; title?: string; artist?: string; targetLang?: string; lineMetaLang?: string } }
   /** 진행 중인 잡에 번역·독음을 나중에 붙인다 (다운로드와 번역을 겹치는 경로).
    *  번역이 실패했어도 **빈 배열로 반드시 한 번 보내야** 잡이 대기 상한까지 서 있지 않는다. */
-  | { type: 'ATTACH_LINE_META'; payload: { jobId: string; lineMeta: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string } }
-  | { type: 'REGENERATE_SYNC'; payload: { videoId: string; lyrics: string; lineMeta?: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string } }
+  | { type: 'ATTACH_LINE_META'; payload: { jobId: string; lineMeta: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string; lineMetaLang?: string } }
+  | { type: 'REGENERATE_SYNC'; payload: { videoId: string; lyrics: string; lineMeta?: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string; targetLang?: string; lineMetaLang?: string } }
   | { type: 'SYNC_LINK'; payload: { videoId: string; sourceVideoId: string; offsetSec: number; rate: number } }
   /** 같은 곡의 다른 영상 후보 탐색 — 후보가 있으면 서버가 검증 잡까지 자동 제출한다 */
   | { type: 'LINK_CANDIDATES'; payload: { videoId: string; title: string; artist?: string } }

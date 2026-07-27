@@ -248,8 +248,9 @@ class JobRepository:
             lyrics=lyrics,
             lyrics_hash=lyrics_hash,
             language=language,
-            # 요청자의 번역 언어 — 워커가 job_target_lang으로 읽어 레이어 언어와
-            # legacy 슬롯 병기 여부를 정한다 (Job.target_lang 주석 참조)
+            # 요청자의 번역 언어 — 조회(lang 파라미터)용 기록. 레이어 언어와 legacy 병기
+            # 판정은 line_meta_lang(worker.resolve_layer_lang)이 하고, 이 값은 두 값이
+            # 어긋날 때 진단 로그에만 쓰인다 (Job.target_lang 주석 참조)
             target_lang=(target_lang or "ko").strip() or "ko",
         )
         self.session.add(job)

@@ -320,12 +320,17 @@ class RegenerateRequest(BaseModel):
 
 
 def _merge_meta_into_sync(
-    sync_result, line_meta: list[LineMeta] | None, attribution: Attribution | None = None
+    sync_result,
+    line_meta: list[LineMeta] | None,
+    attribution: Attribution | None = None,
+    line_meta_lang: str = "ko",
 ) -> int:
     """이미 존재하는 싱크에 발음/번역 메타·출처를 병합 (세션 커밋은 호출부의 컨텍스트가 수행).
 
     반환값은 메타가 붙은 세그먼트 수 — 늦게 붙이는 경로(attach_line_meta)가 얼마나 매칭됐는지
-    호출자에게 알려 주는 데 쓴다."""
+    호출자에게 알려 주는 데 쓴다. 번역은 line_meta_lang이 "ko"일 때만 legacy 슬롯에 병합한다
+    (워커 완료 경로의 resolve_layer_lang 판정과 같은 규칙 — 비ko 번역을 legacy에 밀어 넣으면
+    한국어 사용자가 남의 언어를 받는다). 발음(한글)은 언어 무관하게 병합한다."""
     from everyric2.server.worker import merge_line_meta
 
     updated = dict(sync_result.timestamps)
@@ -333,7 +338,11 @@ def _merge_meta_into_sync(
     merged = 0
     if line_meta:
         segs = [dict(s) for s in updated.get("segments", [])]
-        merged = merge_line_meta(segs, [m.model_dump() for m in line_meta])
+        merged = merge_line_meta(
+            segs,
+            [m.model_dump() for m in line_meta],
+            with_translation=(line_meta_lang == "ko"),
+        )
         if merged:
             updated["segments"] = segs
             changed = True
@@ -982,7 +991,11 @@ async def generate_sync(
             )
 
             if request.line_meta:
-                stash_line_meta(active.id, [m.model_dump() for m in request.line_meta])
+                stash_line_meta(
+                    active.id,
+                    [m.model_dump() for m in request.line_meta],
+                    request.line_meta_lang,
+                )
             if request.attribution:
                 stash_attribution(active.id, request.attribution.model_dump())
             stash_title(active.id, request.title, request.artist)
@@ -1010,7 +1023,9 @@ async def generate_sync(
     from everyric2.server.worker import stash_attribution, stash_line_meta, stash_title
 
     if request.line_meta:
-        stash_line_meta(job_id, [m.model_dump() for m in request.line_meta])
+        stash_line_meta(
+            job_id, [m.model_dump() for m in request.line_meta], request.line_meta_lang
+        )
     if request.attribution:
         stash_attribution(job_id, request.attribution.model_dump())
     stash_title(job_id, request.title, request.artist)
@@ -1036,6 +1051,9 @@ class LineMetaAttachRequest(BaseModel):
     attribution: Attribution | None = None
     title: str | None = Field(default=None, max_length=256)
     artist: str | None = Field(default=None, max_length=128)
+    # line_meta에 실린 번역의 언어 — GenerateRequest.line_meta_lang과 같은 계약.
+    # 워커의 resolve_layer_lang이 레이어 언어·legacy 병기 판정에 쓴다.
+    line_meta_lang: str = Field(default="ko", max_length=8)
 
 
 class LineMetaAttachResponse(BaseModel):
@@ -1057,16 +1075,35 @@ async def _merge_meta_into_completed_job(
     attribution: Attribution | None,
     title: str | None,
     artist: str | None,
+    line_meta_lang: str = "ko",
 ) -> LineMetaAttachResponse:
     """완료된 잡의 싱크에 메타를 직접 병합 — merged, 싱크를 못 찾으면 dropped.
 
     정렬은 다시 하지 않는다 (캐시 히트로 몇 초 만에 끝난 잡이 대표적).
+    번역은 워커 완료 경로와 같은 규칙으로 언어 레이어에도 기록한다 — 이 경로만 빠지면
+    늦게 붙인 번역이 legacy(ko 한정)에만 남고 언어별 조회가 영영 못 찾는다.
     """
+    from everyric2.server.worker import (
+        layer_origin,
+        record_translation_layer,
+        translation_layer_lines,
+    )
+
     sync_repo = SyncRepository(session)
     existing = await sync_repo.get_by_video_and_hash(job.video_id, job.lyrics_hash)
     if existing is None:
         return LineMetaAttachResponse(job_id=job.id, status=job.status, applied="dropped")
-    merged = _merge_meta_into_sync(existing, line_meta, attribution)
+    merged = _merge_meta_into_sync(existing, line_meta, attribution, line_meta_lang)
+    attr_dump = attribution.model_dump() if attribution else None
+    await record_translation_layer(
+        session,
+        job.video_id,
+        [s.get("text") or "" for s in existing.timestamps.get("segments", [])],
+        translation_layer_lines([m.model_dump() for m in line_meta]),
+        line_meta_lang,
+        origin=layer_origin(attr_dump),
+        attribution=attr_dump,
+    )
     await sync_repo.set_title_if_missing(existing, title, artist)
     return LineMetaAttachResponse(
         job_id=job.id, status=job.status, applied="merged", merged_segments=merged
@@ -1079,6 +1116,7 @@ async def _attach_line_meta_to_job(
     attribution: Attribution | None = None,
     title: str | None = None,
     artist: str | None = None,
+    line_meta_lang: str = "ko",
 ) -> LineMetaAttachResponse | None:
     """번역·독음을 잡에 붙이는 실제 동작 — HTTP 엔드포인트와 서버 내부 생성 경로의 공용 몸통.
 
@@ -1094,7 +1132,7 @@ async def _attach_line_meta_to_job(
 
         if job.status == "completed":
             return await _merge_meta_into_completed_job(
-                session, job, line_meta, attribution, title, artist
+                session, job, line_meta, attribution, title, artist, line_meta_lang
             )
 
         if job.status == "failed":
@@ -1104,7 +1142,7 @@ async def _attach_line_meta_to_job(
         job_status = job.status
 
     # 빈 배열도 그대로 넣는다 — 스태시 키의 존재 자체가 워커에게 "도착 확정" 신호다
-    stash_line_meta(job_id, [m.model_dump() for m in line_meta])
+    stash_line_meta(job_id, [m.model_dump() for m in line_meta], line_meta_lang)
     if attribution:
         stash_attribution(job_id, attribution.model_dump())
     stash_title(job_id, title, artist)
@@ -1129,7 +1167,7 @@ async def _attach_line_meta_to_job(
                     job_id=job_id, status=job.status, applied="dropped"
                 )
             return await _merge_meta_into_completed_job(
-                session, job, line_meta, attribution, title, artist
+                session, job, line_meta, attribution, title, artist, line_meta_lang
             )
 
     return LineMetaAttachResponse(job_id=job_id, status=job_status, applied="stashed")
@@ -1151,7 +1189,12 @@ async def attach_line_meta(job_id: str, request: LineMetaAttachRequest):
 
     _validate_job_id(job_id)
     applied = await _attach_line_meta_to_job(
-        job_id, request.line_meta, request.attribution, request.title, request.artist
+        job_id,
+        request.line_meta,
+        request.attribution,
+        request.title,
+        request.artist,
+        request.line_meta_lang,
     )
     if applied is None:
         raise HTTPException(status_code=404, detail="잡을 찾을 수 없어요")
@@ -1575,7 +1618,9 @@ async def regenerate_sync(
         # 워커의 (audio_hash, lyrics_hash) 재사용 검사까지 건너뛰어야 진짜 재생성이 된다
         stash_force(job_id)
     if request.line_meta:
-        stash_line_meta(job_id, [m.model_dump() for m in request.line_meta])
+        stash_line_meta(
+            job_id, [m.model_dump() for m in request.line_meta], request.line_meta_lang
+        )
     if request.attribution:
         stash_attribution(job_id, request.attribution.model_dump())
     stash_title(job_id, request.title, request.artist)

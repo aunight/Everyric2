@@ -281,6 +281,7 @@ export function regenerateSync(
   payload: {
     video_id: string; lyrics: string; line_meta?: LineMeta[];
     attribution?: SourceAttribution; title?: string; artist?: string;
+    target_lang?: string; line_meta_lang?: string;
   },
   sink?: FailureSink,
 ): Promise<GenerateResponse | null> {
@@ -467,6 +468,7 @@ export function attachLineMeta(
   jobId: string,
   payload: {
     line_meta: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string;
+    line_meta_lang?: string;
   },
   sink?: FailureSink,
 ): Promise<{ job_id: string; status: string; applied: string; merged_segments?: number } | null> {

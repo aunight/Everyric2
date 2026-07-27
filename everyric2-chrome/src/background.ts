@@ -159,6 +159,7 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         attribution: toWireAttribution(message.payload.attribution),
         title: message.payload.title,
         artist: message.payload.artist,
+        line_meta_lang: message.payload.lineMetaLang,
       }, sink));
     }
 
@@ -171,6 +172,8 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         attribution: toWireAttribution(message.payload.attribution),
         title: message.payload.title,
         artist: message.payload.artist,
+        target_lang: message.payload.targetLang,
+        line_meta_lang: message.payload.lineMetaLang,
       }, sink));
     }
 

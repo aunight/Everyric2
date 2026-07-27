@@ -2022,6 +2022,8 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           attribution,
           title: currentSong?.title,
           artist: currentSong?.artist ?? undefined,
+          // 지연 첨부 번역은 내 언어로 만든 것 — 서버가 그 언어 레이어에 넣는다
+          lineMetaLang: settings.translationLanguage,
         },
       });
     }
@@ -2054,6 +2056,9 @@ async function handleRegenerate(): Promise<void> {
     // 조회할 수 있고, 그동안 위키 쪽이 고쳐졌을 수도 있다.
     const texts = data.lines.map(l => l.text);
     let lineMeta: { text: string; pronunciation?: string; translation?: string }[] = [];
+    // lineMeta에 실리는 번역의 언어 — 분기마다 다르다(miraheze=en, vocaro=ko, LLM=내 언어).
+    // 서버는 이 값으로 번역을 그 언어의 레이어에 넣고 legacy(ko 전용) 병기 여부를 정한다.
+    let lineMetaLang = settings.translationLanguage;
     // 재생성은 everyric 싱크에서만 호출되므로(위 가드) 위키 여부는 출처 표기로만 알 수 있다 —
     // 위키 가사로 만든 싱크는 attribution에 그 이름이 새겨져 내려온다. sourceId가 있으면
     // (miraheze 이후 생성분) 그 값으로, 없으면(구싱크 — attribution에 sourceId가 없던 시절)
@@ -2069,6 +2074,7 @@ async function handleRegenerate(): Promise<void> {
         lineMeta = (wiki.data?.lines ?? [])
           .filter(l => l.translation)
           .map(l => ({ text: l.text, translation: l.translation }));
+        lineMetaLang = wiki.data?.translationLang ?? 'en';
       } else {
         const wiki = await sendToBackground<VocaroResult | null>({
           type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
@@ -2076,6 +2082,7 @@ async function handleRegenerate(): Promise<void> {
         lineMeta = (wiki.data?.lines ?? [])
           .filter(l => l.pronunciation || l.translation)
           .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }));
+        lineMetaLang = 'ko'; // vocaro 번역은 한국어다
       }
     }
     if (lineMeta.length === 0 && expectsPronunciation(texts)) {
@@ -2097,6 +2104,8 @@ async function handleRegenerate(): Promise<void> {
         // 재생성도 제목을 함께 새긴다 — 제목 없이 만들어진 옛 싱크가 이 기회에 채워진다
         title: currentSong?.title,
         artist: currentSong?.artist ?? undefined,
+        targetLang: settings.translationLanguage,
+        lineMetaLang,
       },
     });
     if (res.error || !res.data) {
