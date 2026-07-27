@@ -186,7 +186,25 @@ def _starts_phrase(token: ReadingToken, prev_pos: str, prev_pos2: str) -> bool:
 _Piece = tuple[bool, str]
 
 
-def _render(pieces: list[_Piece]) -> str:
+def _kana_run_renderer(script: str):
+    """가나 런(문절 안에서 이어 붙인 읽기)을 표기 문자로 환전하는 함수를 고른다.
+
+    다국어화(2026-07-28)의 교체 지점이 바로 여기다 — 문절 분해·애매어휘·부호 처리는
+    표기와 무관한 공통층이고, 표기가 갈라지는 곳은 «가나 런 환전»과 «라틴 처리»(아래
+    ``_render_pronunciation`` 말미) 둘뿐이다. "kana"는 읽기를 그대로 두는 항등이라
+    별도 렌더러가 없다(가타카나 표시는 소비처에서 katakana 정규화).
+    """
+    if script == "hangul":
+        return _reading_to_hangul
+    if script == "romaji":
+        from everyric2.text.kana_romaji import kana_to_romaji
+
+        return kana_to_romaji
+    return lambda reading: reading
+
+
+def _render(pieces: list[_Piece], script: str = "hangul") -> str:
+    convert = _kana_run_renderer(script)
     out: list[str] = []
     run: list[str] = []
     for is_kana, chunk in pieces:
@@ -194,16 +212,20 @@ def _render(pieces: list[_Piece]) -> str:
             run.append(chunk)
             continue
         if run:
-            out.append(_reading_to_hangul("".join(run)))
+            out.append(convert("".join(run)))
             run.clear()
         out.append(chunk)
     if run:
-        out.append(_reading_to_hangul("".join(run)))
+        out.append(convert("".join(run)))
     return "".join(out)
 
 
 def _render_pronunciation(
-    text: str, tokens: list[ReadingToken], *, latin_tight: bool = True
+    text: str,
+    tokens: list[ReadingToken],
+    *,
+    script: str = "hangul",
+    latin_tight: bool = True,
 ) -> str:
     """이미 만들어진 토큰 열을 위키 표기 관례로 렌더한다 (표기 규칙의 단일 구현).
 
@@ -218,7 +240,7 @@ def _render_pronunciation(
 
     def close_group() -> None:
         if cur:
-            rendered = _render(cur)
+            rendered = _render(cur, script)
             if rendered:
                 groups.append(rendered)
             cur.clear()
@@ -268,7 +290,7 @@ def _render_pronunciation(
     close_group()
     if pending:
         # 라인 끝에 남은 부호(닫는 괄호 등)를 흘리면 원문 문자가 사라진다 — 마지막 문절에 붙인다
-        tail = _render(pending)
+        tail = _render(pending, script)
         if groups:
             groups[-1] += tail
         elif tail:
@@ -280,6 +302,9 @@ def _render_pronunciation(
     # 후보들은 전부 같은 조밀 음차를 공유해 심판이 "독음 차이"만 재게 하고, 라틴 표기
     # 축은 ``latin_tight=False``의 **느슨 후보 하나**로만 갈라진다(``pronunciation_candidates``)
     # — 그 후보와 기본값의 유일한 차이가 라틴 표기여야 심판이 그 축만 재게 된다.
+    # 비한글 표기(romaji 등)에서 라틴은 이미 그 표기의 문자다 — 음차 없이 통과한다.
+    if script != "hangul":
+        return " ".join(result.split())
     return " ".join(transliterate_latin(result, tight=latin_tight).split())
 
 
@@ -290,8 +315,11 @@ def _has_japanese(text: str) -> bool:
 _LATIN_RE = re.compile(r"[A-Za-z]")
 
 
-def wiki_pronunciation(text: str) -> str:
-    """라인의 한글 발음 표기 (위키 표기 관례 + 라틴 조밀 음차). 읽을 것이 없으면 빈 문자열.
+def wiki_pronunciation(text: str, *, script: str = "hangul") -> str:
+    """라인의 발음 표기 (위키 표기 관례, 기본은 한글 + 라틴 조밀 음차). 읽을 것이 없으면 빈 문자열.
+
+    ``script``로 표기를 고른다("hangul"|"romaji"|"kana") — 문절 분해·애매어휘 처리는
+    표기와 무관하게 공유되고, 마지막 환전만 갈린다(``_kana_run_renderer``).
 
     **라틴 문자는 한글로 음차한다** (``latin_hangul``). 오래 유지했던 "라틴은 원문 그대로
     둔다"는 방침은 실측으로 뒤집혔다: kor/jpn 어댑터에서 라틴 글자는 정렬되지 않아(라틴
@@ -308,7 +336,9 @@ def wiki_pronunciation(text: str) -> str:
     """
     if not _has_japanese(text) and not _LATIN_RE.search(text or ""):
         return ""
-    return _render_pronunciation(text, tokenize_reading(text, phonetic=True, adopt_ruby=True))
+    return _render_pronunciation(
+        text, tokenize_reading(text, phonetic=True, adopt_ruby=True), script=script
+    )
 
 
 # ---------------------------------------------------------------------------
