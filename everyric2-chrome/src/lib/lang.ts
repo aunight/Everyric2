@@ -36,3 +36,108 @@ export function resolvedPronunciation(line: LyricLine, script: PronScript): stri
 export function resolvedPronSegments(line: LyricLine, script: PronScript): PronSegment[] | undefined {
   return line.pronSegsByScript?.[script] ?? (script === 'hangul' ? line.pronSegments : undefined);
 }
+
+export interface WikiMatchLine {
+  text: string;
+  translation?: string;
+}
+
+/**
+ * 위키 페이지 줄과 싱크 세그를 순서 보존 결합 매칭으로 대응시킨다 — 감사 V1.
+ *
+ * 위키와 싱크는 같은 가사를 **서로 다른 기준**으로 줄 나눈다(실측 H7PR: 미라헤즈 기반
+ * 싱크 36줄 vs vocaro 페이지 42줄). 줄 대 줄 완전 일치만 보면 분할이 갈리는 구간마다
+ * 전부 미스가 나 매칭률이 실측 50% 미달로 떨어져, 위키 번역이 실제로 있는데도
+ * tryWikiTranslationLayer가 포기하고 LLM으로 추락했다.
+ *
+ * 두 포인터(i=세그, j=위키)로 동시에 훑으며 우선순위대로 시도한다:
+ * 1. 정규화 후 완전 일치 — 그대로 대응.
+ * 2. **쪼갬**: 세그 하나가 위키 연속 줄 여러 개를 이어 붙인 것과 일치(위키가 더 잘게
+ *    나뉜 구간) — 그 위키 줄들의 번역을 이어 붙여 그 세그 하나에 싣는다.
+ * 3. **합침**: 위키 줄 하나가 세그 연속 여러 개를 이어 붙인 것과 일치(위키가 더 굵게
+ *    나뉜 구간) — 그 위키 줄의 번역을 대응하는 세그 전부에 싣는다(더 잘게 쪼갤 방법이
+ *    없으므로 같은 번역을 반복해서라도 각 세그가 빈 줄로 남지 않게 한다).
+ * 4. 셋 다 실패하면 **재동기화** — 가까운(맨해튼 거리 오름차순) 다음 완전 일치 지점을
+ *    찾아 그 사이는 미매칭으로 남기고 건너뛴다. 그마저 못 찾으면 양쪽을 한 칸씩만 밀고
+ *    계속 스캔한다(국소적 어긋남 하나 때문에 그 뒤 전체를 포기하지 않는다).
+ *
+ * 이어 붙임 비교는 공백을 전부 제거하고 한다(dense) — 원문 줄바꿈 경계에 공백이
+ * 있었는지 없었는지는 위키·싱크 어느 쪽도 보장하지 않으므로, 그 유무로 비교가 갈리면
+ * 안 된다. 반환값은 항상 seg 개수와 같은 길이 — persistTranslationLayer가 이 배열을
+ * 그대로 세그 기준 lines로 서버에 보낸다(위키 줄 기준이 아니라).
+ */
+export function matchWikiLinesToSegments(
+  segs: { text: string }[], wiki: WikiMatchLine[],
+): (string | undefined)[] {
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const dense = (s: string) => s.replace(/\s+/g, '');
+  const segNorm = segs.map(s => norm(s.text));
+  const wikiNorm = wiki.map(w => norm(w.text));
+  const MAX_JOIN = 4; // 한 번에 이어 붙여 볼 최대 줄 수 — 정상적인 분할 차이는 보통 2~3줄 이내
+  const ANCHOR_WINDOW = 6; // 재동기화 탐색 범위(맨해튼 거리)
+
+  const translations: (string | undefined)[] = new Array(segs.length).fill(undefined);
+  let i = 0; // segs 포인터
+  let j = 0; // wiki 포인터
+
+  while (i < segs.length && j < wiki.length) {
+    if (segNorm[i] === wikiNorm[j]) {
+      translations[i] = wiki[j].translation;
+      i++; j++;
+      continue;
+    }
+
+    // 쪼갬: segNorm[i] === wikiNorm[j..j+k] 이어 붙인 것(공백 무시 비교)
+    const segDense = dense(segNorm[i]);
+    let splitFound = false;
+    let concat = dense(wikiNorm[j]);
+    for (let k = 1; k <= MAX_JOIN && j + k < wiki.length; k++) {
+      concat += dense(wikiNorm[j + k]);
+      if (concat === segDense) {
+        translations[i] = wiki.slice(j, j + k + 1).map(w => w.translation).filter(Boolean).join(' ');
+        i++; j += k + 1;
+        splitFound = true;
+        break;
+      }
+      if (concat.length > segDense.length) break; // 이미 넘어섰다 — 더 이어 붙여도 못 맞는다
+    }
+    if (splitFound) continue;
+
+    // 합침: wikiNorm[j] === segNorm[i..i+k] 이어 붙인 것(공백 무시 비교)
+    const wikiDense = dense(wikiNorm[j]);
+    let mergeFound = false;
+    let concatSeg = dense(segNorm[i]);
+    for (let k = 1; k <= MAX_JOIN && i + k < segs.length; k++) {
+      concatSeg += dense(segNorm[i + k]);
+      if (concatSeg === wikiDense) {
+        for (let m = i; m <= i + k; m++) translations[m] = wiki[j].translation;
+        i += k + 1; j++;
+        mergeFound = true;
+        break;
+      }
+      if (concatSeg.length > wikiDense.length) break;
+    }
+    if (mergeFound) continue;
+
+    // 재동기화 — 가까운 다음 완전 일치 지점(앵커)을 찾아 그 사이를 건너뛴다
+    let anchor: [number, number] | null = null;
+    for (let d = 1; d <= ANCHOR_WINDOW && !anchor; d++) {
+      for (let di = 0; di <= d; di++) {
+        const dj = d - di;
+        const ii = i + di;
+        const jj = j + dj;
+        if (ii < segs.length && jj < wiki.length && segNorm[ii] === wikiNorm[jj]) {
+          anchor = [ii, jj];
+          break;
+        }
+      }
+    }
+    if (anchor) {
+      [i, j] = anchor;
+    } else {
+      i++; j++; // 앵커를 못 찾았다 — 이 쌍은 포기하고 계속 스캔
+    }
+  }
+
+  return translations;
+}

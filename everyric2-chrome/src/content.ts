@@ -5,7 +5,7 @@ import { parseTriLineLyrics } from './lib/tri-line';
 import { describeRemoved, stripPartMarkers } from './lib/lyrics-clean';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
-import { resolveScript, resolvedPronunciation } from './lib/lang';
+import { matchWikiLinesToSegments, resolveScript, resolvedPronunciation } from './lib/lang';
 import { setUiLanguage, t } from './lib/i18n';
 import { LyricsOverlay } from './ui/overlay';
 import { PipController } from './ui/pip';
@@ -103,6 +103,11 @@ let searchSeq = 0;
 let lastLineIndex = -1;
 let lastDebugPush = 0;
 const translationCache = new Map<string, TranslatedLine[]>(); // `${videoId}:${lang}` → 라인별 번역+발음
+// translationCache와 항상 같은 키 집합을 공유한다 — 그 배치가 어디서 왔는지(U2 배지,
+// V2 캐시 스왑 재적용 시 배지 재계산). translationCache 자체의 값 타입을 바꾸면 요청
+// 경로·축출 로직 등 손댈 곳이 늘어나 별도 맵으로 병행한다. setTranslationCache/
+// translationCacheGet이 두 맵을 항상 같은 키·같은 순서로 유지한다(직접 .set 금지).
+const translationOriginCache = new Map<string, TranslationOrigin>();
 // 같은 곡의 번역 요청이 동시에 여러 갈래(표시 경로·생성 경로)에서 뜨면 하나로 합친다 —
 // LLM 호출은 수십 초짜리라 중복이 곧 서버 스레드 낭비 + 진행 지연이다
 const pendingTranslate = new Map<string, Promise<TranslatedLine[] | undefined>>();
@@ -1120,8 +1125,12 @@ async function tryCaptionTranslationLayer(
   if (!merged.some(m => m !== undefined)) return false;
   // applyTranslations를 재사용 — translationLang 기록·availableLangs 칩 반영·pip 갱신까지
   // 기존 LLM 경로와 동일하게 맞아떨어진다. pronunciation은 안 실어 보낸다(자막엔 없다).
-  applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' })), { kind: 'caption' });
+  const translated = data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' }));
+  applyTranslations(data, translated, { kind: 'caption' });
   data.humanTranslated = true;
+  // 세션 캐시에도 남긴다(V2) — 언어를 바꿨다 되돌아와도 이 자막 매칭을 다시 조회하지
+  // 않고 즉시 로컬 스왑한다. loadTranslations의 기존 cache-hit 경로가 그대로 재사용한다.
+  setTranslationCache(translationKey(videoId, lang, data.lines.map(l => l.text)), translated, { kind: 'caption' });
   persistTranslationLayer(videoId, lang, data.lines, merged, 'caption');
   return true;
 }
@@ -1134,14 +1143,19 @@ async function tryCaptionTranslationLayer(
  * 언어와 일치할 때만 두드린다. ja는 대응하는 번역 위키가 없어 건너뛴다(자막·LLM만).
  *
  * 위키 페이지는 시간 정보가 없는 줄 단위 텍스트라 mergeCaptionTranslation(시간 겹침)을
- * 못 쓴다 — 대신 enrichFromVocaro와 같은 원리(정규화 텍스트 매칭)로 현재 싱크 줄과
- * 대조한다. 원문이 위키·싱크 사이에서 문장부호·공백 등으로 다를 수 있어 매칭이 항상
- * 100%는 아니다 — 매칭률이 절반 미만이면 신뢰할 수 없다고 보고 버린다(잘못된 줄에
- * 번역이 얹히는 것보다 아예 안 붙는 게 낫다는 이 파일 전체의 원칙과 같다).
+ * 못 쓴다 — 대신 matchWikiLinesToSegments(lib/lang.ts, 감사 V1)로 현재 싱크 줄과
+ * 순서 보존 결합 매칭한다. 위키·싱크가 같은 가사를 서로 다른 기준으로 줄 나눌 수 있어
+ * (실측 H7PR: 미라헤즈 기반 싱크 36줄 vs vocaro 페이지 42줄) 줄 대 줄 완전 일치만 보면
+ * 분할이 갈리는 구간마다 미스가 나 매칭률이 실측 50% 미달로 떨어졌었다 — 결합 매칭이
+ * 그 갭을 메운다. 그래도 매칭률이 절반 미만이면 신뢰할 수 없다고 보고 버린다(잘못된
+ * 줄에 번역이 얹히는 것보다 아예 안 붙는 게 낫다는 이 파일 전체의 원칙과 같다).
  *
  * 성공하면 persistTranslationLayer로 서버에도 origin='wiki'로 저장을 시도한다(캡션
  * 단계와 같은 새 엔드포인트) — attribution은 실제로 히트한 위키 응답에서 그대로 뽑는다
  * (miraheze는 attributionFromSource 재사용, vocaro는 handleGenerate와 같은 이름 관례).
+ * **결합 매칭으로 재매핑된 세그 기준 lines를 보낸다**(위키 줄 기준이 아니라) — 서버도
+ * 이 매칭 개선을 병행 반영 중이라, 세그 기준으로 보내면 어느 쪽이 먼저 배포되든 정합이
+ * 맞는다(matchWikiLinesToSegments의 반환값 자체가 이미 세그 인덱스 기준이다).
  */
 async function tryWikiTranslationLayer(
   data: LyricsData, videoId: string, lang: string,
@@ -1178,28 +1192,23 @@ async function tryWikiTranslationLayer(
   }
   if (!wikiLines || wikiLines.length === 0) return false;
 
-  // enrichFromVocaro와 같은 정규화 — 공백을 접고 앞뒤를 자른다
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
-  const byText = new Map<string, string>();
-  for (const l of wikiLines) {
-    if (l.translation && !byText.has(norm(l.text))) byText.set(norm(l.text), l.translation);
-  }
-  let matched = 0;
-  const translations = data.lines.map(line => {
-    const tr = byText.get(norm(line.text));
-    if (tr) matched++;
-    return tr;
-  });
+  // 순서 보존 결합 매칭(V1) — 완전 일치·쪼갬·합침·재동기화 순으로 시도한다.
+  // lib/lang.ts의 matchWikiLinesToSegments 문서 참고.
+  const translations = matchWikiLinesToSegments(data.lines, wikiLines);
+  const matched = translations.filter(Boolean).length;
   if (matched === 0 || matched / data.lines.length < 0.5) return false;
 
   // pronunciation은 절대 싣지 않는다 — miraheze 로마자는 정렬용이 아니라 표시용이고,
   // 발음은 서버 pron dict가 정본이다(라틴 정렬 붕괴 실측 — 로마자를 정렬 입력에 쓰면
   // 무너진다는 것과 같은 이유로, 표시에서도 로마자 대신 pron dict 값을 신뢰한다).
-  applyTranslations(
-    data, data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' })),
-    { kind: 'wiki', wikiName: wikiShortName },
-  );
+  const translated = data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' }));
+  applyTranslations(data, translated, { kind: 'wiki', wikiName: wikiShortName });
   data.humanTranslated = true;
+  // 세션 캐시에도 남긴다(V2) — 캡션 단계와 같은 이유(setTranslationCache 문서 참고).
+  setTranslationCache(
+    translationKey(videoId, lang, data.lines.map(l => l.text)), translated, { kind: 'wiki', wikiName: wikiShortName },
+  );
+  // 결합 매칭으로 재매핑된 세그 기준 lines를 보낸다 — 위 문서 참고.
   persistTranslationLayer(videoId, lang, data.lines, translations, 'wiki', wikiAttribution);
   return true;
 }
@@ -1234,14 +1243,35 @@ async function tryServerLayerRefresh(
   // applyTranslations 재사용 — translationLang 기록·availableLangs 칩 반영까지 기존
   // 경로와 동일하게 맞아떨어진다. 발음도 서버가 준 값을 그대로 실어 보낸다(fetchLlmLineMeta
   // 경로와 달리 이건 서버 자신이 만든 값이라 문자 체계 재검증이 필요 없다).
-  applyTranslations(data, fresh.lines.map(l => ({ original: l.text, translation: l.translation ?? '', pronunciation: l.pronunciation })));
+  const translated = fresh.lines.map(l => ({ original: l.text, translation: l.translation ?? '', pronunciation: l.pronunciation }));
+  applyTranslations(data, translated, { kind: 'server' });
+  // 세션 캐시에도 남긴다(V2) — 서버가 이미 갖고 있던 레이어라도 캐시에 없으면 언어를
+  // 다시 바꿨다 되돌아올 때 또 서버를 두드린다. setTranslationCache 문서 참고.
+  setTranslationCache(translationKey(videoId, lang, data.lines.map(l => l.text)), translated, { kind: 'server' });
   return true;
 }
+
+/**
+ * loadTranslations 호출 하나하나를 구분하는 카운터(V2 — 연타 경합 가드). 칩을 빠르게
+ * 연달아 누르면(예: en 클릭 직후 ko 클릭) loadTranslations 호출 두 개가 동시에
+ * 진행 중일 수 있는데, 기존 "곡이 바뀜" 가드(currentData/currentVideoId 비교)는 같은
+ * 곡 안에서 **언어만** 바뀐 경우를 못 잡는다 — 늦게 시작한(ko) 호출보다 먼저 시작한
+ * (en) 호출이 네트워크 응답을 먼저 받으면 en 결과가 ko를 덮어쓸 수 있었다.
+ * loadTranslations 진입마다 이 값을 올려 자기 번호를 들고 있다가, 비동기 대기 후
+ * 재개할 때마다 그 번호가 여전히 최신인지 확인한다 — 아니면 더 최신 호출(다음 클릭)이
+ * 이미 시작됐다는 뜻이므로 자신은 조용히 물러난다.
+ */
+let translationLoadSeq = 0;
 
 async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promise<void> {
   const data = currentData;
   const videoId = currentVideoId;
   if (!data || !videoId || !settings.showTranslation) return;
+  const mySeq = ++translationLoadSeq;
+  // showTranslation이 꺼지는 경우(handleSettingsChange)는 새 loadTranslations 호출이
+  // 안 생겨 seq만으론 못 잡는다 — 그래서 stale() 자체에 그 조건도 함께 넣는다.
+  const stale = () => mySeq !== translationLoadSeq || currentData !== data
+    || currentVideoId !== videoId || !settings.showTranslation;
   const srcLines = data.lines.map(l => l.text);
   const lang = settings.translationLanguage;
   // 대각선(J3) — 곡 원문 스크립트가 내 번역 언어와 같으면 서버는 번역을 만들지 않는다
@@ -1294,7 +1324,10 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
   // TranslatedLine[](서버 응답 원본, .pron 딕셔너리가 없다)이라 resolvedPronunciation을
   // 못 쓴다 — isUsablePronunciation으로 같은 원칙(hangul이면 콘텐츠도 검증)을 적용한다.
   if (cached && (!expectsPron || cached.some(l => isUsablePronunciation(l.pronunciation)))) {
-    applyTranslations(data, cached, { kind: 'llm' });
+    // 캐시 적중 시 원래 출처를 그대로 배지에 반영한다(V2) — 예전엔 캐시 히트를 항상
+    // 'llm'으로 잘못 라벨링했다(자막·위키 결과도 여기서 적중할 수 있게 되면서 드러난
+    // 문제). translationOriginCache가 translationCache와 항상 같은 키를 공유한다.
+    applyTranslations(data, cached, translationOriginCache.get(translationKey(videoId, lang, srcLines)) ?? { kind: 'llm' });
     return;
   }
 
@@ -1313,14 +1346,14 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
     // 게 아니라는 뜻이므로, lang=을 실어 다시 물어서 서버가 이미 만들어 둔 레이어가
     // 있으면 그걸 쓰고 로컬 자막·위키·LLM 시도를 전부 건너뛴다.
     if (opts.languageSwitch && await tryServerLayerRefresh(data, videoId, lang)) return;
-    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(서버 재확인 중)
+    if (stale()) return; // 곡이 바뀌었거나 더 최신 loadTranslations 호출이 이미 시작됨(서버 재확인 중)
 
     // 서버 번역 레이어가 미스라도(이 아래로 내려왔다는 것 자체가 미스) 내 언어의 유튜브
     // 수동 자막이 있으면 LLM보다 먼저 그것을 쓴다 — 사람이 쓴 자막이 LLM보다 낫다는 원칙은
     // tryCaptionFallback(첫 로딩 폴백)과 같다. 대각선(곡 스크립트==내 언어)은 이 지점에
     // 닿기 전에 이미 위에서 반환됐으므로 여기서 따로 확인하지 않는다.
     if (await tryCaptionTranslationLayer(data, videoId, lang)) return;
-    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(자막 시도 중)
+    if (stale()) return; // 곡이 바뀌었거나 더 최신 loadTranslations 호출이 이미 시작됨(자막 시도 중)
 
     // 자막도 미스면 내 언어의 위키(미라헤즈=en·vocaro=ko)를 다음으로 시도한다 — 이미
     // 싱크가 있는 곡은 자동 로딩이 위키 체인까지 안 가므로(그건 lookupWikiSources가
@@ -1329,7 +1362,7 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
     // 아니라 "레이어 미스 + 대각선 아님"일 때만이다(정확히 이 지점 — 어차피 LLM을
     // 부를 참이었던 경우로 국한된다).
     if (await tryWikiTranslationLayer(data, videoId, lang)) return;
-    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(위키 시도 중)
+    if (stale()) return; // 곡이 바뀌었거나 더 최신 loadTranslations 호출이 이미 시작됨(위키 시도 중)
 
     // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
     if (serverKnownBad(serverStatus)) {
@@ -1337,8 +1370,11 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
       return;
     }
     const lines = await requestTranslation(videoId, srcLines);
-    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜
-    if (!settings.showTranslation || settings.translationLanguage !== lang) return;
+    // 곡이 바뀌었거나, showTranslation이 꺼졌거나, 더 최신 loadTranslations 호출이
+    // 이미 시작됐으면(다른 언어로 또 전환) 이 결과는 버린다 — settings.translationLanguage
+    // !== lang 개별 검사는 stale()의 seq 검사가 포섭한다(언어가 바뀌면 반드시 새
+    // loadTranslations 호출이 뜨므로).
+    if (stale()) return;
 
     if (!lines || lines.length === 0) {
       // requestTranslation이 실패 사유를 이미 상태에 반영했다 — 그 사유를 그대로 보여 준다
@@ -1359,7 +1395,11 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
  *  별개다. 생략하면(tryServerLayerRefresh처럼 출처를 확정할 수 없는 경우) 배지에서
  *  숨긴다 — 모르는 출처를 아무 이름이나 붙여 잘못 말하는 것보다 안전하다. */
 interface TranslationOrigin {
-  kind: 'caption' | 'wiki' | 'llm';
+  // 'server' = tryServerLayerRefresh(언어 전환 시 서버 레이어 재확인) — 서버에 이미
+  // 저장된 레이어를 그대로 받아온 것이라 원래 출처(자막·위키·LLM 중 무엇이었는지)를
+  // 클라이언트가 모른다. 배지엔 숨기지만(설정TranslationSource) 캐시엔 이 태그로 남긴다
+  // (V2 — 캐시 없이 두면 언어를 바꿨다 되돌아올 때마다 서버를 다시 두드린다).
+  kind: 'caption' | 'wiki' | 'llm' | 'server';
   /** kind==='wiki'일 때만 — 실제로 히트한 위키의 짧은 표시 이름 */
   wikiName?: string;
 }
@@ -1393,7 +1433,7 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[], origi
     overlay?.setAvailableLangs(availableLangsForChip(data));
     // 번역 출처 병기(U2) — 이 배치가 어디서 왔는지 배지에 반영한다. origin이 없으면
     // (tryServerLayerRefresh 등 출처를 확정 못하는 경우) 숨긴다.
-    overlay?.setTranslationSource(origin?.kind ?? null, origin?.wikiName);
+    overlay?.setTranslationSource(origin && origin.kind !== 'server' ? origin.kind : null, origin?.wikiName);
   }
   // 이 배치의 발음을 실을 스크립트 — 매 줄 동일하므로 루프 밖에서 한 번만 정한다.
   const pronScript = resolveScript(settings);
@@ -1528,14 +1568,42 @@ function sourceFingerprint(lines: string[]): string {
   return `${lines.length}-${(hash >>> 0).toString(36)}`;
 }
 
-/** LRU 판독 — 조회한 항목을 최신으로 되돌려 넣어, 축출이 '가장 오래 안 쓴 것'부터 되게 */
+/** LRU 판독 — 조회한 항목을 최신으로 되돌려 넣어, 축출이 '가장 오래 안 쓴 것'부터 되게.
+ *  translationOriginCache도 같은 키로 함께 touch해 두 맵의 삽입 순서(=축출 순서)가
+ *  어긋나지 않게 한다(둘 다 항상 같은 키 집합을 공유한다는 불변식). */
 function translationCacheGet(key: string): TranslatedLine[] | undefined {
   const v = translationCache.get(key);
   if (v !== undefined) {
     translationCache.delete(key);
     translationCache.set(key, v);
+    const origin = translationOriginCache.get(key);
+    if (origin) {
+      translationOriginCache.delete(key);
+      translationOriginCache.set(key, origin);
+    }
   }
   return v;
+}
+
+/**
+ * 캐시 기록의 유일한 경로(V2) — 예전엔 requestTranslation(LLM 경로)만 translationCache에
+ * 썼다. tryCaptionTranslationLayer·tryWikiTranslationLayer·tryServerLayerRefresh는
+ * applyTranslations만 부르고 캐시엔 안 남겨서, 언어를 바꿨다 되돌아오면(en→ko→en) 이미
+ * 확보한 자막·위키 번역까지 매번 네트워크 체인을 처음부터 다시 돌았다(실보고: "너무
+ * 느리고 buggy") — 그 갭을 메운다. origin을 함께 저장해 캐시 적중 시에도 U2 배지가
+ * 정확한 출처를 계속 보여준다.
+ */
+function setTranslationCache(key: string, lines: TranslatedLine[], origin: TranslationOrigin): void {
+  translationCache.set(key, lines);
+  translationOriginCache.set(key, origin);
+  // 장시간 세션 메모리 상한 — 가장 오래된 항목부터 축출 (Map은 삽입 순서 유지, 두 맵을
+  // 같은 키로 함께 정리해야 translationOriginCache가 무한정 자라지 않는다)
+  while (translationCache.size > 24) {
+    const oldest = translationCache.keys().next().value;
+    if (oldest === undefined) break;
+    translationCache.delete(oldest);
+    translationOriginCache.delete(oldest);
+  }
 }
 
 /** 서버 번역(발음 포함) 요청 — video+언어 기준으로 동시 요청을 하나로 합치고 캐시에 저장 */
@@ -1562,15 +1630,7 @@ function requestTranslation(
     });
     noteFailure(res.failure); // 번역은 서버 전용 경로 — 실패 사유를 상태로 남긴다
     const lines = res.data?.lines;
-    if (lines && lines.length > 0) {
-      translationCache.set(key, lines);
-      // 장시간 세션 메모리 상한 — 가장 오래된 항목부터 축출 (Map은 삽입 순서 유지)
-      while (translationCache.size > 24) {
-        const oldest = translationCache.keys().next().value;
-        if (oldest === undefined) break;
-        translationCache.delete(oldest);
-      }
-    }
+    if (lines && lines.length > 0) setTranslationCache(key, lines, { kind: 'llm' });
     return lines && lines.length > 0 ? lines : undefined;
   })().finally(() => pendingTranslate.delete(key));
   pendingTranslate.set(key, p);
