@@ -124,28 +124,51 @@ function sliceAtomsByVisibleRange(line: SyncLine, from: number, to: number): Tim
 }
 
 /**
+ * 후보 중 레이어 구간과 가장 잘 겹치는 것을 고른다.
+ *
+ * **후렴은 반복된다.** 텍스트만 보고 처음 만난 라인을 잡으면 2절 레이어가 1절의 시각을
+ * 가져와 조각이 곡 앞머리로 날아간다(실측: 22.68초 레이어가 1.79초 컷을 받았다).
+ * 겹침이 없으면 음수가 되어 자연히 순위가 밀리므로, 가장 가까운 것이 남는다.
+ */
+function pickByOverlap<T extends { line: SyncLine }>(candidates: T[], layer: TextLayerInfo): T {
+  let best = candidates[0] as T;
+  let bestScore = -Infinity;
+  for (const candidate of candidates) {
+    const overlap =
+      Math.min(candidate.line.end, layer.outPoint) - Math.max(candidate.line.start, layer.inPoint);
+    if (overlap > bestScore) {
+      bestScore = overlap;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/**
  * 레이어를 싱크 라인에 붙인다.
  *
  * 1) 텍스트 완전 일치 → 2) 라인의 부분 문자열(배치 모드가 만든 블록) →
  * 3) 시간 겹침이 가장 큰 라인 → 4) 실패.
+ * 앞의 두 단계에서 후보가 여럿이면 시간으로 가른다.
  */
 function matchLine(layer: TextLayerInfo, document: SyncDocument): LineMatch | null {
   const layerKey = comparisonKey(layer.text);
   if (layerKey === "") return null;
 
-  for (const line of document.lines) {
-    if (comparisonKey(line.text) === layerKey) {
-      return { line, quality: "exact", atoms: line.atoms };
-    }
-  }
+  const exact = document.lines
+    .filter((line) => comparisonKey(line.text) === layerKey)
+    .map((line) => ({ line, quality: "exact" as const, atoms: line.atoms }));
+  if (exact.length > 0) return pickByOverlap(exact, layer);
 
+  const partial: LineMatch[] = [];
   for (const line of document.lines) {
     const lineKey = comparisonKey(line.text);
     const offset = lineKey.indexOf(layerKey);
     if (offset < 0) continue;
     const atoms = sliceAtomsByVisibleRange(line, offset, offset + layerKey.length);
-    if (atoms.length > 0) return { line, quality: "substring", atoms };
+    if (atoms.length > 0) partial.push({ line, quality: "substring", atoms });
   }
+  if (partial.length > 0) return pickByOverlap(partial, layer);
 
   let best: LineMatch | null = null;
   let bestOverlap = 0;
@@ -218,8 +241,10 @@ export function defaultCutTime(session: CutSession, index: number): number {
   const before = session.chars[index - 1];
   const after = session.chars[index];
   if (!before || !after) return session.inPoint;
-  if (after.start <= before.end) return after.start;
-  return (before.end + after.start) / 2;
+  const raw = after.start <= before.end ? after.start : (before.end + after.start) / 2;
+  // 라인 매칭이 어긋나면 atom 시각이 레이어 구간 밖일 수 있다. 그대로 두면 조각이 곡의
+  // 엉뚱한 지점으로 날아가므로 레이어 안으로 가둔다.
+  return Math.min(session.outPoint, Math.max(session.inPoint, raw));
 }
 
 function sortCuts(cuts: CutPoint[]): CutPoint[] {

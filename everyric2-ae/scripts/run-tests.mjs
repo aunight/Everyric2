@@ -246,6 +246,42 @@ try {
   assert.equal(moved[0].auto, false, "a dragged cut is no longer the computed default");
   assert.equal(computePieces(exactSession, moved)[0].end, 11.4, "dragging the boundary retimes the pieces");
 
+  // 후렴 반복: 텍스트가 같은 줄이 여럿이면 시간이 겹치는 쪽을 잡아야 한다.
+  // (실측에서 2절 레이어가 1절의 시각을 가져와 조각이 곡 앞머리로 날아갔다.)
+  const refrainDocument = normalizeSyncPayload({
+    results: [
+      { text: "紛れもない青春だった", start_time: 0.86, end_time: 3.15,
+        words: Array.from("紛れもない青春だった").map((word, index) => ({ word, start: 0.86 + index * 0.2, end: 1.0 + index * 0.2 })) },
+      { text: "誰にも共感されなくたって", start_time: 5, end_time: 8,
+        words: Array.from("誰にも共感されなくたって").map((word, index) => ({ word, start: 5 + index * 0.2, end: 5.15 + index * 0.2 })) },
+      { text: "紛れもない青春だった", start_time: 22.68, end_time: 25.01,
+        words: Array.from("紛れもない青春だった").map((word, index) => ({ word, start: 22.68 + index * 0.2, end: 22.82 + index * 0.2 })) },
+    ],
+  });
+  const secondChorus = buildCutSession(
+    { index: 1, name: "L2", inPoint: 22.68, outPoint: 25.01, text: "紛れもない青春だった", sourceTextKeys: 0, locked: false },
+    refrainDocument,
+  );
+  assert.equal(secondChorus.matchQuality, "exact");
+  assert.ok(secondChorus.chars[0].start >= 22.5, "a repeated line must match the verse it overlaps in time, not the first one with the same words");
+  const firstChorus = buildCutSession(
+    { index: 1, name: "L1", inPoint: 0.86, outPoint: 3.15, text: "紛れもない青春だった", sourceTextKeys: 0, locked: false },
+    refrainDocument,
+  );
+  assert.ok(firstChorus.chars[0].start < 3, "the first chorus still matches its own verse");
+  const chorusPieces = computePieces(secondChorus, toggleCut(secondChorus, [], 5));
+  assert.ok(
+    chorusPieces.every((piece) => piece.start >= 22.68 - 1e-9 && piece.end <= 25.01 + 1e-9),
+    "pieces must stay inside the layer's own span",
+  );
+  // 매칭이 어긋나 atom이 레이어 밖에 있어도 컷은 레이어 안에 갇혀야 한다.
+  const strayed = buildCutSession(
+    { index: 1, name: "Stray", inPoint: 100, outPoint: 104, text: "紛れもない青春だった", sourceTextKeys: 0, locked: false },
+    refrainDocument,
+  );
+  const strayCut = defaultCutTime(strayed, 5);
+  assert.ok(strayCut >= 100 && strayCut <= 104, "a cut time can never fall outside the layer");
+
   assert.equal(cutBlocker(wholeLine), undefined);
   assert.ok(cutBlocker({ ...wholeLine, locked: true }).includes("잠긴"));
   assert.ok(cutBlocker({ ...wholeLine, sourceTextKeys: 2 }).includes("키프레임"));
