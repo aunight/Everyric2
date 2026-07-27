@@ -219,28 +219,32 @@ const FIX_COLORS: Record<string, string> = {
   scaffold: '#fcc419',
 };
 
-/**
- * 고스트(보정 전 타이밍)가 현재 라인 위치와 사실상 같다고 볼 허용 오차(초).
- *
- * fuse는 라인 경계를 옮기지 않으므로 orig이 현재 위치와 거의 같게 내려온다. 독음 정렬
- * 곡은 거의 전 라인이 fuse라서, 그대로 그리면 고스트가 현재 위치를 뒤덮어 "무엇이 실제로
- * 움직였는가"가 묻힌다. 서버는 정보를 버리지 않고 늘 orig을 주고, **겹칠 때 흐리게 그릴지는
- * 여기서 판단한다.**
- */
-const GHOST_SAME_EPS = 0.05;
-/** 겹친 고스트의 알파 — 배경 노트·가사를 가리지 않을 만큼 흐리되 흔적은 남는 값 */
-const GHOST_OVERLAP_ALPHA = 0.2;
-
-// 디버그 타이밍 레인 — CTC가 각 원문 글자·발음 음절에 실제로 준 시각을 시간축에 찍는다.
+// 디버그 타이밍 레인 — CTC가 재생 중인 라인의 원문 글자·발음 음절에 실제로 준 시각을
+// 시간축에 찍는다("라인 집중 뷰" — 여러 줄을 한꺼번에 보여주던 예전 방식은 고스트와
+// 뭉쳐 헷갈림의 주범이었다).
 // 독음(ko) 정렬 곡은 원문 글자 시간이 "발음 음절 → 모라 → 원문 글자" 3단 역매핑
 // 산물이라, 여러 글자가 같은 시각에 뭉치거나 길이 0으로 찍힌다(실측: 독음 정렬 곡은
-// 3글자 이상 동시 시작이 38~59%인데 원문 정렬 곡은 2%). 두 레인을 나란히 그리면
-// 발음은 매끄러운데 원문만 뭉쳐 있는 게 눈으로 바로 구분된다.
+// 3글자 이상 동시 시작이 38~59%인데 원문 정렬 곡은 2%). 원문·heard·발음 세 레인을
+// 나란히 그리면 어디서 어긋났는지 눈으로 바로 구분된다.
 // 틱·글자 색은 정렬 신뢰도(confBucketColor)로 칠한다 — 레인이 위아래로 나뉘어 있어
-// 색으로 원문/발음을 구분할 필요가 없으므로 그 채널을 신뢰도에 쓴다. 아래 두 색은
-// 신뢰도가 없는 세그먼트의 폴백이자 레인 이름표(좌측 '원문'/'발음') 색이다.
+// 색으로 원문/발음을 구분할 필요가 없으므로 그 채널을 신뢰도에 쓴다. 아래 색은
+// 신뢰도가 없는 세그먼트의 폴백이자 레인 이름표 색이다.
 const TIMING_WORD = '#74c0fc';
 const TIMING_PRON = '#63e6be';
+/** heard 레인(CTC가 실제로 들은 글자) — 원문 레인과 뚜렷이 구분되도록 흐린 회색 */
+const TIMING_HEARD = '#868e96';
+
+/** 글자별 시각(heard_spans)이 없을 때 heard 문자열을 라인 구간에 균등 배치하는 폴백 */
+function evenlyPlaceHeard(heard: string, start: number, end: number): [string, number][] {
+  const chars = Array.from(heard.trim());
+  if (chars.length === 0) return [];
+  const span = Math.max(0.01, end - start);
+  const out: [string, number][] = [];
+  for (let i = 0; i < chars.length; i++) {
+    out.push([chars[i], start + ((i + 0.5) / chars.length) * span]);
+  }
+  return out;
+}
 
 interface PitchNote {
   midi: number;
@@ -2011,15 +2015,19 @@ export class PipController {
    * 우상단에 곡 전체 confidence(median/avg/저신뢰 비율)와 정렬 텍스트(독음/원문) 헤더.
    */
   /**
-   * CTC가 각 원문 글자·발음 음절에 실제로 준 시각을 시간축 위 두 줄로 찍는다.
+   * "라인 집중 뷰" — 지금 재생 중인 라인 하나만 확대해, CTC가 원문 글자·heard(실제로
+   * 들은 것)·발음 음절에 준 시각을 시간축 위 세 줄로 찍는다. 여러 줄을 한꺼번에 겹쳐
+   * 보여주던 예전 방식은 고스트와 뭉쳐 헷갈림의 주범이었다(사용자 확인 후 폐기).
    *
-   * 위 줄이 원문 글자, 아래 줄이 같은 라인의 발음 음절이다. 각 세그먼트는 시작에 세로
-   * 틱 + 지속만큼 가로 막대로 그리고, 틱 위에 그 글자·음절을 적는다.
+   * 위 줄이 원문 글자, 가운데 줄이 heard(CTC 전사 — 정답이 아니라 모델이 실제로 들은
+   * 것), 아래 줄이 발음 음절(있는 곡만)이다. 각 세그먼트는 시작에 세로 틱 + 지속만큼
+   * 가로 막대로 그리고, 틱 위에 그 글자를 적는다.
    *
-   * 두 채널을 분리해 읽는다: **모양**이 타이밍 구조를(길이가 0이면 막대 없이 틱만 남아
-   * 여러 글자가 한 지점에 겹친 "뭉침"이 즉시 보인다), **색**이 정렬 신뢰도를 나타낸다
-   * (패널·노트 가사와 같은 3색 규칙). 발음 줄은 고르게 퍼져 있는데 원문 줄만 뭉쳐
-   * 있으면 역매핑이 실패한 구간이고, 두 줄이 나란히 흐르면 정상이다.
+   * 원문·발음 두 채널은 **모양**이 타이밍 구조를(길이가 0이면 막대 없이 틱만 남아 여러
+   * 글자가 한 지점에 겹친 "뭉침"이 즉시 보인다), **색**이 정렬 신뢰도를 나타낸다(패널·
+   * 노트 가사와 같은 3색 규칙). heard 줄은 신뢰도가 없어 항상 흐린 회색 고정색 —
+   * 원문 줄과 나란히 놓고 "CTC가 실제로 이렇게 들었다"를 대조하는 용도다. 심판이 기본
+   * 발음 후보를 갈아치운 라인은 맨 아래에 ⚖ 뱃지로 판정 근거(기본→선택, gain)를 적는다.
    */
   private renderTimingLanes(
     ctx: CanvasRenderingContext2D,
@@ -2028,88 +2036,132 @@ export class PipController {
     x: (t: number) => number,
     padTop: number,
   ): void {
-    const wordY = padTop + 40;  // 고스트 3행 로테이션(padTop+6 ~ +22) 아래
-    const pronY = wordY + 18;
+    const current = this.index >= 0 ? pages[Math.min(this.index, pages.length - 1)] : undefined;
+    if (!current) return;
     const t1 = t0 + W;
+    if (current.end < t0 || current.start > t1) return; // 재생 중 라인이 창 밖이면 그릴 게 없다
+
+    const wordY = padTop + 40;  // 보정 라벨 3행 로테이션(padTop+6 ~ +22) 아래
+    const heardY = wordY + 13;
+    const pronY = heardY + 13;
     // 글자 라벨은 촘촘하면 서로 겹쳐 못 읽는다 — 마지막으로 그린 x에서 이만큼 떨어져야
     // 새로 그린다. 뭉친 구간에서는 라벨이 하나만 남아 그 자체로 뭉침 신호가 된다.
     const LABEL_GAP = 9;
     ctx.save();
     ctx.lineWidth = 1;
     ctx.setLineDash([]);
-    ctx.font = '10px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    let drew = false;
+    let drewWord = false;
+    let drewHeard = false;
+    let drewPron = false;
     let lastWordLabelX = -Infinity;
+    let lastHeardLabelX = -Infinity;
     let lastPronLabelX = -Infinity;
 
-    for (const p of pages) {
-      if (p.end < t0 || p.start > t1) continue;
-      for (const w of p.line.words ?? []) {
-        if (w.end < t0 || w.start > t1) continue;
-        const xs = x(w.start);
-        const xe = x(w.end);
-        // 1px 미만은 화면상 점 — 길이 0과 구분해도 의미가 없으므로 같이 취급한다
-        const zero = xe - xs < 1;
-        // 색은 정렬 신뢰도(패널·노트 가사와 같은 3색 규칙). 레인이 위아래로 나뉘어 있어
-        // 색으로 원문/발음을 구분할 필요가 없으니, 그 채널을 신뢰도에 쓴다.
-        // 길이 0은 색이 아니라 "막대 없이 틱만"이라는 **모양**으로 구분한다 — 신뢰도와
-        // 길이 0은 서로 다른 신호라 같은 채널에 실으면 둘 다 못 읽는다.
-        const color = w.confidence != null ? confBucketColor(w.confidence) : TIMING_WORD;
-        ctx.strokeStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(xs, wordY - 3);
-        ctx.lineTo(xs, wordY + 3);
-        if (!zero) {
-          ctx.moveTo(xs, wordY);
-          ctx.lineTo(xe, wordY);
-        }
-        ctx.stroke();
-        // 이 시각에 CTC가 붙인 실제 원문 글자 — 레인 바로 위에 작게
-        if (w.word && xs - lastWordLabelX >= LABEL_GAP) {
-          ctx.fillStyle = color;
-          ctx.fillText(w.word, xs + 1, wordY - 5);
-          lastWordLabelX = xs;
-        }
-        drew = true;
+    // ── 원문 글자 타이밍 바 (기존 conf 색 등급 그대로 유지)
+    ctx.font = '10px ui-monospace, monospace';
+    for (const w of current.line.words ?? []) {
+      if (w.end < t0 || w.start > t1) continue;
+      const xs = x(w.start);
+      const xe = x(w.end);
+      // 1px 미만은 화면상 점 — 길이 0과 구분해도 의미가 없으므로 같이 취급한다
+      const zero = xe - xs < 1;
+      const color = w.confidence != null ? confBucketColor(w.confidence) : TIMING_WORD;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(xs, wordY - 3);
+      ctx.lineTo(xs, wordY + 3);
+      if (!zero) {
+        ctx.moveTo(xs, wordY);
+        ctx.lineTo(xe, wordY);
       }
-      for (const s of p.line.pronSegments ?? []) {
-        if (s.end < t0 || s.start > t1) continue;
-        const sx = x(s.start);
-        const se = x(s.end);
-        // 발음 레인도 같은 규칙 — 색은 음절 신뢰도, 지속은 막대
-        const pcolor = s.confidence != null ? confBucketColor(s.confidence) : TIMING_PRON;
-        const pzero = se - sx < 1;
-        ctx.strokeStyle = pcolor;
-        ctx.beginPath();
-        ctx.moveTo(sx, pronY - 3);
-        ctx.lineTo(sx, pronY + 3);
-        if (!pzero) {
-          ctx.moveTo(sx, pronY);
-          ctx.lineTo(se, pronY);
-        }
-        ctx.stroke();
-        // 같은 시각의 전사 발음 음절
-        if (s.text && sx - lastPronLabelX >= LABEL_GAP) {
-          ctx.fillStyle = pcolor;
-          ctx.fillText(s.text, sx + 1, pronY - 5);
-          lastPronLabelX = sx;
-        }
-        drew = true;
+      ctx.stroke();
+      // 이 시각에 CTC가 붙인 실제 원문 글자 — 레인 바로 위에 작게
+      if (w.word && xs - lastWordLabelX >= LABEL_GAP) {
+        ctx.fillStyle = color;
+        ctx.fillText(w.word, xs + 1, wordY - 5);
+        lastWordLabelX = xs;
       }
+      drewWord = true;
     }
 
-    if (drew) {
+    // ── heard 레인: CTC가 실제로 들은 글자. heard_spans(글자별 시각)가 정본이고,
+    // 없으면 heard 문자열을 라인 구간에 균등 배치해 대략 위치만이라도 보여준다
+    const dbg = current.line.debug;
+    const spans: [string, number][] | undefined =
+      dbg?.heard_spans && dbg.heard_spans.length > 0 ? dbg.heard_spans
+        : dbg?.heard ? evenlyPlaceHeard(dbg.heard, current.start, current.end)
+        : undefined;
+    if (spans) {
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.strokeStyle = TIMING_HEARD;
+      ctx.fillStyle = TIMING_HEARD;
+      ctx.globalAlpha = 0.85;
+      for (const [ch, t] of spans) {
+        if (t < t0 || t > t1) continue;
+        const hx = x(t);
+        ctx.beginPath();
+        ctx.moveTo(hx, heardY - 2.5);
+        ctx.lineTo(hx, heardY + 2.5);
+        ctx.stroke();
+        if (ch && hx - lastHeardLabelX >= LABEL_GAP) {
+          ctx.fillText(ch, hx + 1, heardY - 4);
+          lastHeardLabelX = hx;
+        }
+        drewHeard = true;
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ── 발음 음절 레인 (기존 그대로) — 색은 음절 신뢰도, 지속은 막대
+    ctx.font = '10px ui-monospace, monospace';
+    for (const s of current.line.pronSegments ?? []) {
+      if (s.end < t0 || s.start > t1) continue;
+      const sx = x(s.start);
+      const se = x(s.end);
+      const pcolor = s.confidence != null ? confBucketColor(s.confidence) : TIMING_PRON;
+      const pzero = se - sx < 1;
+      ctx.strokeStyle = pcolor;
+      ctx.beginPath();
+      ctx.moveTo(sx, pronY - 3);
+      ctx.lineTo(sx, pronY + 3);
+      if (!pzero) {
+        ctx.moveTo(sx, pronY);
+        ctx.lineTo(se, pronY);
+      }
+      ctx.stroke();
+      // 같은 시각의 전사 발음 음절
+      if (s.text && sx - lastPronLabelX >= LABEL_GAP) {
+        ctx.fillStyle = pcolor;
+        ctx.fillText(s.text, sx + 1, pronY - 5);
+        lastPronLabelX = sx;
+      }
+      drewPron = true;
+    }
+
+    if (drewWord || drewHeard || drewPron) {
       ctx.font = '9px ui-monospace, monospace';
       ctx.textBaseline = 'middle';
       ctx.globalAlpha = 0.9;
-      ctx.fillStyle = TIMING_WORD;
-      ctx.fillText('원문', 4, wordY);
-      ctx.fillStyle = TIMING_PRON;
-      ctx.fillText('발음', 4, pronY);
+      if (drewWord) { ctx.fillStyle = TIMING_WORD; ctx.fillText('원문', 4, wordY); }
+      if (drewHeard) { ctx.fillStyle = TIMING_HEARD; ctx.fillText('들림', 4, heardY); }
+      if (drewPron) { ctx.fillStyle = TIMING_PRON; ctx.fillText('발음', 4, pronY); }
       ctx.globalAlpha = 1;
     }
+
+    // ── 심판 뱃지: 기본 발음 후보 대신 다른 후보를 골랐을 때만 표시
+    const ref = dbg?.referee;
+    if (ref?.chosen && ref.chosen !== ref.default) {
+      const gain = ref.gain ?? 0;
+      const sign = gain >= 0 ? '+' : '';
+      const badge = `⚖ ${ref.default ?? '?'}→${ref.chosen} (${sign}${gain.toFixed(2)})`;
+      ctx.font = 'bold 10px ui-monospace, monospace';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#da77f2';
+      ctx.fillText(badge, Math.max(2, x(Math.max(current.start, t0)) + 2), pronY + 14);
+    }
+
     ctx.restore();
   }
 
@@ -2122,43 +2174,24 @@ export class PipController {
   ): void {
     ctx.save();
     ctx.textBaseline = 'middle';
+    // 세이프가드가 고친 라인의 보정 규칙 라벨만 남긴다 — 보정 전 원본 타이밍을 점선
+    // 고스트로 겹쳐 그리던 예전 방식은 실제(보정 후) 위치와 헷갈려 혼란의 주범이었다
+    // (사용자 확인 후 제거). "무엇이 바뀌었는지"는 이 라벨로 충분하고, "어떻게
+    // 바뀌었는지"는 재생 중 라인에 한해 renderTimingLanes의 원문/heard/발음 레인이 보여준다.
     let row = 0;
     for (const p of pages) {
       const dbg = p.line.debug;
-      if (!dbg?.orig) continue;
-      const [os, oe] = dbg.orig;
-      if (Math.max(oe, p.end) < t0 || Math.min(os, p.start) > t0 + W) continue;
-      const color = FIX_COLORS[dbg.fixes?.[0] ?? ''] ?? '#868e96';
-      const gy = padTop + 6 + (row % 3) * 8; // 인접 라인 겹침 방지용 3행 로테이션
-      row++;
+      if (!dbg?.fixes || dbg.fixes.length === 0) continue;
       const ns = p.line.time ?? p.start;
       const ne = p.line.endTime ?? p.end;
-      // 라인 경계가 안 움직인 보정(fuse 등)은 고스트가 현재 위치에 겹쳐 그려진다 —
-      // 지우지 않고 흐리게만 남겨, 실제로 이동한 라인만 또렷하게 눈에 띄도록 한다
-      const unmoved = Math.abs(os - ns) <= GHOST_SAME_EPS && Math.abs(oe - ne) <= GHOST_SAME_EPS;
-      ctx.globalAlpha = unmoved ? GHOST_OVERLAP_ALPHA : 1;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath();
-      ctx.moveTo(x(os), gy);
-      ctx.lineTo(x(oe), gy);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // 세로 틱: 보정 전 시작(os)과 보정 후 시작 — 얼마나 옮겨졌는지 한눈에
-      ctx.beginPath();
-      ctx.moveTo(x(os), gy - 3);
-      ctx.lineTo(x(os), gy + 3);
-      ctx.moveTo(x(ns), gy - 3);
-      ctx.lineTo(x(ns), gy + 3);
-      ctx.stroke();
-      if (dbg.fixes && dbg.fixes.length > 0) {
-        ctx.font = '9px ui-monospace, monospace';
-        ctx.fillStyle = color;
-        ctx.textAlign = 'left';
-        ctx.fillText(dbg.fixes.join('·'), Math.max(2, x(Math.max(os, t0)) + 2), gy - 6);
-      }
-      ctx.globalAlpha = 1;
+      if (ne < t0 || ns > t0 + W) continue;
+      const color = FIX_COLORS[dbg.fixes[0]] ?? '#868e96';
+      const gy = padTop + 6 + (row % 3) * 8; // 인접 라인 겹침 방지용 3행 로테이션
+      row++;
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.fillText(dbg.fixes.join('·'), Math.max(2, x(Math.max(ns, t0)) + 2), gy);
     }
     this.renderTimingLanes(ctx, pages, t0, W, x, padTop);
     if (this.confStats) {

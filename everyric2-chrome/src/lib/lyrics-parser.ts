@@ -85,6 +85,9 @@ export function segmentsToLines(segments: EveryricSegment[]): LyricLine[] {
           clamped: s.debug.clamped,
           orig: s.debug.orig,
           fixes: s.debug.fixes,
+          heard: s.debug.heard,
+          heard_spans: s.debug.heard_spans,
+          referee: s.debug.referee,
         }
       : undefined,
   }));

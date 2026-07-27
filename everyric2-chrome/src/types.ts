@@ -48,6 +48,19 @@ export interface LineDebug {
   orig?: [number, number];
   /** 적용된 보정 규칙: stretch(8s+클램프)/repeat(반복행)/pull(간주 후 당김)/tail(끝음 연장)/snap(무음 온셋 스냅) */
   fixes?: string[];
+  /** CTC가 이 라인 구간에서 실제로 전사한 문자열(독음 정렬 곡은 한글 독음) */
+  heard?: string;
+  /** heard의 글자별 시각(초) — [글자, 시각] 쌍, 시간 오름차순 */
+  heard_spans?: [string, number][];
+  /** 심판이 기본 발음 후보 대신 다른 후보를 골랐을 때의 판정 근거 */
+  referee?: {
+    default?: string;
+    chosen?: string;
+    margin?: number;
+    gain?: number;
+    frames?: number;
+    scores?: [string, number][];
+  };
 }
 
 /** 발음 표기 한 음절의 타임스탬프 */
@@ -118,7 +131,22 @@ export interface EveryricSegment {
   /** 발음 음절별 타이밍 (서버 계산) */
   pron_segments?: PronSegment[];
   /** 라인 진단: 발성 비율/클램프 여부/보정 전 원본 타이밍/적용 규칙 */
-  debug?: { active_ratio?: number; clamped?: boolean; orig?: [number, number]; fixes?: string[] };
+  debug?: {
+    active_ratio?: number;
+    clamped?: boolean;
+    orig?: [number, number];
+    fixes?: string[];
+    heard?: string;
+    heard_spans?: [string, number][];
+    referee?: {
+      default?: string;
+      chosen?: string;
+      margin?: number;
+      gain?: number;
+      frames?: number;
+      scores?: [string, number][];
+    };
+  };
 }
 
 /** 가사 출처 표기 (예: 보카로 가사 위키 CC BY) */
