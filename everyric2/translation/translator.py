@@ -5,6 +5,7 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,8 @@ from everyric2.config.settings import TranslationSettings, get_settings
 from everyric2.inference.prompt import LyricLine
 from everyric2.text.ja_reading import kana_reading, reading_source
 from everyric2.text.kana_hangul import has_kana
-from everyric2.text.pron_style import wiki_pronunciation
+from everyric2.text.ko_reading import hangul_to_kana, hangul_to_romaja
+from everyric2.text.pron_style import romaji_line, wiki_pronunciation
 
 load_dotenv()
 
@@ -533,35 +535,85 @@ LYRICS:
             lang = self._detect_lang_heuristic(text)
         return lang in ("en", "ko")
 
-    def _use_deterministic_pron(self, text: str, source_lang: str, target_lang: str) -> bool:
-        """이 곡의 한글 독음을 LLM 대신 결정론 규칙(``text.pron_style``)으로 만드는가.
+    def _is_ja_source_for_deterministic_pron(self, text: str, source_lang: str) -> bool:
+        """이 곡을 결정론 ja 발음 경로의 원문으로 볼 것인가.
 
-        실측(보카로 위키 사람 발음): 결정론 82.4% vs LLM 82.2%로 정확도는 동등한데,
-        LLM은 같은 줄을 실행마다 다르게 읽고(「縋って」를 3회 중 2회 오독) 조사 は를 표층
-        그대로 "하"로 쓰는 실수를 반복한다. 발음을 프롬프트에서 빼면 출력이 절반 이하로
-        줄어 번역 배치(_TEXT_BATCH_*)를 크게 잡을 수 있다는 이득도 있다.
-
-        세 조건 모두 만족할 때만 쓴다:
-        - 대상 언어가 한국어 — pron_style은 한글을 낸다(비ko 타깃의 계약은 로마자다).
-        - 원문이 일본어 — 판정은 **곡 전체** 텍스트로 한다. 라인 단위로 보면 한자만 있는
-          줄이 중국어로 오판된다. UniDic은 중국어에 틀리므로 중국어는 LLM 경로로 남긴다.
-        - 형태소 분석기를 쓸 수 있다 — pykakasi 폴백 독음은 신뢰도가 낮다(縋って→ついって).
-        """
-        if self._norm_lang(target_lang) != "ko":
-            return False
-        if reading_source() != "fugashi":
-            return False
+        판정은 **곡 전체** 텍스트로 한다 — 라인 단위로 보면 한자만 있는 줄이 중국어로
+        오판된다(UniDic은 중국어에 틀려서 중국어는 LLM 경로로 남긴다). 가나가 한 글자라도
+        있거나 source_lang이 명시적으로 ja면 ja로 본다."""
         return has_kana(text) or self._norm_lang(source_lang) == "ja"
 
-    @staticmethod
-    def _apply_deterministic_pron(lines: list[TranslationLine]) -> None:
+    def _deterministic_pron_fn(
+        self, text: str, source_lang: str, target_lang: str
+    ) -> Callable[[str], str | None] | None:
+        """이 (원문, 대상 언어) 조합에 결정론 발음 렌더러가 있으면 그 함수를, 없으면 None.
+
+        `_use_deterministic_pron`(게이트)과 `_apply_deterministic_pron`(실제 렌더)이
+        이 한 곳만 보고 판단하게 해서 두 곳의 매트릭스가 갈리는 사고를 막는다.
+
+        매트릭스 (곡 원문 × 사용자 대상 언어):
+          ja × ko → `wiki_pronunciation` (기존, 무변경 — 한글 독음)
+          ja × en → `romaji_line(text)[0]` (표시 문자열 — 비ko 타깃의 계약은 로마자)
+          ja × ja → 대각선(`_should_skip_pronunciation`)이 먼저 걸러 발음 자체를 안 묻는다
+                     — 이 함수까지 오지 않는다
+          ko × ja → `ko_reading.hangul_to_kana`
+          ko × en → `ko_reading.hangul_to_romaja`
+          그 외(zh 등) → None(기존 LLM 자유서술 경로 유지)
+
+        실측(보카로 위키 사람 발음, ja×ko 경로): 결정론 82.4% vs LLM 82.2%로 정확도는
+        동등한데, LLM은 같은 줄을 실행마다 다르게 읽고(「縋って」를 3회 중 2회 오독) 조사
+        は를 표층 그대로 "하"로 쓰는 실수를 반복한다. 발음을 프롬프트에서 빼면 출력이
+        절반 이하로 줄어 번역 배치(_TEXT_BATCH_*)를 크게 잡을 수 있다는 이득도 있다 —
+        결정론 경로를 타는 모든 셀에 이 이득이 동일하게 적용된다(llm_pron 계산이
+        `_use_deterministic_pron` 결과 하나로 갈리므로 별도 배선이 필요 없다).
+
+        ja 원문 경로만 형태소 분석기 가용성(`reading_source()=='fugashi'`)에 의존한다 —
+        폴백(pykakasi) 독음은 신뢰도가 낮다(縋って→ついって). `ko_reading`은 자모 분해
+        규칙 기반이라 그런 의존이 없다(무조건 쓸 수 있다).
+        """
+        target = self._norm_lang(target_lang)
+
+        if self._is_ja_source_for_deterministic_pron(text, source_lang):
+            if reading_source() != "fugashi":
+                return None
+            if target == "ko":
+                return lambda t: wiki_pronunciation(t) or None
+            if target == "en":
+                def _romaji(t: str) -> str | None:
+                    rendered = romaji_line(t)
+                    return rendered[0] if rendered else None
+
+                return _romaji
+            return None
+
+        if self._norm_lang(source_lang) == "ko":
+            if target == "ja":
+                return lambda t: hangul_to_kana(t) or None
+            if target == "en":
+                return lambda t: hangul_to_romaja(t) or None
+            return None
+
+        return None
+
+    def _use_deterministic_pron(self, text: str, source_lang: str, target_lang: str) -> bool:
+        """이 곡의 발음표기를 LLM 대신 결정론 엔진(`_deterministic_pron_fn`)으로 만드는가."""
+        return self._deterministic_pron_fn(text, source_lang, target_lang) is not None
+
+    def _apply_deterministic_pron(
+        self, lines: list[TranslationLine], text: str, source_lang: str, target_lang: str
+    ) -> None:
         """LLM이 돌려준 발음을 버리고 결정론 값으로 덮는다 (원문에서만 만든다).
 
         번역이 실패한 라인(failed)도 채운다 — 발음은 더 이상 LLM 응답에 의존하지 않으므로
-        번역이 비었다고 독음까지 비울 이유가 없다.
+        번역이 비었다고 독음까지 비울 이유가 없다. 렌더러는 `_deterministic_pron_fn`이
+        게이트(`_use_deterministic_pron`)와 정확히 같은 판정으로 고른다 — 두 곳의 매트릭스가
+        갈릴 수 없다.
         """
+        renderer = self._deterministic_pron_fn(text, source_lang, target_lang)
+        if renderer is None:  # 방어적 — 호출부가 deterministic_pron=True일 때만 부른다
+            return
         for line in lines:
-            line.pronunciation = wiki_pronunciation(line.original) or None
+            line.pronunciation = renderer(line.original)
 
     def _detect_lang_confident(self, text: str) -> str | None:
         """번역 스킵 게이트 전용 언어 판정 — 확신할 때만 "ko"/"en", 아니면 None.
@@ -701,7 +753,7 @@ class GeminiTranslator(BaseTranslator):
 
             lines = self._parse_aligned(content, original_lines, llm_pron)
             if deterministic_pron:
-                self._apply_deterministic_pron(lines)
+                self._apply_deterministic_pron(lines, text, source_lang, target_lang)
 
             return TranslationResult(lines, source_lang, target_lang, "gemini", self.settings.tone)
 
@@ -791,7 +843,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
                 original_lines, source_lang, target_lang, context, include_pron=llm_pron
             )
             if deterministic_pron:
-                self._apply_deterministic_pron(lines)
+                self._apply_deterministic_pron(lines, text, source_lang, target_lang)
             if skip_translation:
                 # 원문 == 대상 언어인데 발음은 필요한 경우(ja→ja 등) — 발음만 남기고
                 # 무의미한 '재번역' 결과는 버린다

@@ -538,10 +538,12 @@ def test_pykakasi_fallback_keeps_the_llm_pronunciation(monkeypatch, tmp_path):
     assert result.lines[0].pronunciation == "키미하 오우조"
 
 
-def test_romaji_target_keeps_the_llm_pronunciation(monkeypatch, tmp_path):
-    # 비ko 타깃의 계약은 로마자다 — 한글을 내는 결정론 경로를 쓰면 안 된다
+def test_ja_to_en_uses_deterministic_romaji_not_the_llm_value(monkeypatch, tmp_path):
+    # 발음 매트릭스(ja×en 셀)가 결정론화된 뒤: 비ko 타깃도 로마자 결정론 경로가 있다
+    # (`pron_style.romaji_line`) — LLM이 돌려준 자유서술 로마자는 버려진다. 프롬프트도
+    # 발음을 묻지 않는다(deterministic_pron이면 llm_pron이 꺼진다 — ja×ko 경로와 동일 이득).
     translator = _nvidia(monkeypatch, tmp_path)
-    _fake_post(
+    calls = _fake_post(
         monkeypatch,
         '[{"original":"君は王女","translation":"you are the princess",'
         '"pronunciation":"kimi wa oujo"}]',
@@ -549,7 +551,9 @@ def test_romaji_target_keeps_the_llm_pronunciation(monkeypatch, tmp_path):
 
     result = translator.translate("君は王女", source_lang="ja", target_lang="en")
 
-    assert result.lines[0].pronunciation == "kimi wa oujo"
+    # romaji_line("君は王女")[0]의 wapuro 표기(장음 おう→oo) — LLM의 "oujo"가 아니다
+    assert result.lines[0].pronunciation == "kimi wa oojo"
+    assert "pronunciation" not in calls[0]["messages"][0]["content"]
 
 
 def test_deterministic_pronunciation_survives_finalize(monkeypatch, tmp_path):

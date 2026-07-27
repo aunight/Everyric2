@@ -157,3 +157,174 @@ class TestTranslationDiagonalEndToEnd:
         assert called
         assert result.translation_skipped is False
         assert result.lines[0].translation == "I hear your voice"
+
+
+class TestDeterministicPronunciationMatrix:
+    """발음 결정론 게이트(`_deterministic_pron_fn`)의 매트릭스 — 곡 원문 × 사용자 타깃
+    5개 셀 각각 LLM이 돌려준 자유서술이 아니라 결정론 모듈(pron_style/ko_reading)의
+    실제 출력과 일치하는지 확인한다. LLM 목·프롬프트 무발음 검증 패턴은
+    test_pron_style.py의 translator 연동 절(_nvidia/_fake_post)과 같은 관례를 쓴다.
+
+    매트릭스:
+      ja×ko → wiki_pronunciation (기존, 무변경)
+      ja×en → romaji_line(text)[0]
+      ja×ja → 발음 자체를 스킵(대각선 — TestTranslationDiagonalEndToEnd에서 이미 검증)
+      ko×ja → ko_reading.hangul_to_kana
+      ko×en → ko_reading.hangul_to_romaja
+      그 외(zh 등) → 결정론 렌더러 없음, 기존 LLM 자유서술 유지
+    """
+
+    def _nvidia(self, monkeypatch, tmp_path):
+        key_file = tmp_path / "nvapi.txt"
+        key_file.write_text("dummy-key", encoding="utf-8")
+        monkeypatch.setattr(NvidiaTranslator, "_KEY_FILE", key_file)
+        monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+        settings = TranslationSettings(engine="nvidia", api_key=None)
+        settings.include_pronunciation = True
+        return NvidiaTranslator(settings)
+
+    def _fake_post(self, monkeypatch, content: str) -> list[dict]:
+        """requests.post를 고정 응답으로 대체하고 보낸 payload들을 돌려준다."""
+        from tests.test_nvidia_translator import chat_response
+
+        calls: list[dict] = []
+
+        def post(url, json, headers, timeout):
+            calls.append(json)
+            return chat_response(content)
+
+        monkeypatch.setattr("everyric2.translation.translator.requests.post", post)
+        return calls
+
+    def test_ja_to_ko_matches_wiki_pronunciation(self, monkeypatch, tmp_path):
+        from everyric2.text.pron_style import wiki_pronunciation
+
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"君は王女","translation":"너는 왕녀",'
+            '"pronunciation":"엉뚱한 LLM 값"}]',
+        )
+
+        result = translator.translate("君は王女", source_lang="ja", target_lang="ko")
+
+        assert result.lines[0].pronunciation == wiki_pronunciation("君は王女")
+        assert result.lines[0].pronunciation != "엉뚱한 LLM 값"
+        # 결정론 경로를 타면 프롬프트에서 발음 요구를 뺀다 — 출력 토큰 절약
+        assert "pronunciation" not in calls[0]["messages"][0]["content"]
+
+    def test_ja_to_en_matches_romaji_line(self, monkeypatch, tmp_path):
+        from everyric2.text.pron_style import romaji_line
+
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"君は王女","translation":"you are the princess",'
+            '"pronunciation":"kimi wa oujo"}]',
+        )
+
+        result = translator.translate("君は王女", source_lang="ja", target_lang="en")
+
+        expected = romaji_line("君は王女")[0]
+        assert result.lines[0].pronunciation == expected
+        assert result.lines[0].pronunciation != "kimi wa oujo"  # LLM 값은 버려진다
+        assert "pronunciation" not in calls[0]["messages"][0]["content"]
+
+    def test_ja_to_ja_skips_pronunciation_via_diagonal(self, monkeypatch, tmp_path):
+        # ja×ja는 대각선(_should_skip_pronunciation)이 먼저 걸러 발음 자체를 묻지 않는다 —
+        # _deterministic_pron_fn까지 오지 않는다는 것을 LLM 미호출로 확인한다.
+        translator = self._nvidia(monkeypatch, tmp_path)
+
+        def boom(*a, **k):  # pragma: no cover
+            raise AssertionError("LLM must not be called for ja x ja")
+
+        monkeypatch.setattr("everyric2.translation.translator.requests.post", boom)
+
+        result = translator.translate(
+            "君は王女\n夜の街に消えていく光", source_lang="ja", target_lang="ja"
+        )
+
+        assert result.translation_skipped is True
+        assert all(line.pronunciation is None for line in result.lines)
+
+    def test_ko_to_ja_matches_hangul_to_kana(self, monkeypatch, tmp_path):
+        from everyric2.text.ko_reading import hangul_to_kana
+
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"사랑해","translation":"愛してる","pronunciation":"엉뚱한 값"}]',
+        )
+
+        result = translator.translate("사랑해", source_lang="ko", target_lang="ja")
+
+        assert result.lines[0].pronunciation == hangul_to_kana("사랑해")
+        assert result.lines[0].pronunciation != "엉뚱한 값"
+        assert "pronunciation" not in calls[0]["messages"][0]["content"]
+
+    def test_ko_to_en_matches_hangul_to_romaja(self, monkeypatch, tmp_path):
+        from everyric2.text.ko_reading import hangul_to_romaja
+
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"사랑해","translation":"I love you","pronunciation":"엉뚱한 값"}]',
+        )
+
+        result = translator.translate("사랑해", source_lang="ko", target_lang="en")
+
+        assert result.lines[0].pronunciation == hangul_to_romaja("사랑해")
+        assert result.lines[0].pronunciation != "엉뚱한 값"
+        assert "pronunciation" not in calls[0]["messages"][0]["content"]
+
+    def test_non_matrix_source_keeps_llm_freeform_pronunciation(self, monkeypatch, tmp_path):
+        # "그 외"(zh 등) — 결정론 렌더러가 없으므로 기존 LLM 자유서술 경로를 그대로 쓴다
+        # (UniDic이 중국어를 오독하므로 ja 경로로 새지 않는지도 함께 확인)
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"我听到你的声音","translation":"네 목소리가 들려",'
+            '"pronunciation":"워 팅 다오 니 더 성인"}]',
+        )
+
+        result = translator.translate("我听到你的声音", source_lang="zh", target_lang="ko")
+
+        assert result.lines[0].pronunciation == "워 팅 다오 니 더 성인"
+        assert "pronunciation" in calls[0]["messages"][0]["content"]
+
+    def test_ko_to_en_pronunciation_has_no_fugashi_dependency(self, monkeypatch, tmp_path):
+        # ko_reading은 자모 분해 규칙 기반이라 형태소 분석기 가용성과 무관하다 — ja 경로만
+        # reading_source()=='fugashi'에 의존한다(기존 근거). pykakasi 폴백이어도 ko×en은
+        # 여전히 결정론 경로를 탄다.
+        from everyric2.text.ko_reading import hangul_to_romaja
+
+        monkeypatch.setattr(
+            "everyric2.translation.translator.reading_source", lambda: "pykakasi"
+        )
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"사랑해","translation":"I love you","pronunciation":"엉뚱한 값"}]',
+        )
+
+        result = translator.translate("사랑해", source_lang="ko", target_lang="en")
+
+        assert result.lines[0].pronunciation == hangul_to_romaja("사랑해")
+        assert "pronunciation" not in calls[0]["messages"][0]["content"]
+
+    def test_ja_to_en_falls_back_to_llm_when_no_morphological_analyzer(self, monkeypatch, tmp_path):
+        # ja 경로만 reading_source()=='fugashi' 의존 — pykakasi 폴백이면 ja×en도 LLM으로 남는다
+        monkeypatch.setattr(
+            "everyric2.translation.translator.reading_source", lambda: "pykakasi"
+        )
+        translator = self._nvidia(monkeypatch, tmp_path)
+        calls = self._fake_post(
+            monkeypatch,
+            '[{"original":"君は王女","translation":"you are the princess",'
+            '"pronunciation":"kimi wa oujo"}]',
+        )
+
+        result = translator.translate("君は王女", source_lang="ja", target_lang="en")
+
+        assert result.lines[0].pronunciation == "kimi wa oujo"
+        assert "pronunciation" in calls[0]["messages"][0]["content"]
