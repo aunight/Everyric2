@@ -181,18 +181,28 @@ export function selectLyricTrack(tracks: YtCaptionTrack[], title = ''): YtCaptio
 }
 
 /**
- * 2단 표시용 한국어 자막 트랙 — **수동작성만**.
+ * 2단 표시용 번역 자막 트랙 — **수동작성만**, 대상 언어는 호출부가 넘긴 `targetLang`
+ * (사용자의 translationLanguage) 기준. 예전엔 한국어로 고정돼 있었다 — 사용자 요청으로
+ * 임의 언어 일반화(«한국어 화자 대상이었을 때 그랬던 것처럼» 다른 언어에도).
  *
  * 유튜브의 기계 번역 자막은 captionTracks에 들어오지 않지만(요청 시 생성),
- * 원어가 한국어인 영상의 asr 한국어는 들어온다. asr은 ASR 오차가 그대로 남으므로
+ * 원어가 대상 언어와 같은 영상의 asr은 들어온다. asr은 오차가 그대로 남으므로
  * 번역 표기로 쓰지 않고, 그런 곡은 기존 LLM 번역 경로에 맡긴다.
- * 원어 자체가 한국어면 2단이 무의미하므로 null.
+ * 원어 자체가 대상 언어면 2단이 무의미하므로 null.
+ *
+ * 매칭은 정확한 언어 코드 우선(en vs en-US 등 지역 변형이 있어도 en 대상은 base로 잡힌다),
+ * 없으면 기본 언어(baseLang) 일치로 폴백 — 서버 manual_track_keys의 base_lang 정규화 관례와
+ * 같은 원칙(정확→기본 순)을 확장 쪽에 맞게 옮긴 것이다.
  */
-export function selectKoreanTrack(
-  tracks: YtCaptionTrack[], chosen: YtCaptionTrack | null,
+export function selectTranslationTrack(
+  tracks: YtCaptionTrack[], chosen: YtCaptionTrack | null, targetLang: string,
 ): YtCaptionTrack | null {
-  if (chosen && chosen.baseLang === 'ko') return null;
-  return tracks.find(t => !t.auto && t.baseLang === 'ko') ?? null;
+  const targetBase = baseLanguage(targetLang);
+  if (chosen && chosen.baseLang === targetBase) return null;
+  const manual = tracks.filter(t => !t.auto);
+  return manual.find(t => t.lang === targetLang)
+    ?? manual.find(t => t.baseLang === targetBase)
+    ?? null;
 }
 
 /** 표시용 언어 이름 (예: "ja" → "일본어"). 실패하면 유튜브가 준 라벨 */

@@ -13,8 +13,8 @@ import {
   captionSourceLabel,
   getCaptionTracks,
   mergeCaptionTranslation,
-  selectKoreanTrack,
   selectLyricTrack,
+  selectTranslationTrack,
 } from './lib/yt-captions';
 import type {
   ApiFailure,
@@ -579,15 +579,19 @@ async function tryCaptionFallback(
   const base = await fetchCaptionLines(videoId, track.lang, track.auto);
   if (videoId !== currentVideoId || base.length === 0) return null;
 
-  // 한국어 자막이 따로 있으면 시간 겹침으로 붙여 2단 표시 (수동작성만 — 자동생성은
-  // ASR 오차가 그대로 남아 가사 번역으로 쓰기엔 품질이 떨어진다)
+  // 내 번역 언어의 수동 자막이 따로 있으면 시간 겹침으로 붙여 2단 표시 (수동작성만 —
+  // 자동생성은 ASR 오차가 그대로 남아 가사 번역으로 쓰기엔 품질이 떨어진다). 예전엔
+  // 한국어로 고정돼 있었다 — settings.translationLanguage 기준으로 일반화.
   let translations: (string | undefined)[] = [];
-  const ko = selectKoreanTrack(tracks, track);
-  if (ko) {
-    const krLines = await fetchCaptionLines(videoId, ko.lang, ko.auto);
+  const trTrack = selectTranslationTrack(tracks, track, settings.translationLanguage);
+  if (trTrack) {
+    const trLines = await fetchCaptionLines(videoId, trTrack.lang, trTrack.auto);
     if (videoId !== currentVideoId) return null;
-    if (krLines.length > 0) translations = mergeCaptionTranslation(base, krLines);
+    if (trLines.length > 0) translations = mergeCaptionTranslation(base, trLines);
   }
+  // 실제로 한 줄이라도 자막에서 번역이 붙었으면 «사람 번역»으로 표시한다 — LLM이 덮어쓰지
+  // 않게(hasMatchingHumanTranslation) + 이 세션에서 저장된 언어를 남긴다(translationLang).
+  const humanTranslated = translations.some(t => t !== undefined);
 
   const lines: LyricLine[] = base.map((l, i) => ({
     time: l.start,
@@ -602,6 +606,8 @@ async function tryCaptionFallback(
     plainText: lines.map(l => l.text).join('\n'),
     // 자동 생성인지 남긴다 — 이 표시를 잃으면 ASR 전사가 싱크의 원문으로 승격된다
     captionAuto: track.auto,
+    humanTranslated: humanTranslated || undefined,
+    translationLang: humanTranslated ? settings.translationLanguage : undefined,
     // 출처 배지는 source가 'caption'이면 앞에 "유튜브 자막"을 이미 붙인다 —
     // 여기서 또 붙이면 "유튜브 자막 · 유튜브 자막 · 일본어…"로 겹친다
     attribution: { name: captionSourceLabel(track) },
@@ -1007,10 +1013,18 @@ async function enrichFromVocaro(videoId: string, data: LyricsData): Promise<void
   for (const line of data.lines) {
     const v = byText.get(norm(line.text));
     if (!v) continue;
+    // 발음(한글 표기)은 어떤 번역 언어에서도 유효하다 — 표시 시점에 resolvedPronunciation이
+    // script==='hangul'일 때만 노출하므로 여기서 언어를 가릴 필요가 없다.
     if (v.pronunciation && !line.pronunciation) line.pronunciation = v.pronunciation;
-    if (v.translation && !line.translation) {
+    // 번역은 vocaro가 **한국어 전용**이다 — 언어 가드 없이 병합하면 en/ja 타깃 사용자에게도
+    // 이 곡을 예전에(또는 다른 사용자가) 한국어로 본 세션의 vocaroRef가 남아 있을 때마다
+    // 한국어 번역이 새어나간다(코드 감사로 발견, 실사용 미확인 — vocaroRef는 storage에
+    // videoId 단위로 영구 보관되고 언어별로 구분되지 않는다). 내 번역 언어가 한국어일
+    // 때만 싣고, translationLang을 함께 남겨 hasMatchingHumanTranslation이 정확히 판정한다.
+    if (v.translation && !line.translation && settings.translationLanguage === 'ko') {
       line.translation = v.translation;
       data.humanTranslated = true;
+      data.translationLang = settings.translationLanguage;
     }
   }
 }
@@ -1021,12 +1035,16 @@ async function enrichFromVocaro(videoId: string, data: LyricsData): Promise<void
  *
  * vocaro는 한국어 전용, miraheze는 영어 전용이다 — attribution.sourceId로 실제 출처를
  * 가른다(구데이터 vocaro 채택분은 attribution이 없으므로 source==='vocaro' 폴백을
- * 유지한다 — adoptVocaroResult는 손대지 않았다). miraheze 조건이 없으면 다른 언어를 보는
- * 사용자에게까지 vocaro/miraheze 가드가 걸려 영영 자기 언어 번역을 받지 못한다.
+ * 유지한다 — adoptVocaroResult는 손대지 않았다). 이 둘은 단일 언어 소스라 언어 자체가
+ * 고정이지만, 그 밖의 humanTranslated(서버 sync의 wiki 병합분·유튜브 수동 자막 등)는
+ * **임의 언어**일 수 있으므로 data.translationLang(그 번역이 실제로 실린 언어)이 내
+ * 번역 언어와 같을 때만 보호한다 — 예전엔 여기도 한국어로 고정돼 있어서 en/ja 타깃에
+ * 실제로 자막 병합이 있어도 매번 지우고 LLM을 다시 불렀다.
  */
 function hasMatchingHumanTranslation(data: LyricsData): boolean {
   if (data.attribution?.sourceId === 'miraheze') return settings.translationLanguage === 'en';
-  return settings.translationLanguage === 'ko' && (data.source === 'vocaro' || Boolean(data.humanTranslated));
+  if (data.source === 'vocaro') return settings.translationLanguage === 'ko';
+  return Boolean(data.humanTranslated) && data.translationLang === settings.translationLanguage;
 }
 
 function clearTranslations(): void {
@@ -1037,6 +1055,48 @@ function clearTranslations(): void {
   for (const line of currentData.lines) delete line.translation;
   overlay?.refreshTranslations();
   pip.refresh();
+}
+
+/**
+ * 이미 서버 싱크가 있는 곡(everyric·synced)에서 내 번역 언어의 유튜브 수동 자막을
+ * LLM보다 먼저 시도한다 — tryCaptionFallback(첫 로딩·싱크 자체가 없을 때의 폴백)과 같은
+ * 원칙을 "이미 싱크가 있어 번역 레이어만 미스인" 사후 경로에 적용한 것.
+ *
+ * **저장(persist)은 하지 않는다** — 이 세션(currentData) 동안만 유지되고 새로고침하면
+ * 다시 이 경로를 탄다. everyric-api에 "이미 있는 텍스트를 그대로 레이어에 저장"할 경로가
+ * 없기 때문이다: translateLyrics(/api/translate persist=true)는 항상 LLM이 **직접**
+ * 번역해 그 결과를 저장한다 — 자막 원문을 text로 실어 보내도 서버가 그것을 재번역해 버려
+ * 자막을 쓰는 의미(사람이 쓴 표현 그대로)가 사라진다. attachLineMeta는
+ * `/api/sync/jobs/{jobId}/line-meta`로 생성 잡에 매달린 엔드포인트라, 잡이 없는 순수
+ * 조회 세션(여기)에는 jobId 자체가 없어 호출할 수 없다. 즉 오늘 기준으로는 "표시는 되지만
+ * 서버에는 안 남는" 상태가 맞는 결론이다 — 저장하려면 서버에 새 엔드포인트(원문 그대로
+ * 받는 레이어 저장)가 필요하고, 이번 작업은 서버 변경이 금지돼 있다.
+ */
+async function tryCaptionTranslationLayer(
+  data: LyricsData, videoId: string, lang: string,
+): Promise<boolean> {
+  if (data.source !== 'everyric' || !data.synced) return false;
+  const base: CaptionLine[] = data.lines
+    .filter((l): l is LyricLine & { time: number; endTime: number } => l.time != null && l.endTime != null)
+    .map(l => ({ start: l.time, end: l.endTime, text: l.text }));
+  // 타이밍 없는 줄이 하나라도 섞여 있으면 base와 data.lines의 인덱스가 어긋난다 — 포기.
+  if (base.length !== data.lines.length) return false;
+  const tracks = await getCaptionTracks(videoId);
+  if (videoId !== currentVideoId) return false;
+  // chosen(원어 트랙)을 모른다 — 대각선은 loadTranslations의 조기 반환이 이미 걸러
+  // 여기 닿을 때는 곡 스크립트!=lang이 보장되므로 null로 넘겨도 안전하다.
+  const track = selectTranslationTrack(tracks, null, lang);
+  if (!track) return false;
+  const trLines = await fetchCaptionLines(videoId, track.lang, track.auto);
+  if (videoId !== currentVideoId) return false;
+  if (trLines.length === 0) return false;
+  const merged = mergeCaptionTranslation(base, trLines);
+  if (!merged.some(m => m !== undefined)) return false;
+  // applyTranslations를 재사용 — translationLang 기록·availableLangs 칩 반영·pip 갱신까지
+  // 기존 LLM 경로와 동일하게 맞아떨어진다. pronunciation은 안 실어 보낸다(자막엔 없다).
+  applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' })));
+  data.humanTranslated = true;
+  return true;
 }
 
 async function loadTranslations(): Promise<void> {
@@ -1084,6 +1144,13 @@ async function loadTranslations(): Promise<void> {
     applyTranslations(data, cached);
     return;
   }
+
+  // 서버 번역 레이어가 미스라도(이 아래로 내려왔다는 것 자체가 미스) 내 언어의 유튜브
+  // 수동 자막이 있으면 LLM보다 먼저 그것을 쓴다 — 사람이 쓴 자막이 LLM보다 낫다는 원칙은
+  // tryCaptionFallback(첫 로딩 폴백)과 같다. 대각선(곡 스크립트==내 언어)은 이 지점에
+  // 닿기 전에 이미 위에서 반환됐으므로 여기서 따로 확인하지 않는다.
+  if (await tryCaptionTranslationLayer(data, videoId, lang)) return;
+  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(자막 시도 중)
 
   // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
   if (serverKnownBad(serverStatus)) {
