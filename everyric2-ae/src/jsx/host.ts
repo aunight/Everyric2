@@ -424,22 +424,33 @@ function measureTime(layer: any): number {
 }
 
 /**
- * 측정용 레이어에 텍스트를 넣고 바운딩 박스를 잰다.
+ * 텍스트 하나의 바운딩 박스를 잰다. ExtendScript에는 글자별 위치 API가 없어서
+ * 문자열을 넣어 보고 재는 것이 유일한 방법이다.
  *
- * ExtendScript에는 글자별 위치 API가 없어서, 문자열을 갈아 끼우며 재는 것이 유일한 방법이다.
+ * **측정마다 레이어를 새로 만들어 지운다.** 한 레이어의 텍스트를 갈아 끼우며 연달아 재면
+ * sourceRectAtTime이 이전 문자열의 값을 돌려준다(실측 확인). 그러면 조각 하나가 통째로
+ * 엉뚱한 자리에 놓인다.
  */
-function measureText(measureLayer: any, text: string, time: number): HostObject | null {
+function measureText(sourceLayer: any, text: string): HostObject | null {
   if (!text) return { left: 0, width: 0 };
-  var sourceText = textProperty(measureLayer);
-  if (!sourceText) return null;
+  var probe = null;
   try {
+    probe = sourceLayer.duplicate();
+    var sourceText = textProperty(probe);
+    if (!sourceText) return null;
     var documentValue = sourceText.value;
     documentValue.text = text;
     sourceText.setValue(documentValue);
-    var rect = measureLayer.sourceRectAtTime(time, false);
+    var rect = probe.sourceRectAtTime(Math.max(probe.inPoint, 0), false);
     return { left: rect.left, width: rect.width };
   } catch (error) {
     return null;
+  } finally {
+    if (probe) {
+      try {
+        probe.remove();
+      } catch (removeError) {}
+    }
   }
 }
 
@@ -462,27 +473,27 @@ function pieceOffsets(layer: any, pieces: any[], time: number): number[] | null 
   }
   if (!originalRect || !(originalRect.width > 0)) return null;
 
-  var measureLayer = null;
   try {
-    measureLayer = layer.duplicate();
     var offsets: number[] = [];
+    var widthSum = 0;
     for (var index = 0; index < pieces.length; index += 1) {
       var piece = pieces[index];
-      var pieceRect = measureText(measureLayer, String(piece.text || ""), time);
-      var headRect = measureText(measureLayer, String(piece.head || piece.text || ""), time);
+      var pieceRect = measureText(layer, String(piece.text || ""));
+      var headRect = measureText(layer, String(piece.head || piece.text || ""));
       if (!pieceRect || !headRect) return null;
+      // 폭이 0인 조각 = 이 폰트에 그 글자의 글리프가 없다. 폭을 믿을 수 없으니 포기한다.
+      if (!(pieceRect.width > 0)) return null;
+      widthSum += pieceRect.width;
       var prefixWidth = headRect.width - pieceRect.width;
       offsets.push(originalRect.left + prefixWidth - pieceRect.left);
     }
+    // 조각 폭의 합은 원본 폭에 가까워야 한다. 차이는 자간뿐이라 몇 %를 넘지 않는다
+    // (실측: 일본어 폰트 2.2%). 글리프가 없는 폰트에서는 30%까지 벌어지고, 그때 계산한
+    // 위치는 글자가 있던 자리와 아무 상관이 없다 — 옮기지 않는 편이 낫다.
+    if (Math.abs(originalRect.width - widthSum) > originalRect.width * 0.1) return null;
     return offsets;
   } catch (error) {
     return null;
-  } finally {
-    if (measureLayer) {
-      try {
-        measureLayer.remove();
-      } catch (error) {}
-    }
   }
 }
 
@@ -501,15 +512,21 @@ function localShiftToComp(layer: any, dx: number): number[] {
   return [shift * Math.cos(radians), shift * Math.sin(radians)];
 }
 
-/** in/out을 순서 사고 없이 설정한다. 항상 out을 먼저 좁혀야 in < out이 깨지지 않는다. */
+/**
+ * in/out을 설정한다. **반드시 in을 먼저, out을 나중에.**
+ *
+ * AE에서 inPoint를 설정하면 레이어가 트림되는 게 아니라 길이를 유지한 채 이동한다
+ * (실측: 1~5 레이어에 inPoint=3을 주면 3~5가 아니라 3~7이 된다). 그래서 in으로 자리를
+ * 잡고 out으로 잘라내는 순서여야 한다. 반대로 하면 out이 in 설정에 다시 밀려난다.
+ */
 function setLayerSpan(layer: any, start: number, end: number, comp: any): void {
   var safeEnd = Math.max(comp.frameDuration, Math.min(comp.duration, end));
   var safeStart = Math.max(0, Math.min(safeEnd - comp.frameDuration, start));
   try {
-    layer.outPoint = safeEnd;
+    layer.inPoint = safeStart;
   } catch (error) {}
   try {
-    layer.inPoint = safeStart;
+    layer.outPoint = safeEnd;
   } catch (error) {}
 }
 
@@ -538,7 +555,10 @@ function everyricSplitTextLayer(payloadJson?: string): string {
     var time = measureTime(layer);
     var offsets: number[] | null = payload.keepOriginalPosition ? null : pieceOffsets(layer, pieces, time);
     if (!payload.keepOriginalPosition && !offsets) {
-      warnings.push("글자 폭을 재지 못해 조각을 원래 위치에 두었습니다.");
+      warnings.push(
+        "글자 폭이 신뢰할 수 없어 조각을 원래 위치에 두었습니다. " +
+          "이 폰트에 해당 글자의 글리프가 없을 수 있습니다 — 가사 언어를 지원하는 폰트로 바꿔 보세요.",
+      );
     }
 
     var basePosition;

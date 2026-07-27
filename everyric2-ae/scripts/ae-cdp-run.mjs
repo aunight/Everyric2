@@ -77,10 +77,24 @@ await new Promise((resolve, reject) => {
 
 // 패널 컨텍스트에서 evalScript를 부른다. 스크립트 본문을 문자열로 넘기지 않고
 // $.evalFile로 파일을 읽게 해서 따옴표·개행 이스케이프 사고를 피한다.
-const posix = scriptPath.replace(/\\/g, "/");
+//
+// 경로는 여기서 넣어 준다. ExtendScript의 $.fileName은 "/c/DevAT/..." 같은 URI 스타일이라
+// 스크립트가 스스로 유도하면 File()이 못 받는다.
+// $.evalFile은 이 환경에서 "Cannot convert to <path>"로 죽는다(경로 형식과 무관하게).
+// 파일 내용을 그대로 실어 보내면 파일 시스템 해석 단계 자체가 사라진다.
+const toForward = (value) => value.replace(/\\/g, "/");
+const hostPath = path.join(root, "dist", "jsx", "host.jsx");
+if (!fs.existsSync(hostPath)) fail(`host.jsx가 없습니다 — npm run build를 먼저 실행하세요: ${hostPath}`);
+const reportForward = toForward(path.join(root, "artifacts", "ae-cut-test-report.txt"));
+const jsx = [
+  `$.global.EVERYRIC_TEST_HOST = "${toForward(hostPath)}";`,
+  `$.global.EVERYRIC_TEST_OUT = "${reportForward}";`,
+  fs.readFileSync(hostPath, "utf8"),
+  fs.readFileSync(scriptPath, "utf8"),
+].join("\n;\n");
 const expression = `new Promise(function (resolve) {
   if (!window.__adobe_cep__) { resolve("NO_CEP_BRIDGE"); return; }
-  window.__adobe_cep__.evalScript('$.evalFile(new File("${posix}"))', function (result) {
+  window.__adobe_cep__.evalScript(${JSON.stringify(jsx)}, function (result) {
     resolve(String(result));
   });
 })`;

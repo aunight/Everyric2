@@ -317,6 +317,23 @@ try {
   assert.ok(hostSource.includes("function localShiftToComp"), "the horizontal shift must respect layer rotation and scale");
   assert.ok(/beginUndoGroup\("Everyric Studio - Split text layer"\)/.test(hostSource), "a cut must be a single undo step");
   assert.ok(/if \(sourceText\.numKeys > 0\)[\s\S]{0,200}자를 수 없습니다/.test(hostSource), "layers with Source Text keyframes must be refused by the host too");
+  // AE 실측으로 확정된 계약들 — 되돌리면 조각이 엉뚱한 시각·자리에 놓인다.
+  assert.ok(
+    /layer\.inPoint = safeStart;[\s\S]{0,120}layer\.outPoint = safeEnd;/.test(hostSource),
+    "inPoint must be set before outPoint: setting inPoint shifts the layer instead of trimming it (1-5 with inPoint=3 becomes 3-7)",
+  );
+  assert.ok(
+    /probe = sourceLayer\.duplicate\(\)/.test(hostSource),
+    "each measurement needs its own layer rather than reusing one and swapping the text",
+  );
+  assert.ok(
+    /originalRect\.width - widthSum\) > originalRect\.width \* 0\.1/.test(hostSource),
+    "pieces whose widths do not add up to the original must not be moved — a font missing the glyphs reports nonsense widths",
+  );
+  assert.ok(
+    /if \(!\(pieceRect\.width > 0\)\) return null;/.test(hostSource),
+    "a zero-width piece means the font has no glyph for it; the measurement cannot be trusted",
+  );
 
   const engineInstallSource = fs.readFileSync(path.join(root, "src/panel/engine-install.ts"), "utf8");
   // 주석은 "왜 건드리지 않는지"를 설명하므로 검사 대상이 아니다. 실제 코드만 본다.
