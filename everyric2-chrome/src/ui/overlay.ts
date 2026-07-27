@@ -1,5 +1,5 @@
 import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncDebugMeta, SyncListItem } from '../types';
-import { resolveScript, resolvedPronSegments, resolvedPronunciation } from '../lib/lang';
+import { resolveScript, resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
 import { t } from '../lib/i18n';
 import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
 import { resolveTheme } from '../lib/theme';
@@ -454,23 +454,8 @@ export class LyricsOverlay {
         const confClass = conf == null ? '' : conf < 1e-4 ? ' ey-conf-low' : conf < 2e-2 ? ' ey-conf-mid' : ' ey-conf-ok';
         return h('span', { className: `ey-word${confClass}`, text: word.word, attrs: { 'data-start': String(word.start) } });
       });
-      const pron = resolvedPronunciation(line, pronScript);
-      if (pron) {
-        // 음절 타이밍(pronSegments)이 있으면 단어처럼 부른 만큼 색이 차오르게 스팬으로
-        // (사이 텍스트는 appendTimedSpans가 인접 span에 끼워 넣어 흰 글자 없이 칠해진다)
-        const segs = resolvedPronSegments(line, pronScript);
-        const pronEl = h('div', { className: 'ey-line-pron', attrs: { dir: 'auto' } });
-        const mapped = segs && segs.length > 0
-          ? appendTimedSpans(pronEl, pron, segs, s => s.text, seg =>
-              h('span', {
-                className: 'ey-pron-syl',
-                text: seg.text,
-                attrs: { 'data-start': String(seg.start) },
-              }))
-          : 0;
-        if (mapped === 0) pronEl.replaceChildren(pron);
-        el.append(pronEl);
-      }
+      const pronEl = this.buildPronEl(line, pronScript);
+      if (pronEl) el.append(pronEl);
       if (line.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
       el.dataset.index = String(index);
       this.lineEls.push(el);
@@ -964,16 +949,48 @@ export class LyricsOverlay {
     return this.stateKind === 'pip';
   }
 
-  /** lines[].translation을 다시 읽어 각 라인 아래 번역을 갱신/제거한다 */
+  /**
+   * 라인 하나의 발음 표기 엘리먼트를 만든다 — showSyncedLyrics(최초 렌더)와
+   * refreshTranslations(재렌더: 번역 API가 늦게 채워줄 때·발음 표기 전환 시) 둘 다
+   * 이걸 거친다. 음절 타이밍(pronSegments)이 있으면 단어처럼 부른 만큼 색이 차오르게
+   * 스팬으로(사이 텍스트는 appendTimedSpans가 인접 span에 끼워 넣어 흰 글자 없이
+   * 칠해진다), 없으면 통짜 텍스트로. 발음이 없으면 null(둘 다 append를 생략하게).
+   */
+  private buildPronEl(line: LyricLine, pronScript: PronScript): HTMLDivElement | null {
+    const pron = resolvedPronunciation(line, pronScript);
+    if (!pron) return null;
+    const segs = resolvedPronSegments(line, pronScript);
+    const pronEl = h('div', { className: 'ey-line-pron', attrs: { dir: 'auto' } });
+    const mapped = segs && segs.length > 0
+      ? appendTimedSpans(pronEl, pron, segs, s => s.text, seg =>
+          h('span', {
+            className: 'ey-pron-syl',
+            text: seg.text,
+            attrs: { 'data-start': String(seg.start) },
+          }))
+      : 0;
+    if (mapped === 0) pronEl.replaceChildren(pron);
+    return pronEl;
+  }
+
+  /**
+   * lines[].translation을 다시 읽어 각 라인 아래 번역을 갱신/제거하고, 발음 표기도
+   * 항상 새로 그린다(무조건 지우고 buildPronEl로 재구성) — 번역 API가 발음을 늦게
+   * 채워주는 경우뿐 아니라, 발음 표기 방식(pronunciationScript/translationLanguage)이
+   * 바뀌었을 때도 이미 그려진 줄이 새 표기를 반영해야 한다(감사 #8 — 예전엔 이미 그린
+   * 줄의 .ey-line-pron이 있으면 건드리지 않아서, 서버가 표기별 발음(pron dict)을 아직
+   * 안 주던 시절의 전제("화면상 차이 없음")가 다국어 배포 이후 거짓이 됐는데도 메인
+   * 패널이 pip.setPronScript만큼 따라가지 못했다).
+   */
   refreshTranslations(): void {
     const pronScript = resolveScript(this.settings);
     this.lineEls.forEach((el, i) => {
       el.querySelector('.ey-line-tr')?.remove();
+      el.querySelector('.ey-line-pron')?.remove();
       const line = this.lines[i];
-      // 번역 API가 발음을 늦게 채워주는 경우 — 렌더 후 붙은 발음도 표시
-      const pron = line ? resolvedPronunciation(line, pronScript) : undefined;
-      if (pron && !el.querySelector('.ey-line-pron')) {
-        el.append(h('div', { className: 'ey-line-pron', text: pron, attrs: { dir: 'auto' } }));
+      if (line) {
+        const pronEl = this.buildPronEl(line, pronScript);
+        if (pronEl) el.append(pronEl);
       }
       if (line?.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
     });

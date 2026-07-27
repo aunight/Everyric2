@@ -775,7 +775,7 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
     // 상태 문구가 아예 뜨지 않는 것으로 관측됐다). 캐시 키에는 언어가 들어 있으니 조회
     // 자체는 옳다 — 잘못된 것은 조회에 닿기 전에 반환하는 이 가드뿐이다.
     clearTranslations();
-    void loadTranslations();
+    void loadTranslations({ languageSwitch: true });
   } else if (patch.showTranslation === true) {
     void loadTranslations();
   } else if (patch.showTranslation === false) {
@@ -803,10 +803,13 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
 
   // 발음 표기 방식(hangul/romaji/kana) 즉시 반영 — pronunciationScript 자체를 바꿨을 때는
   // 물론, 'auto'일 때는 translationLanguage가 바뀌어도 해석 결과가 달라지므로 함께 본다.
-  // 메인 패널의 이미 그려진 줄은 다음 showSyncedLyrics 호출(곡 전환 등)에서 새 표기를 반영한다
-  // — 지금은 서버가 표기별 발음(pron dict)을 아직 안 주므로 화면상 차이는 없다.
+  // 메인 패널도 refreshTranslations로 함께 재렌더한다 — 감사 #8: 서버가 표기별 발음
+  // (pron dict)을 이미 주기 시작한 뒤로(다국어 배포) "화면상 차이 없음" 전제가 거짓이
+  // 됐는데도 pip만 즉시 반영하고 메인 패널은 다음 곡 전환까지 옛 표기를 그대로 보여주고
+  // 있었다.
   if (patch.pronunciationScript !== undefined || patch.translationLanguage !== undefined) {
     pip.setPronScript(resolveScript(settings));
+    overlay?.refreshTranslations();
   }
 
   // 디버그 토글 → 레인 신뢰도 색상도 함께
@@ -1159,7 +1162,41 @@ async function tryWikiTranslationLayer(
   return true;
 }
 
-async function loadTranslations(): Promise<void> {
+/**
+ * 언어 전환(칩·설정) 직후에만 부른다 — 로컬 체인(자막→위키→LLM)을 돌기 전에 서버가
+ * 이미 이 언어 레이어를 갖고 있는지부터 확인한다(감사 #9). 서버는 다른 세션·다른
+ * 사용자가 먼저 만들어 persist=true로 저장해 둔 레이어를 갖고 있을 수 있다 — 이미
+ * 있는 걸 로컬에서 다시 만들면 비용 낭비고(위키 조회·LLM 호출 둘 다 공짜가 아니다),
+ * 서버의 더 신뢰할 만한 레이어를 로컬 결과가 덮어쓸 위험도 있다.
+ *
+ * 초기 로딩(applyLyricsData 끝의 loadTranslations)에는 안 쓴다 — searchLyrics의
+ * FETCH_LYRICS가 이미 그 시점의 lang으로 조회해서, 서버에 레이어가 있었다면 data.
+ * translationLang이 이미 일치해 위의 "이미 다 있다" 조기 반환이 알아서 처리한다.
+ * 여기서 다시 부르면 초기 로딩마다 헛된 재조회가 하나 더 생긴다 — 그래서 언어
+ * "전환" 이벤트로 국한한다.
+ */
+async function tryServerLayerRefresh(
+  data: LyricsData, videoId: string, lang: string,
+): Promise<boolean> {
+  if (data.source !== 'everyric' || !data.synced || !currentSong || serverKnownBad(serverStatus)) return false;
+  const res = await sendToBackground<LyricsData | null>({
+    type: 'FETCH_LYRICS',
+    payload: { ...currentSong, skipLrclib: true, lang },
+  });
+  if (videoId !== currentVideoId) return false;
+  const fresh = res.data;
+  if (!fresh || fresh.source !== 'everyric' || !fresh.synced) return false;
+  if (fresh.translationLang !== lang) return false; // 서버도 아직 이 언어 레이어가 없다
+  if (fresh.lines.length !== data.lines.length) return false; // 인덱스 정합 불확실 — 안전하게 포기
+  if (!fresh.lines.some(l => l.translation)) return false;
+  // applyTranslations 재사용 — translationLang 기록·availableLangs 칩 반영까지 기존
+  // 경로와 동일하게 맞아떨어진다. 발음도 서버가 준 값을 그대로 실어 보낸다(fetchLlmLineMeta
+  // 경로와 달리 이건 서버 자신이 만든 값이라 문자 체계 재검증이 필요 없다).
+  applyTranslations(data, fresh.lines.map(l => ({ original: l.text, translation: l.translation ?? '', pronunciation: l.pronunciation })));
+  return true;
+}
+
+async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promise<void> {
   const data = currentData;
   const videoId = currentVideoId;
   if (!data || !videoId || !settings.showTranslation) return;
@@ -1204,6 +1241,13 @@ async function loadTranslations(): Promise<void> {
     applyTranslations(data, cached);
     return;
   }
+
+  // 언어 전환 직후라면 로컬 체인보다 먼저 서버 레이어부터 다시 확인한다(감사 #9) —
+  // 이미 싱크가 있는 곡이 여기까지 내려왔다는 것은 지금 손에 든 data가 이 언어로 조회된
+  // 게 아니라는 뜻이므로, lang=을 실어 다시 물어서 서버가 이미 만들어 둔 레이어가
+  // 있으면 그걸 쓰고 로컬 자막·위키·LLM 시도를 전부 건너뛴다.
+  if (opts.languageSwitch && await tryServerLayerRefresh(data, videoId, lang)) return;
+  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(서버 재확인 중)
 
   // 서버 번역 레이어가 미스라도(이 아래로 내려왔다는 것 자체가 미스) 내 언어의 유튜브
   // 수동 자막이 있으면 LLM보다 먼저 그것을 쓴다 — 사람이 쓴 자막이 LLM보다 낫다는 원칙은
@@ -1301,12 +1345,26 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   pip.refresh();
 }
 
-/** 원문 스크립트 추정 — 가나/한자가 실질적으로 있으면 ja, 한글이면 ko, 그 밖은 라틴 문자
- *  기준 en으로 추정한다(순서 중요: 가나·한자 우선 판정 — 일본어 곡 가사에도 라틴 단어가
- *  섞여 있어 라틴만 보면 en으로 오판한다). */
+/**
+ * 원문 스크립트 추정 — 가나·한자가 한 글자라도 있으면 ja, 한글이면 ko, 그 밖은 라틴 문자
+ * 기준 en으로 추정한다(순서 중요: 가나·한자 우선 판정 — 일본어 곡 가사에도 라틴 단어가
+ * 섞여 있어 라틴만 보면 en으로 오판한다).
+ *
+ * 가나 임계는 서버(worker.py의 attach_pron_variants·_JA_CHAR_RE)와 정합했다 — 서버는
+ * 같은 문자 클래스([぀-ヿ㐀-鿿])를 `.search()`로만 검사해 사실상 ≥1이다(가나·한자
+ * 구분도, 별도 카운트도 없다). 확장 쪽만 ≥5로 더 보수적이면, 서버는 ja로 정렬한
+ * 곡을 클라이언트는 en/ko로 오판해 expectsPronunciation·대각선(J3)·타언어 위키 표시
+ * 격리 등 이 임계에 기대는 판정이 전부 서버와 어긋난다(감사 #11).
+ *
+ * en곡×ko유저 특례(expectsPronunciation의 `lang==='ko' && script==='en'` 분기)는 이
+ * 임계 완화로 회귀하지 않는다 — 그 특례는 진짜 en 곡(가나·한자가 전혀 없는)에서만
+ * 의미가 있고, 가나·한자가 실제로 섞인 곡은 애초에 en으로 분류돼선 안 됐던 것이라
+ * ja로 재분류되는 쪽이 오히려 옳다(한자 몇 글자 섞인 곡도 ko 유저에게 독음 도움이
+ * 필요하다는 뜻이지, 특례가 지키려던 "진짜 en 곡" 케이스가 아니다).
+ */
 function detectSongScript(texts: string[]): 'ja' | 'ko' | 'en' {
   const joined = texts.join('');
-  if ((joined.match(/[぀-ヿ㐀-鿿]/g)?.length ?? 0) >= 5) return 'ja';
+  if (/[぀-ヿ㐀-鿿]/.test(joined)) return 'ja';
   if ((joined.match(/[가-힣]/g)?.length ?? 0) >= 5) return 'ko';
   return 'en';
 }
@@ -1428,6 +1486,22 @@ function requestTranslation(
   return p;
 }
 
+/**
+ * translate 응답의 legacy pronunciation을 line_meta에 실어도 되는지 — 그 필드는 한글
+ * **전용** 계약이다(LyricLine 문서, adoptSourceResult의 pronLang 가드와 같은 원칙).
+ * resolveScript(settings)가 'hangul'이 아니면(로마자·가나 사용자)애초에 한글을 기대하지
+ * 않으므로 제외하고, 'hangul'이어도 실제 문자열에 한글이 없으면(서버 응답 이상 — 다국어화
+ * 이후 비ko 요청에 romaji/가타카나가 이 필드에 실릴 수 있다는 서버팀 감사 결과와 같은
+ * 종류의 구멍) 제외한다. line_meta.pronunciation은 서버 정렬 입력으로도 쓰이므로, 로마자가
+ * 여기 섞이면 라틴 정렬 붕괴(실측)를 다시 불러들일 수 있다 — 서버도 같은 가드를 갖췄거나
+ * 갖추는 중이지만(merge_line_meta 쪽), 이건 확장 쪽 이중 방어다.
+ */
+function safeHangulPronunciation(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (resolveScript(settings) !== 'hangul') return undefined;
+  return /[가-힣]/.test(raw) ? raw : undefined;
+}
+
 /** LLM 번역·한글 독음을 받아 line_meta로 변환 — 캐시 우선, 실패 시 undefined(원문 정렬 폴백).
  *  LLM이 echo한 original 대신 넘겨받은 원문으로 인덱스 매핑한다 (서버 병합은 텍스트 매칭이라
  *  원문이 정확해야 하고, 서버 번역도 같은 규칙으로 줄을 나누므로 인덱스가 일치). */
@@ -1449,7 +1523,7 @@ async function fetchLlmLineMeta(
       return srcLines
         .map((t, i) => ({
           text: t,
-          pronunciation: translated![i]?.pronunciation?.trim() || undefined,
+          pronunciation: safeHangulPronunciation(translated![i]?.pronunciation?.trim() || undefined),
           translation: translated![i]?.translation?.trim() || undefined,
         }))
         .filter(m => m.pronunciation || m.translation);
@@ -2125,14 +2199,21 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           .filter(l => l.pronunciation || l.wikiTranslation)
           .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.wikiTranslation }))
         : undefined;
-    // 위 lineMeta의 실제 언어 — vocaro 직접 조회는 항상 한국어, miraheze 채택분은 항상
-    // 영어다(attribution.sourceId로 구분 — adoptSourceResult·hasMatchingHumanTranslation과
-    // 같은 관례). 내 translationLanguage와 다를 수 있는 게 표시 격리를 넣은 이유 그 자체인데,
-    // 아래 GENERATE_SYNC에 lineMetaLang을 내 언어로 그대로 보내면 서버가 엉뚱한 언어
-    // 레이어에 이 텍스트를 저장한다 — 표시 격리와 무관하게 이미 있던 버그(감사로 발견).
-    const wikiLineMetaLang = lineMeta && currentData?.source === 'vocaro'
-      ? (currentData.attribution?.sourceId === 'miraheze' ? 'en' : 'ko')
-      : null;
+    // lineMeta의 실제 언어 — 출처별로 고정이다(handleRegenerate와 같은 관례). 내 언어
+    // 설정과 다를 수 있는 게 표시 격리를 넣은 이유 그 자체인데, 그대로 settings.
+    // translationLanguage를 보내면 서버가 엉뚱한 언어 레이어에 저장한다(감사 치명 #2 —
+    // 표시 격리와 무관하게 이미 있던 버그. 아래에서 출처별로 다시 덮어쓴다):
+    // - vocaro 직접 조회 → 항상 한국어. miraheze 채택분 → 항상 영어(attribution.sourceId로
+    //   구분 — adoptSourceResult·hasMatchingHumanTranslation과 같은 관례).
+    // - tri(3줄 붙여넣기 — "검색 결과 복사" 기능이 만드는 원문/독음/번역 형식)는 어느
+    //   위키에서 왔는지 알 길이 없다 — 그 복사 기능 자체가 항상 한국어 독음·번역을
+    //   만들므로 안전값 'ko'를 쓴다.
+    // - 그 무엇도 아니면(LLM이 새로 만들 예정 — needsLlmMeta) 실제로 내 언어로 만들어
+    //   지므로 내 언어 그대로가 맞다 — 그래서 기본값이 settings.translationLanguage다.
+    let lineMetaLang: string = settings.translationLanguage;
+    if (!fromCaption && currentData?.source === 'vocaro' && lineMeta && lineMeta.length > 0) {
+      lineMetaLang = currentData.attribution?.sourceId === 'miraheze' ? 'en' : 'ko';
+    }
 
     // 위키 출처는 싱크에 영구 저장돼 조회 시 푸터에 병기된다 (라이선스 표기).
     // currentData.attribution이 있으면(miraheze 등 SourceResult 채택분) 그 값을 그대로
@@ -2151,7 +2232,10 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
     // line_meta로 넘긴다 — 서버가 독음(ko) 정렬 경로를 타고 발음/번역도 싱크에 저장된다.
     // 실패해도 싱크 생성 자체는 계속한다 (원문 정렬 폴백).
     // 3줄 붙여넣기(tri)는 이미 로컬에 발음·번역이 있어 LLM을 부를 필요가 없다
-    if (!fromCaption && tri && (!lineMeta || lineMeta.length === 0)) lineMeta = tri;
+    if (!fromCaption && tri && (!lineMeta || lineMeta.length === 0)) {
+      lineMeta = tri;
+      lineMetaLang = 'ko'; // 위 주석 참고 — 복사 형식 자체가 항상 한국어
+    }
 
     // LLM 번역·독음이 필요한 경우(수동 붙여넣기·LRCLIB 등)에는 잡을 **먼저** 만들어
     // 다운로드·보컬 분리를 번역과 겹친다. 직렬로 두면 번역이 끝날 때까지 다운로드조차
@@ -2176,11 +2260,11 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           artist: currentSong?.artist ?? undefined,
           // 생성 요청자의 번역 언어 — background가 아직 서버 호출에 넘기지 않으면(구버전
           // 배선) 서버 기본값 "ko"로 생성된다(오늘과 동일한 동작). targetLang은 항상 내
-          // 언어(서버가 LLM으로 새로 만들 번역의 목표)지만, lineMetaLang은 위에서 계산한
-          // wikiLineMetaLang이 있으면 그걸 우선한다 — 이미 위키에서 가져온 텍스트의
-          // 실제 언어를 말해야 하기 때문이다(내 언어와 다를 수 있다).
+          // 언어(서버가 LLM으로 새로 만들 번역의 목표)지만, lineMetaLang은 위에서 출처별로
+          // 이미 계산해 둔 값이다 — 위키·tri에서 가져온 텍스트는 실제 언어가 내 언어와
+          // 다를 수 있기 때문이다.
           targetLang: settings.translationLanguage,
-          lineMetaLang: wikiLineMetaLang ?? settings.translationLanguage,
+          lineMetaLang,
         },
       });
     if (res.error || !res.data) {
