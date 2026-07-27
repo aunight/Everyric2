@@ -571,7 +571,27 @@ async def submit_result(
         if job.status != "processing":
             _LEASES.pop(job_id, None)
             raise HTTPException(status_code=409, detail=f"잡이 이미 {job.status} 상태예요")
-        from everyric2.server.worker import peek_title
+        from everyric2.server.worker import (
+            job_target_lang,
+            peek_title,
+            record_translation_layer,
+            translation_layer_lines,
+        )
+
+        # 인프로세스 저장 경로(_process_job_inner)와 같은 번역 언어 분리 — 프로덕션은
+        # 이 원격 워커 경로로 생성되므로 여기 없으면 새 싱크의 레이어가 영영 안 남고,
+        # 비ko 번역이 legacy 슬롯에 실려 한국어 사용자가 남의 언어를 받는다.
+        target_lang = job_target_lang(job)
+        await record_translation_layer(
+            session,
+            job.video_id,
+            [s.get("text") or "" for s in request.timestamps],
+            translation_layer_lines(request.timestamps),
+            target_lang,
+        )
+        if target_lang != "ko":
+            for seg in request.timestamps:
+                seg.pop("translation", None)
 
         title, artist = peek_title(job_id)
         sync_result = await SyncRepository(session).create(
