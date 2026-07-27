@@ -295,13 +295,20 @@ def merge_line_meta(
         m = by_text.get(_normalize_line(seg.get("text", "") or ""))
         if not m:
             continue
-        if m.get("pronunciation"):
+        # seg["pronunciation"]은 한글 전용 legacy 계약이다(정렬 입력과 같은 계약 —
+        # _alignable_pron 재사용). line_meta의 발음이 romaji·가나(비ko 사용자의 line_meta,
+        # 또는 캐시에 섞여 들어온 값)면 병합을 스킵한다 — 안 그러면 legacy 슬롯에 로마자가
+        # 박혀 attach_pron_variants가 그 위에 pron["hangul"]=romaji를 얹고, 재생성 없이는
+        # 안 지워지는 오염으로 모든 ko 사용자가 한글 칸에서 로마자를 보게 된다(감사 치명 #1
+        # 잔여 — _alignable_pron 가드는 정렬 입력만 막았고 이 병합 경로가 남아 있었다).
+        alignable_pronunciation = _alignable_pron(m.get("pronunciation"))
+        if alignable_pronunciation:
             # 오디오 심판이 고른 독음은 line_meta 값으로 되돌리지 않는다. line_meta의 발음이
             # 바로 심판이 **오디오 점수로 이미 진 기본값**이고, pron_segments(음절 스팬)는
             # 이긴 후보 기준이라 표기만 갈아끼우면 음절 수가 어긋난다(캐시 재사용·늦은 메타
             # 병합 경로에서 발생). 재병합은 표시 메타를 채우는 경로일 뿐 판정 지점이 아니다.
             if not _referee_switched(seg):
-                seg["pronunciation"] = m["pronunciation"]
+                seg["pronunciation"] = alignable_pronunciation
             _attach_pron_segments(seg)
         if with_translation and m.get("translation"):
             seg["translation"] = m["translation"]
