@@ -327,8 +327,20 @@ class AlignmentSettings(BaseSettings):
     )
 
     fuse_original_chars: bool = Field(
-        default=True,
-        description="Fuse measured original-text (ja) character timing into the pronunciation (ko) "
+        default=False,
+        description="OFF SINCE 2026-07-28 — twice in one day the user heard fused lines as WORSE "
+        "than the back-mapping, and the second report survived the median disagreement gate: on "
+        "JW3N-HvU0MA the fused フラッシュバック fired フ+ラ within 0.04s then went silent for "
+        "0.56s and stretched バック into the next phrase's singing, while the ko pron syllables "
+        "(후~쿠) flowed evenly and correctly — a LOCAL ja distortion inside a line whose overall "
+        "median disagreement passes any sane threshold (the healthy 13-char tail dilutes it). "
+        "The clumping this feature existed to fix (3+ char simultaneous starts, 38-59% of chars) "
+        "is now solved by _subdivide_clumped_words, which the user verified sounds right on the "
+        "very lines the gate had reverted. What fusion still buys — measured intra-syllable char "
+        "detail — is below the resolution that matters for CJK karaoke (syllable-level), and what "
+        "it risks is exactly what got reported. Turning it on again should come with a per-word "
+        "(not per-line-median) disagreement check. "
+        "ORIGINAL RATIONALE (kept for the record): fuse measured ja char timing into the ko "
         "alignment. On the ko path the ORIGINAL characters never touch the audio: their spans are a "
         "three-stage back-mapping (aligned Korean syllable -> mora -> original char, "
         "text/reading.py::map_pron_alignment_to_line), so even a perfectly placed line has a "

@@ -370,10 +370,14 @@ def test_original_align_needed_gate():
         assert _original_align_needed(conf, 0.002, False) is _dual_align_should_run(conf, 0.002)
 
 
-def test_fuse_switch_defaults_on_and_is_overridable(monkeypatch):
-    assert AlignmentSettings().fuse_original_chars is True
-    monkeypatch.setenv("EVERYRIC_ALIGNMENT_FUSE_ORIGINAL_CHARS", "false")
+def test_fuse_switch_defaults_off_and_is_overridable(monkeypatch):
+    # 기본 OFF (2026-07-28): 같은 날 두 번의 사용자 청취가 융합 줄을 역매핑보다 나쁘게
+    # 들었고, 두 번째(フラッシュバック 국소 왜곡)는 라인 중앙값 게이트를 통과했다.
+    # 융합의 존재 이유였던 뭉침은 _subdivide_clumped_words가 해결한다 — 근거는
+    # settings.fuse_original_chars description.
     assert AlignmentSettings().fuse_original_chars is False
+    monkeypatch.setenv("EVERYRIC_ALIGNMENT_FUSE_ORIGINAL_CHARS", "true")
+    assert AlignmentSettings().fuse_original_chars is True
 
 
 # ---- 직렬화 계약: join(words)==text, 단조 ---------------------------------------
