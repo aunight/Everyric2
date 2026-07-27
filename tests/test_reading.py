@@ -279,3 +279,60 @@ def test_ampersand_syllable_keeps_its_karaoke_timing_instead_of_vanishing():
     # 단조 증가·전 커버 — 다른 회귀 테스트와 같은 기준
     for prev, cur in zip(segments, segments[1:]):
         assert cur["start"] >= prev["end"] - 1e-9
+
+
+# ---------------------------------------------------------------------------
+# 부작용 검증 — &가 인접 글자와 붙어 있으면(공백 없이) 하나의 ASCII 런으로 뭉친다.
+#
+# _ASCII_WORD_RE에 &/＆를 word 문자로 추가한 부작용이다: "R&B"는 예전엔 R(1모라) +
+# B(1모라)였고 &는(예전 정규식으로도) 모라가 안 생겨 조용히 빠졌다. 지금은 "R&B"
+# 전체가 ASCII 모라 1개(글자 런에 공백·비ASCII 경계가 없으면 뭉치는 기존 규칙,
+# Don't Stop → 2모라 테스트와 같은 매커니즘)다. R·앤·B 세 음절이 이제 그 모라
+# 하나에 다 붙는데, DP는 ASCII 모라에 여러 음절을 몰아 배정하는 것을 이미 저비용으로
+# 허용한다(_syll_extra, test_align_pron_to_moras_ascii_unit_allows_one_to_many와 같은
+# 축) — 그래서 품질은 유지된다. 다만 R·B 각각의 **낱글자 정밀 타이밍**은 잃는다(R&B
+# 구간 전체를 음절 수만큼 균등 분할하는 값으로 근사된다) — & 이전에는 R·B가 각자
+# 정밀 모라였으니 그만큼은 실제 트레이드오프다. 실측(아래): quality는 여전히 0.6
+# 문턱을 크게 웃돌고(0.87~0.9) 세그먼트 개수가 음절 수와 정확히 맞아 하나도 안
+# 빠진다 — Don't Stop류 기존 패턴보다 비율이 클 뿐 새로운 실패 유형은 아니다.
+# ---------------------------------------------------------------------------
+
+
+def test_ampersand_merges_into_an_adjacent_ascii_run_when_there_is_no_gap():
+    # "R&B" — 공백 없이 붙어 있으면 R·&·B가 ASCII 모라 1개로 뭉친다(기존 ASCII 런
+    # 규칙 그대로 적용된 것뿐 — &만의 특별 취급이 아니다)
+    moras = text_to_moras("R&B")
+    assert [(m.kana, m.char_start, m.char_end, m.is_ascii) for m in moras] == [
+        ("R&B", 0, 3, True),
+    ]
+
+    moras2 = text_to_moras("AT&T")
+    assert [(m.kana, m.is_ascii) for m in moras2] == [("AT&T", True)]
+
+
+def test_ampersand_merged_run_still_aligns_at_high_quality():
+    """R&B류(&가 다른 라틴 글자에 바로 붙은 줄)가 정렬 품질·타이밍 계약을 지킨다.
+
+    _QUALITY_THRESHOLD(reading.py)는 0.6 — 그보다 한참 위(0.87 이상)를 못박는다.
+    모든 음절이 세그먼트를 받는다(하나도 안 빠진다)는 것도 함께 확인한다 — 이게
+    본질적으로 지켜야 하는 계약이고, R·B의 낱글자 정밀도 손실은 이 테스트가 다루는
+    범위 밖이다(위 주석 참고, 알려진 트레이드오프).
+    """
+    from everyric2.text.pron_style import wiki_pronunciation
+
+    for text in ("R&B", "これはR&Bです", "AT&T"):
+        pron = wiki_pronunciation(text)
+        moras = text_to_moras(text)
+        syllables, quality = align_pron_to_moras(moras, pron)
+        assert quality >= 0.85, (text, pron, quality)  # 0.6 문턱보다 한참 위
+        assert len(syllables) == len([c for c in pron if not c.isspace()])
+        assert all(s.resolved for s in syllables), (text, pron)
+
+        char_spans = [
+            (c, 1.0 + i * 0.15, 1.15 + i * 0.15)
+            for i, c in enumerate(c for c in text if not c.isspace())
+        ]
+        segments = pron_segments_for_line(char_spans, text, pron)
+        assert segments is not None
+        assert len(segments) == len(syllables), (text, "세그먼트 일부가 빠졌다")
+        assert all(s["start"] < s["end"] for s in segments)
