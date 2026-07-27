@@ -1084,7 +1084,11 @@ async function loadTranslations(): Promise<void> {
     return;
   }
   overlay?.setTranslationStatus(t('content.translation.generating'));
+  // 제목바 언어 칩 로딩 표시 — 응답이 오면(성공이든 실패든) 바로 아래서 끈다.
+  // 곡이 바뀌면 applyLyricsData가 이미 null로 되돌려 놨을 수 있어 순서가 안 꼬인다.
+  overlay?.setLangPending(lang);
   const lines = await requestTranslation(videoId, srcLines);
+  overlay?.setLangPending(null);
   if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜
   if (!settings.showTranslation || settings.translationLanguage !== lang) return;
 
@@ -1115,6 +1119,16 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   // 언어로 번역을 적용했다"는 사실만은 클라이언트가 스스로 안다(loadTranslations의
   // translationLangMatches 가드가 이 값을 읽는다)
   data.translationLang = settings.translationLanguage;
+  // 제목바 언어 칩 — 이 언어의 번역이 방금 실제로 생겼으니 서버 재조회 없이 "보유"로
+  // 바로 반영한다(everyric 소스에만 의미가 있다 — availableLangs는 그 서버 레이어 개념).
+  if (data.source === 'everyric') {
+    data.availableLangs = data.availableLangs?.includes(data.translationLang)
+      ? data.availableLangs
+      : [...(data.availableLangs ?? []), data.translationLang];
+    // availableLangsForChip을 거쳐야 곡 자신의 언어 칩이 계속 "보유" 스타일을 유지한다 —
+    // 여기서 data.availableLangs를 그대로 넘기면 방금 병합한 목록으로 덮어써서 잃는다.
+    if (currentData === data) overlay?.setAvailableLangs(availableLangsForChip(data));
+  }
   let pronApplied = false;
   data.lines.forEach((line, i) => {
     const t = translated[i]?.translation?.trim();
@@ -1173,6 +1187,23 @@ function expectsPronunciation(texts: string[]): boolean {
   if (script === lang) return false; // 대각선 — 번역·발음 둘 다 생략
   if (lang === 'ko' && script === 'en') return false; // en 원문 + target=ko 특례
   return true;
+}
+
+/**
+ * 제목바 언어 칩의 «보유» 목록 — everyric 소스가 아니거나 서버가 available_langs 자체를
+ * 안 주면(구서버) null(칩 줄 전체 숨김). 있으면 곡 자신의 스크립트 언어를 항상 합쳐 넣는다.
+ *
+ * 곡 자신의 언어는 번역 레이어가 **절대 생기지 않는다**(대각선 — expectsPronunciation의
+ * `script === lang` 분기와 같은 이유로 서버가 번역 자체를 건너뛴다). 서버 목록만 그대로
+ * 쓰면 이 언어 칩이 영원히 "미보유"로 보이는데, 클릭해도 실제로 생성되는 게 없고 그냥
+ * 원문만 보기로 전환될 뿐이다(대각선 생략이 번역 줄을 자연히 비운다) — "미보유·클릭해
+ * 생성" 문구를 달아 두면 사용자는 생성이 실패했다고 오해한다. 그래서 곡 언어는 항상
+ * "보유" 스타일로 취급한다.
+ */
+function availableLangsForChip(data: LyricsData | null): string[] | null {
+  if (!data || data.source !== 'everyric' || !data.availableLangs) return null;
+  const songLang = detectSongScript(data.lines.map(l => l.text));
+  return data.availableLangs.includes(songLang) ? data.availableLangs : [...data.availableLangs, songLang];
 }
 
 /**
@@ -1644,6 +1675,11 @@ function applyLyricsData(data: LyricsData | null): void {
   panel.setAttribution(attribution ?? null);
   // 다른 영상 싱크를 빌려온 상태면 출처 배지·검색 시트 해제 UI에 반영
   panel.setLinked(data?.source === 'everyric' ? data.linked ?? null : null);
+  // 제목바 언어 칩 — everyric 소스에만 의미가 있다(availableLangs는 서버 번역 레이어 목록,
+  // 곡 자신의 언어는 availableLangsForChip이 항상 합쳐 넣는다 — 대각선 칩 참고).
+  // 곡이 바뀌면 이전 곡에 걸려 있던 로딩 표시도 함께 지운다.
+  panel.setAvailableLangs(availableLangsForChip(data));
+  panel.setLangPending(null);
 
   if (!data) {
     // 싱크가 없다고 PiP를 닫지 않는다 — 재생목록을 돌리다 가사 없는 곡이 나오면

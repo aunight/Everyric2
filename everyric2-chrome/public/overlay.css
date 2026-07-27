@@ -250,6 +250,65 @@
 
 .ey-header:active { cursor: grabbing; }
 
+/* 제목바 언어 칩 — 곡이 지원하는 번역 언어를 한눈에 보여주고 클릭으로 바로 전환한다.
+   상태 4종: 현재 선택(accent, "노란색") / 보유(밝은 회색) / 미보유(어두운 회색) / 로딩(펄스) */
+.ey-lang-chips {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 8px 14px;
+  flex-shrink: 0;
+}
+
+.ey-lang-chip {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+/* 보유 — 밝은 회색, 클릭하면 바로 전환 */
+.ey-lang-chip.available {
+  color: var(--ey-text);
+  background: var(--ey-elev);
+  border-color: var(--ey-border);
+}
+.ey-lang-chip.available:hover { background: var(--ey-elev-hover); }
+
+/* 미보유 — 어두운 회색, 클릭하면 전환 + 그 자리에서 번역 생성 시작 */
+.ey-lang-chip.unavailable {
+  color: var(--ey-text-faint);
+  background: transparent;
+  border-color: var(--ey-border);
+}
+.ey-lang-chip.unavailable:hover { color: var(--ey-text-dim); border-color: var(--ey-text-faint); }
+
+/* 현재 선택 — accent(다크 테마 기본값이 노란 계열) */
+.ey-lang-chip.current {
+  color: var(--ey-accent);
+  background: var(--ey-accent-soft);
+  border-color: var(--ey-accent);
+  cursor: default;
+}
+
+/* 로딩 — 방금 클릭해 번역을 요청한 언어. 펄스로 "진행 중"임을 표시 */
+.ey-lang-chip.pending {
+  color: var(--ey-accent);
+  background: var(--ey-accent-soft);
+  border-color: var(--ey-accent);
+  cursor: wait;
+  animation: ey-lang-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes ey-lang-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .ey-header-left {
   display: flex;
   align-items: center;

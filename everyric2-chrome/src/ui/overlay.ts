@@ -173,6 +173,15 @@ export class LyricsOverlay {
     sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean;
   } | null = null;
 
+  /** 제목바 언어 칩 줄 — 곡별로 보유/미보유 언어가 다르므로 setAvailableLangs로만 보이거나 숨는다 */
+  private langChipsRow: HTMLDivElement;
+  private langChipButtons: { code: string; btn: HTMLButtonElement }[] = [];
+  /** 이 곡에 이미 번역이 저장된 언어들 — content가 setAvailableLangs로 밀어넣는다.
+   *  null이면(구서버·싱크 없음) 칩 줄 자체를 숨긴다 */
+  private availableLangs: string[] | null = null;
+  /** 방금 클릭해 요청을 보낸 언어 — 응답 오기 전까지 그 칩만 로딩 표시(펄스) */
+  private pendingLang: string | null = null;
+
   private geometry: PanelGeometry;
   private applyingGeometry = false;
   private saveGeomTimer = 0;
@@ -214,6 +223,30 @@ export class LyricsOverlay {
       ),
       h('div', { className: 'ey-actions' }, this.pipBtn, this.regenBtn, searchBtn, gearBtn, this.collapseBtn, closeBtn),
     );
+
+    // 제목바 언어 칩 — 이 곡에 어떤 언어가 준비돼 있는지 한눈에 보여주고 클릭 한 번으로
+    // 전환한다. 라벨은 언어 자신의 이름으로 고정(한국어/ENG/日本語) — langSelect의 언어명과
+    // 같은 관례로 uiLanguage로 번역하지 않는다(어느 표시 언어에서도 자기 언어를 바로 찾아야 함).
+    // availableLangs가 없으면(구서버·아직 싱크 없음) 줄 전체를 숨긴다 — setAvailableLangs 참고.
+    const LANG_CHIP_DEFS: [string, string][] = [['ko', '한국어'], ['en', 'ENG'], ['ja', '日本語']];
+    this.langChipButtons = LANG_CHIP_DEFS.map(([code, label]) => {
+      const btn = h('button', {
+        className: 'ey-lang-chip',
+        text: label,
+        attrs: { type: 'button' },
+        on: {
+          click: () => {
+            if (code === this.settings.translationLanguage) return;
+            // showTranslation을 함께 켠다 — 꺼진 채로는 언어를 바꿔도 아무것도 안 보인다
+            // (설정 시트의 langSelect는 이걸 안 해도 됐다 — 거기는 이미 번역 화면을 보는 중)
+            this.callbacks.onSettingsChange({ translationLanguage: code, showTranslation: true });
+          },
+        },
+      });
+      return { code, btn };
+    });
+    this.langChipsRow = h('div', { className: 'ey-lang-chips' }, ...this.langChipButtons.map(c => c.btn));
+    this.langChipsRow.style.display = 'none';
 
     this.banner = h('div', { className: 'ey-banner' });
     this.banner.style.display = 'none';
@@ -302,7 +335,7 @@ export class LyricsOverlay {
     this.debugPanelEl.style.display = 'none';
 
     this.panel = h('div', { className: 'ey-panel' },
-      this.header, this.serverBar, this.banner, this.genChip, this.genList, this.noticeChip,
+      this.header, this.langChipsRow, this.serverBar, this.banner, this.genChip, this.genList, this.noticeChip,
       this.warnBar, this.body, this.resumeChip, this.footer, this.debugStrip, this.debugPanelEl,
     );
     // 패널 안 타이핑(검색창·가사 붙여넣기)이 유튜브 전역 단축키(스페이스=재생/정지,
@@ -666,6 +699,45 @@ export class LyricsOverlay {
     info: { sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean } | null,
   ): void {
     this.linkedInfo = info;
+  }
+
+  /** 제목바 언어 칩의 "보유" 목록 — null이면(구서버·싱크 없음) 칩 줄 자체를 숨긴다.
+   *  곡이 바뀔 때(applyLyricsData)와, 번역이 새로 성공 적용될 때(다른 언어가 막 생겼을 때)
+   *  둘 다 호출된다. */
+  setAvailableLangs(langs: string[] | null): void {
+    this.availableLangs = langs;
+    this.renderLangChips();
+  }
+
+  /** 방금 클릭해 요청을 보낸 언어 — 응답이 올 때까지(성공이든 실패든) 그 칩만 로딩 표시.
+   *  null로 부르면(항상 요청 직후 한 번) 로딩을 끈다. */
+  setLangPending(lang: string | null): void {
+    this.pendingLang = lang;
+    this.renderLangChips();
+  }
+
+  private renderLangChips(): void {
+    if (!this.availableLangs) {
+      this.langChipsRow.style.display = 'none';
+      return;
+    }
+    this.langChipsRow.style.display = '';
+    for (const { code, btn } of this.langChipButtons) {
+      const isCurrent = code === this.settings.translationLanguage;
+      const isPending = code === this.pendingLang;
+      const isAvailable = this.availableLangs.includes(code);
+      btn.classList.toggle('current', isCurrent && !isPending);
+      btn.classList.toggle('pending', isPending);
+      btn.classList.toggle('available', !isCurrent && !isPending && isAvailable);
+      btn.classList.toggle('unavailable', !isCurrent && !isPending && !isAvailable);
+      btn.title = isPending
+        ? t('overlay.langChip.generating')
+        : isCurrent
+          ? t('overlay.langChip.current')
+          : isAvailable
+            ? t('overlay.langChip.switchTo')
+            : t('overlay.langChip.generateFor');
+    }
   }
 
   /** SEARCH_CANDIDATES 응답 반영 — 검색 상태가 아니면 무시 (stale 응답 방지) */
@@ -1081,6 +1153,8 @@ export class LyricsOverlay {
 
   applySettings(settings: Settings): void {
     this.settings = settings;
+    // 번역 언어가 설정 시트·다른 경로로 바뀌어도 제목바 칩의 "현재 선택"이 따라가야 한다
+    this.renderLangChips();
     this.panel.classList.remove('ey-fs-small', 'ey-fs-medium', 'ey-fs-large');
     this.panel.classList.add(`ey-fs-${settings.fontSize}`);
     // 테마 판정은 lib/theme.ts 한 곳에서만 — PiP도 content가 같은 값을 받아 칠한다

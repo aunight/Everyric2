@@ -1433,5 +1433,17 @@
   },
   "serverError_captions_no_text": {
     "message": "This caption track has no text — pick a different track or paste the lyrics"
+  },
+  "overlay_langChip_generating": {
+    "message": "Generating translation…"
+  },
+  "overlay_langChip_current": {
+    "message": "Currently selected language"
+  },
+  "overlay_langChip_switchTo": {
+    "message": "Switch to this language"
+  },
+  "overlay_langChip_generateFor": {
+    "message": "Generate a translation in this language"
   }
 }

@@ -116,6 +116,10 @@ export interface LyricsData {
    *  뒤 세션 내에서 직접 채운 값. undefined면 "모름"(구서버 또는 아직 안 채워짐) — 그 경우
    *  기존 규칙(모든 줄에 translation이 있으면 충분)으로 폴백한다. */
   translationLang?: string | null;
+  /** 서버 EveryricSyncResponse.available_langs를 그대로 옮긴 값 — 제목바 언어 칩의
+   *  "보유" 판정 기준. content.applyTranslations가 새 언어 번역을 성공 적용하면 그
+   *  언어를 이 배열에 직접 추가한다(서버 재조회 없이 즉시 "보유"로 반영하기 위함). */
+  availableLangs?: string[];
 }
 
 export interface LRCLibTrack {
@@ -254,6 +258,9 @@ export interface EveryricSyncResponse {
   /** 지금 실린 세그먼트 translation의 언어 — lang 쿼리 파라미터를 준 요청에만 의미가 있다.
    *  lang 없이 조회하면 항상 undefined(구버전 서버와 응답 필드 구성이 완전히 동일해야 함) */
   translation_lang?: string | null;
+  /** 이 곡에 이미 저장된 번역 레이어의 언어 목록 — 제목바 언어 칩이 "보유"/"미보유"를
+   *  가르는 데 쓴다. 구버전 서버는 이 필드 자체가 없으므로 undefined → 칩을 숨긴다. */
+  available_langs?: string[] | null;
 }
 
 /** GET /api/sync/list 항목 — 링크 후보 선택용 */

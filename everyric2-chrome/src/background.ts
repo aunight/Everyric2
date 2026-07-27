@@ -354,6 +354,8 @@ async function fetchLyricsChain(
         // lang 파라미터를 준 조회에만 의미가 있다 — 구서버·미지정이면 undefined로 남아
         // content.ts의 translationLangMatches 가드가 예전 규칙으로 동작한다
         translationLang: sync.translation_lang ?? undefined,
+        // 제목바 언어 칩용 — 구서버는 필드 자체가 없어 undefined(칩 숨김)
+        availableLangs: sync.available_langs ?? undefined,
         debugMeta: sync.debug ?? undefined,
         attribution: fromWireAttribution(sync.attribution),
         tempo: sync.tempo ?? undefined,
