@@ -282,12 +282,6 @@
   "panels_paste_emptyWarning": {
     "message": "가사를 먼저 붙여넣어 주세요"
   },
-  "panels_paste_closeToggle": {
-    "message": "붙여넣기 닫기"
-  },
-  "panels_paste_openToggle": {
-    "message": "가사 직접 붙여넣기"
-  },
   "panels_serverDown_text": {
     "message": "서버를 쓸 수 없어요"
   },

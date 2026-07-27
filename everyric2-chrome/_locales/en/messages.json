@@ -282,12 +282,6 @@
   "panels_paste_emptyWarning": {
     "message": "Paste lyrics first"
   },
-  "panels_paste_closeToggle": {
-    "message": "Close paste box"
-  },
-  "panels_paste_openToggle": {
-    "message": "Paste lyrics manually"
-  },
   "panels_serverDown_text": {
     "message": "Server unavailable"
   },

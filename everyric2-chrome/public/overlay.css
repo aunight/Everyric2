@@ -1290,7 +1290,7 @@ body.ey-lane-active .ey-pip-video { flex: 1 1 auto; max-height: none; }
 .ey-paste-wrap {
   display: flex;
   flex-direction: column;
-  align-items: center; /* 토글 버튼·붙여넣기 섹션이 다른 요소들처럼 가운데 정렬되게 */
+  align-items: center; /* 붙여넣기 섹션이 다른 요소들처럼 가운데 정렬되게 */
   gap: 8px;
   width: 100%;
 }

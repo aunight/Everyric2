@@ -277,8 +277,15 @@ export function buildLyricsSearchLinks(song: SongInfo | null): HTMLDivElement {
 
 // ── 가사 붙여넣기 섹션 ────────────────────────────────────────────
 
-/** 가사 직접 붙여넣기 섹션 (토글 접힘) — 빈 상태·검색 시트 공용 */
-export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDivElement {
+/**
+ * 가사 직접 붙여넣기 섹션 — 텍스트영역+생성 버튼을 **처음부터** 보여준다.
+ *
+ * 예전에는 접힌 토글 버튼("가사 직접 붙여넣기")을 한 번 눌러야 이 폼이 나타나는
+ * 2단계였다 — 사용자 제보("붙여넣기 버튼 한 번 누르고 나서야 메뉴 뜨는 거 없애줘")로
+ * 그 접힘 단계 자체를 없앴다(2026-07). 생성 버튼의 활성/비활성·유효성 검사(빈 채로
+ * 누르면 안내)·attribution 입력은 그대로다 — 폼 자체는 손대지 않고 항상 보이게만 했다.
+ */
+export function buildPasteSection(ctx: PanelContext): HTMLDivElement {
   const lyricsArea = h('textarea', {
     className: 'ey-textarea',
     attrs: {
@@ -325,20 +332,7 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
       ctx.callbacks.onGenerate(cleaned.text, attributionInput.value.trim() || undefined);
     }),
   );
-  pasteSection.style.display = startOpen ? '' : 'none';
-
-  const pasteToggle = h('button', {
-    className: 'ey-secondary-btn',
-    text: startOpen ? t('panels.paste.closeToggle') : t('panels.paste.openToggle'),
-    on: {
-      click: () => {
-        const hidden = pasteSection.style.display === 'none';
-        pasteSection.style.display = hidden ? '' : 'none';
-        pasteToggle.textContent = hidden ? t('panels.paste.closeToggle') : t('panels.paste.openToggle');
-      },
-    },
-  });
-  return h('div', { className: 'ey-paste-wrap' }, pasteToggle, pasteSection);
+  return h('div', { className: 'ey-paste-wrap' }, pasteSection);
 }
 
 // ── 상태 화면 ────────────────────────────────────────────────────
@@ -412,7 +406,7 @@ export function buildEmptyState(ctx: PanelContext, song: SongInfo | null): HTMLD
     }),
     buildLyricsSearchLinks(song),
     h('div', { className: 'ey-divider' }),
-    buildPasteSection(ctx, true),
+    buildPasteSection(ctx),
   );
 }
 

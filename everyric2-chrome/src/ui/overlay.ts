@@ -813,8 +813,9 @@ export class LyricsOverlay {
    */
   hasPreservableContent(): boolean {
     if (this.stateKind === 'synced' || this.stateKind === 'plain' || this.stateKind === 'search') return true;
-    // 빈 상태·오류 화면에도 붙여넣기 칸이 열려 있다(panels.buildEmptyState는 펼친 채로 만든다) —
-    // 타이핑한 본문이 있으면 그것이 이 화면에서 가장 값진 것이다
+    // 빈 상태·검색 시트의 붙여넣기 칸은 이제 항상 열려 있다(buildPasteSection이 접힘
+    // 토글 없이 상시 노출한다, 2026-07) — 타이핑한 본문이 있으면 그것이 이 화면에서
+    // 가장 값진 것이다
     return [...this.body.querySelectorAll<HTMLTextAreaElement>('textarea')]
       .some(ta => ta.value.trim().length > 0);
   }

@@ -118,6 +118,63 @@ def test_candidate_queries_keeps_index_behaviour_without_noise_drop():
     assert "熱異常" in with_noise_drop
 
 
+# ── title_match: 커버 표기 확장(실측, 2026-07) ────────────────────
+#
+# 사용자 제보(«커버를 이을 때 한국어나 영어 cover인 걸 잘 인식 못해»)를 실제 유튜브
+# 커버 제목 표본(oEmbed 조회 가능한 공개 영상)으로 재현·확정했다. 두 표에 걸쳐 있다:
+# (1) カバー(가타카나)·불러보/불러봤 활용형이 잡토큰 목록에 없어 축약되지 않았다.
+# (2) 한국어 커버 제목이 세로줄(｜) 대신 흔히 쓰는 ㅣ(U+3163, 한글 자모 "이")가 구분자
+#     집합에 없어, 곡명이 뒤따르는 장식과 통째로 붙어 다른 후보와 매칭이 안 됐다.
+
+
+def test_strip_noise_tokens_removes_katakana_and_korean_cover_conjugations():
+    for raw, kept in [
+        ("熱異常 カバー", "熱異常"),
+        ("熱異常 불러보았다", "熱異常"),  # 문어체 과거(비축약)
+        ("熱異常 불러봤음", "熱異常"),  # 구어체 과거+명사형(축약)
+        ("熱異常 불러봄", "熱異常"),  # 명사형
+        ("熱異常 불러본", "熱異常"),  # 관형형
+        ("熱異常 불러보는", "熱異常"),  # 현재 관형형
+        ("熱異常 불러봤다", "熱異常"),  # 기존 항목 — 회귀 확인
+    ]:
+        assert title_match.normalize_title(title_match.strip_noise_tokens(raw)) == kept
+
+
+def test_ㅣ_separator_isolates_the_song_name_from_trailing_decoration():
+    # 실측: 「【MV】 로키 (ROKI) ㅣ한국어 Coverㅣ【레볼루션 하트】」— ㅣ가 구분자가 아니면
+    # "로키"가 뒤 장식과 통째로 붙어 다른 후보와 절대 매칭되지 않는다(길이비가 항상 낮다).
+    candidates = title_match.candidate_queries(
+        "【MV】 로키 (ROKI) ㅣ한국어 Coverㅣ【레볼루션 하트】", drop_noise=True
+    )
+    assert "로키" in candidates
+
+
+def test_two_real_korean_cover_titles_of_the_same_song_now_match():
+    """실측 재현 — 사고 그 자체: 실제 한국어 커버 제목 두 개(서로 다른 업로더, 같은 곡)가
+    수정 전에는 서로 매칭되지 않았다(None). ㅣ 구분자 인식이 원인이었다."""
+    a = "【MV】 로키 (ROKI) ㅣ한국어 Coverㅣ【레볼루션 하트】"
+    b = "【Han＆Guriri】로키/ROKI 한국어 커버 (ロキ Korean cover)"
+    score, _ = title_match.match_score(a, b)
+    assert score == 1.0
+
+
+@pytest.mark.parametrize(
+    "cover_title",
+    [
+        "ロキ/白上フブキ&影山シエン(Cover)",
+        "ロキ / 輪堂千速 ( cover )",
+        "【下田麻美】ロキ／みきとP《歌ってみた》",
+        "ロキ 歌ってみた / ナナヲアカリ",
+        "【歌ってみた】ロキ / みきとP【天神子兎音cover】",
+    ],
+)
+def test_real_japanese_cover_titles_match_the_original(cover_title):
+    # 실제 「ロキ」 커버 업로드 제목 표본(가타카나 cover·괄호 cover·歌ってみた 조합)이
+    # 위키 원제와 정확히 일치한다(score=1.0) — 회귀 없이 여전히 잘 잡힌다.
+    score, _ = title_match.match_score(cover_title, "ロキ (Roki)")
+    assert score == 1.0
+
+
 # ── title_match: 매칭 점수 ────────────────────────────────────────
 
 

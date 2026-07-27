@@ -282,12 +282,6 @@
   "panels_paste_emptyWarning": {
     "message": "先に歌詞を貼り付けてください"
   },
-  "panels_paste_closeToggle": {
-    "message": "貼り付け欄を閉じる"
-  },
-  "panels_paste_openToggle": {
-    "message": "歌詞を直接貼り付け"
-  },
   "panels_serverDown_text": {
     "message": "サーバーが利用できません"
   },
