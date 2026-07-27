@@ -15,10 +15,15 @@ export interface SyncHandlers {
  * 창이라 자기 rAF가 계속 돌므로, 이 tick은 상태 공급자로만 쓰고 그리기는 PiP가 한다
  * (ui/pip.ts의 state 필드 주석 참조).
  */
+/** 시크 되돌림 가드 판정 창(ms) — 근거는 seekToVideoTime 주석 */
+const SEEK_GUARD_MS = 1200;
+
 export class SyncEngine {
   private video: HTMLVideoElement | null = null;
   private times: number[] = [];
   private offset = 0;
+  /** 직전 시크의 되돌림 감시 상태 — seekToVideoTime 주석 참조 */
+  private seekGuard: { target: number; prev: number; until: number } | null = null;
   // findIndex()가 "첫 라인 이전"을 -1로 반환하므로, 최초 tick에서도
   // onLineChange(-1)가 발화되도록 초기값은 -2를 쓴다
   private lastIndex = -2;
@@ -50,6 +55,7 @@ export class SyncEngine {
     document.removeEventListener('visibilitychange', this.handleVisibility);
     this.video = null;
     this.times = [];
+    this.seekGuard = null;
   }
 
   isRunning(): boolean {
@@ -82,7 +88,32 @@ export class SyncEngine {
 
   /** time은 가사 타임라인 기준. 실제 비디오 시각으로 역변환해 시크한다. */
   seekTo(time: number): void {
-    if (this.video) this.video.currentTime = Math.max(0, time - this.offset);
+    this.seekToVideoTime(Math.max(0, time - this.offset));
+  }
+
+  /**
+   * 비디오 시간 기준 시크 (진행바 등 비율 UI용) — 되돌림 가드가 함께 걸린다.
+   *
+   * 실사용 보고(2026-07-27): 일시정지↔재생을 오간 뒤 가사 줄 클릭으로 시크하면 그
+   * 위치로 가지 않고 «시크 직전 위치»로 되돌아가 재생됐다. 확장 코드에서 currentTime을
+   * 쓰는 곳은 이 클래스와 진행바 클릭 둘뿐이고 둘 다 시간을 저장·복원하지 않으므로,
+   * 되돌리는 주체는 유튜브 플레이어 자신이다(#movie_player는 격리 월드라 공식 API로
+   * 시크할 수 없어 raw currentTime 대입이 유일한 경로다 — yt-player.ts 주석).
+   *
+   * 가드는 «시크 직전 위치 근처(±2s)로의 복귀»만 되돌림으로 판정한다 — 목표 도달·
+   * 사용자의 새 수동 시크(임의 위치)는 건드리지 않고, 재적용은 1회뿐이라 최악의 경우에도
+   * 유튜브 진행바 조작과 한 번 겨루고 끝난다. 판정 창은 시크 후 1.2초지만 일시정지
+   * 동안에는 계속 연장된다 — 「멈춘 채 시크 → 한참 뒤 재생」 흐름에서 되돌림은 재생
+   * 시점에 일어나기 때문이다. 발동 시 console.debug로 남겨 원인 추적 증거를 만든다.
+   */
+  seekToVideoTime(sec: number): void {
+    if (!this.video) return;
+    this.seekGuard = {
+      target: sec,
+      prev: this.video.currentTime,
+      until: performance.now() + SEEK_GUARD_MS,
+    };
+    this.video.currentTime = sec;
   }
 
   getCurrentTime(): number {
@@ -112,8 +143,38 @@ export class SyncEngine {
     this.rafId = requestAnimationFrame(loop);
   }
 
+  private checkSeekGuard(videoTime: number): void {
+    const g = this.seekGuard;
+    if (!g || !this.video) return;
+    if (this.video.paused) {
+      // 일시정지 중에는 판정을 미룬다 — 되돌림은 재생 재개 시점에 일어난다
+      g.until = performance.now() + SEEK_GUARD_MS;
+      return;
+    }
+    if (performance.now() > g.until) {
+      this.seekGuard = null;
+      return;
+    }
+    if (Math.abs(videoTime - g.target) < 1.5) {
+      this.seekGuard = null; // 시크 안착 — 정상
+      return;
+    }
+    // 목표엔 못 갔는데 시크 «직전» 위치 근처로 돌아와 있다 — 플레이어가 시크를 삼켰다.
+    // 짧은 시크(<3s)는 위 안착 판정과 겹쳐 오판 여지가 있어 제외한다.
+    if (Math.abs(videoTime - g.prev) < 2.0 && Math.abs(g.target - g.prev) > 3.0) {
+      const target = g.target;
+      this.seekGuard = null; // 재적용은 1회뿐 — 유튜브 진행바 조작과 무한히 겨루지 않는다
+      console.debug(
+        `[everyric] seek reverted by player (target ${target.toFixed(1)}s, `
+        + `back at ${videoTime.toFixed(1)}s near pre-seek ${g.prev.toFixed(1)}s); reapplying once`,
+      );
+      this.video.currentTime = target;
+    }
+  }
+
   private tick(): void {
     if (!this.video || !this.running) return;
+    this.checkSeekGuard(this.video.currentTime);
     const t = this.video.currentTime + this.offset;
     this.handlers.onTick?.(t);
     const index = this.findIndex(t);

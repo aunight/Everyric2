@@ -2234,9 +2234,12 @@ async function handlePipToggle(): Promise<void> {
     onSeek: time => engine.seekTo(time),
     onSeekRatio: ratio => {
       const video = engine.getVideo() ?? getVideoElement();
-      if (video && Number.isFinite(video.duration) && video.duration > 0) {
-        video.currentTime = ratio * video.duration;
-      }
+      if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+      const sec = ratio * video.duration;
+      // 진행바 시크도 되돌림 가드를 받는다 (sync-engine.seekToVideoTime 주석).
+      // 엔진이 다른 video에 붙어 있는 창(교체 직후)에는 기존처럼 직접 대입한다.
+      if (engine.getVideo() === video) engine.seekToVideoTime(sec);
+      else video.currentTime = sec;
     },
     onPlayPause: () => {
       const video = engine.getVideo() ?? getVideoElement();
