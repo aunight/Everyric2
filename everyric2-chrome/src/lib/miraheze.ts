@@ -26,6 +26,14 @@
 // - `action=parse&page=<제목>`은 제목에 공백+괄호가 섞이면 "missingtitle"로 실패하는
 //   경우가 실측됐다(원인 미상 — 인코딩 정규화 이슈로 추정). search가 이미 pageid를 주므로
 //   `action=parse&pageid=<id>`로 우회한다(제목 인코딩 문제 자체가 사라진다).
+//
+// 실사용 사고(2026-07, H7PR6K7xff0): 유튜브 원제 그대로("シアンブルー / ポリスピカデリー
+// feat. 初音ミク")를 검색어로 넣으면 진짜 곡 페이지 「シアンブルー (Cyan Blue)」가 상위
+// 10위 안에 아예 안 잡히고(전문검색이 전체 토큰으로 좁혀버린다) 프로듀서 페이지 「Police
+// Piccadilly」 1건만 나온다 — startsWith 접두 일치도 실패해 그 프로듀서 페이지를 그대로
+// 채택했다. 유튜브 보카로 제목 관례상 곡명은 구분자(/·feat. 등) **앞**에 온다 — 그 조각만
+// 검색하면(실측: "シアンブルー") 진짜 곡 페이지가 접두 일치로 잡힌다. `titleCandidates`가
+// 이 조각·장식 제거판·원문을 순서대로 시도하게 한다(아래 mirahezeLookup).
 
 import type { SourceLine, SourceResult } from './sources';
 
@@ -39,31 +47,87 @@ interface SearchHit {
   title: string;
 }
 
-/** 제목으로 곡 페이지를 찾아 가사(원문+로마자+[영어 번역])를 반환. 못 찾으면 null */
+/**
+ * 제목으로 곡 페이지를 찾아 가사(원문+로마자+[영어 번역])를 반환. 못 찾으면 null.
+ *
+ * `titleCandidates`가 낸 후보를 순서대로 시도한다 — 검색해서 접두 일치 히트를 얻고,
+ * 그 페이지에 일본어 가사 표가 있으면 채택한다. 접두 일치가 없거나(마지막 후보 제외)
+ * 표가 없으면 다음 후보로 넘어간다. **마지막 후보에서만** 접두 일치 실패 시 최상위
+ * 검색 결과로 물러난다(폴백) — 그 전 후보에서 물러나면 프로듀서·앨범 페이지를 잘못
+ * 채택하는 사고(위 사고 기록)가 재현된다.
+ */
 export async function mirahezeLookup(title: string): Promise<SourceResult | null> {
   const trimmed = title.trim();
   if (!trimmed) return null;
 
-  const hit = await searchTopHit(trimmed);
-  if (!hit) return null;
+  const candidates = titleCandidates(trimmed);
+  for (let i = 0; i < candidates.length; i++) {
+    const isLastCandidate = i === candidates.length - 1;
+    const hit = await searchTopHit(candidates[i], isLastCandidate);
+    if (!hit) continue;
 
-  const html = await fetchParsedHtml(hit.pageid);
-  if (!html) return null;
+    const html = await fetchParsedHtml(hit.pageid);
+    if (!html) continue;
 
-  const parsed = parseLyricsTable(html);
-  if (!parsed || parsed.lines.length === 0) return null;
+    const parsed = parseLyricsTable(html);
+    if (!parsed || parsed.lines.length === 0) continue; // 이 후보의 채택 페이지엔 가사 표가 없다 — 다음 후보로
 
-  return {
-    sourceId: 'miraheze',
-    // MediaWiki 문서 URL은 공백→'_'만 치환하고 나머지(괄호·'*'·'/' 등)는 그대로 남긴다
-    // (encodeURI가 그 규칙과 일치 — encodeURIComponent를 쓰면 '/'까지 %2F로 깨진다).
-    pageUrl: `${BASE}/wiki/${encodeURI(hit.title.replace(/ /g, '_'))}`,
-    pageTitle: hit.title,
-    lines: parsed.lines,
-    pronLang: 'romaji',
-    translationLang: parsed.hasTranslation ? 'en' : undefined,
-    license: LICENSE,
+    return {
+      sourceId: 'miraheze',
+      // MediaWiki 문서 URL은 공백→'_'만 치환하고 나머지(괄호·'*'·'/' 등)는 그대로 남긴다
+      // (encodeURI가 그 규칙과 일치 — encodeURIComponent를 쓰면 '/'까지 %2F로 깨진다).
+      pageUrl: `${BASE}/wiki/${encodeURI(hit.title.replace(/ /g, '_'))}`,
+      pageTitle: hit.title,
+      lines: parsed.lines,
+      pronLang: 'romaji',
+      translationLang: parsed.hasTranslation ? 'en' : undefined,
+      license: LICENSE,
+    };
+  }
+  return null;
+}
+
+// ── 검색어 후보 생성 ─────────────────────────────────────────
+
+// 대표 구분자 — 유튜브 보카로 관례상 곡명 다음에 아티스트·가수 표기가 붙는 자리.
+// feat./ft.는 대소문자·마침표 유무를 가리지 않는다(feat, Feat., FT 등). \b로 낱말
+// 경계를 요구해 "soft" 같은 낱말 속 "ft"를 오매칭하지 않는다.
+const _TITLE_SEPARATOR_RE = /\/|｜|\||\s-\s|〜|\bfeat\.?|\bft\.?/i;
+
+// 【】·[]·()·（）로 감싼 장식(MV·Official Music Video 등) 한 덩어리.
+const _DECORATION_RE = /[【[（(][^】\]）)]*[】\]）)]/g;
+
+/** 구분자 **앞** 조각(=곡명) — 구분자가 없거나 맨 앞에 있으면(짐작할 곡명이 없으면) null. */
+function _stripBeforeSeparator(raw: string): string | null {
+  const m = _TITLE_SEPARATOR_RE.exec(raw);
+  if (!m || m.index === 0) return null;
+  const head = raw.slice(0, m.index).trim();
+  return head || null;
+}
+
+/** 장식 구간을 제거한 판 — 장식이 없어 원문과 같으면(바뀐 게 없으면) null. */
+function _stripDecorations(raw: string): string | null {
+  const cleaned = raw.replace(_DECORATION_RE, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned && cleaned !== raw ? cleaned : null;
+}
+
+/**
+ * 검색 전 제목 후보를 순서대로 낸다: ① 구분자 앞 조각(곡명), ② 장식 제거판, ③ 원문
+ * 그대로(최후 폴백). 중복·빈 문자열은 제외하고 최대 3개다.
+ *
+ * 실사용 사고(위 파일 머리말 참조): 유튜브 원제를 그대로 검색하면 부가 정보(아티스트·
+ * feat.·장식)가 전문검색의 관련도를 흐려 진짜 곡 페이지가 상위 10위 밖으로 밀린다.
+ */
+export function titleCandidates(raw: string): string[] {
+  const trimmed = raw.trim();
+  const out: string[] = [];
+  const add = (v: string | null): void => {
+    if (v && !out.includes(v)) out.push(v);
   };
+  add(_stripBeforeSeparator(trimmed));
+  add(_stripDecorations(trimmed));
+  add(trimmed);
+  return out.slice(0, 3);
 }
 
 // ── 검색 ──────────────────────────────────────────────────────
@@ -73,11 +137,15 @@ export async function mirahezeLookup(title: string): Promise<SourceResult | null
 // 페이지고 진짜 곡 페이지 「ロキ (Roki)」는 2위, "フラジール"는 프로듀서 본인 페이지
 // "Nulut"가 1위이고 곡 페이지 「フラジール (Fragile)/nulut」는 5위였다). 곡 페이지 제목은
 // 예외 없이 원어 제목으로 **시작한다**(뒤에 "(로마자)"·"/프로듀서"가 붙는 식) — 그래서
-// 상위 10개 중 검색어로 시작하는 첫 제목을 우선한다. 없으면(질의가 실제 제목과 다른 등)
-// 원래의 최상위 후보로 물러난다 — 아예 못 찾는 것보다는 낫다.
+// 상위 10개 중 검색어로 시작하는 첫 제목을 우선한다.
 const SEARCH_LIMIT = 10;
 
-async function searchTopHit(title: string): Promise<SearchHit | null> {
+/**
+ * `allowFallback=false`면 접두 일치 히트가 없을 때 null(다음 후보로 넘어가라는 신호) —
+ * 최상위 검색 결과로 물러나지 않는다. 물러나면 프로듀서·앨범 페이지를 오채택할 수 있다
+ * (실사용 사고, 파일 머리말 참조). `mirahezeLookup`이 **마지막 후보에서만** true를 준다.
+ */
+async function searchTopHit(title: string, allowFallback: boolean): Promise<SearchHit | null> {
   const params = new URLSearchParams({
     action: 'query',
     list: 'search',
@@ -90,7 +158,9 @@ async function searchTopHit(title: string): Promise<SearchHit | null> {
   const hits = data?.query?.search ?? [];
   if (hits.length === 0) return null;
   const titleMatch = hits.find(h => h.title.startsWith(title));
-  const hit = titleMatch ?? hits[0];
+  if (titleMatch) return { pageid: titleMatch.pageid, title: titleMatch.title };
+  if (!allowFallback) return null;
+  const hit = hits[0];
   return { pageid: hit.pageid, title: hit.title };
 }
 
