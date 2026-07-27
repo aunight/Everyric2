@@ -845,6 +845,13 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   if (patch.pitchPronPosition !== undefined) {
     pip.setPitchPronPosition(patch.pitchPronPosition);
   }
+  // K2: 계이름 표기, K3: 음정선 밝기 — 즉시 반영
+  if (patch.solfegeNotation !== undefined) {
+    pip.setSolfegeNotation(patch.solfegeNotation);
+  }
+  if (patch.pitchLineOpacity !== undefined) {
+    pip.setPitchLineOpacity(patch.pitchLineOpacity);
+  }
 
   // 가라오케 음정 바 토글 즉시 반영
   if (patch.pitchGuide !== undefined) {
@@ -3035,6 +3042,8 @@ async function handlePipToggle(): Promise<void> {
     pitchScrollMode: settings.pitchScrollMode,
     pitchFontScale: settings.pitchFontScale,
     pitchCountdown: settings.pitchCountdown,
+    solfegeNotation: settings.solfegeNotation,
+    pitchLineOpacity: settings.pitchLineOpacity,
     pitchPronPosition: settings.pitchPronPosition,
     showConfidence: settings.debugInfo,
     onPitchHeightChange: px => {

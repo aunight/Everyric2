@@ -453,6 +453,11 @@ export interface Settings {
   pitchCountdown: boolean;
   /** 음정 모델 RAW f0 곡선을 디버그 모드와 무관하게 레인에 상시 표시 */
   pitchF0Curve: boolean;
+  /** 계이름 표기: korean(도레미)·english(멜로다인식 C4·D#5, 옥타브 포함). 기본 korean(무회귀) */
+  solfegeNotation: 'korean' | 'english';
+  /** 음정선(f0 곡선·노트 바) 밝기 배율 — 0.2~1.0, 기존 알파값에 곱해진다. 기본 1(현행과
+   *  동일 — f0 곡선 0.65·노트 채움 0.55/0.65가 그대로 유지돼 무회귀) */
+  pitchLineOpacity: number;
   /** 발음 표기 위치: note = 노트마다 위에 부착, bottom = 화면 하단 중앙(진행률 그라데이션) */
   pitchPronPosition: 'note' | 'bottom';
   /** PiP 하단 가라오케 음정 바 표시 (노트 데이터가 있는 곡에서만) */

@@ -1473,5 +1473,20 @@
   },
   "overlay_translationSource_llm": {
     "message": "번역: AI 번역"
+  },
+  "overlay_settings_row_solfegeNotation": {
+    "message": "계이름 표기"
+  },
+  "overlay_settings_solfegeNotation_korean": {
+    "message": "한국어(도레미)"
+  },
+  "overlay_settings_solfegeNotation_english": {
+    "message": "영어(C4·D#5)"
+  },
+  "overlay_settings_row_pitchLineOpacity": {
+    "message": "음정선 밝기"
+  },
+  "overlay_settings_row_pitchLineOpacityTitle": {
+    "message": "f0 곡선·노트 바의 투명도를 조절합니다"
   }
 }

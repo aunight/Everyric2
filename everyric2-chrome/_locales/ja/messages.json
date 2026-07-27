@@ -1473,5 +1473,20 @@
   },
   "overlay_translationSource_llm": {
     "message": "翻訳: AI翻訳"
+  },
+  "overlay_settings_row_solfegeNotation": {
+    "message": "階名表記"
+  },
+  "overlay_settings_solfegeNotation_korean": {
+    "message": "韓国語式(ドレミ)"
+  },
+  "overlay_settings_solfegeNotation_english": {
+    "message": "英語式(C4・D#5)"
+  },
+  "overlay_settings_row_pitchLineOpacity": {
+    "message": "音程線の明るさ"
+  },
+  "overlay_settings_row_pitchLineOpacityTitle": {
+    "message": "f0曲線・ノートバーの不透明度を調整します"
   }
 }

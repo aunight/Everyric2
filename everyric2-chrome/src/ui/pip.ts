@@ -53,6 +53,10 @@ export interface PipOptions {
   pitchFontScale: number;
   /** 긴 묵음 뒤 가사 시작 전 4·3·2·1 카운트다운 */
   pitchCountdown: boolean;
+  /** 계이름 표기: korean(도레미)·english(C4·D#5 등, 옥타브 포함) */
+  solfegeNotation: 'korean' | 'english';
+  /** 음정선(f0 곡선·노트 바) 밝기 배율 0.2~1.0 — 기존 알파값에 곱해진다 */
+  pitchLineOpacity: number;
   /** 디버그: 글자별 CTC 신뢰도를 색으로 표시 */
   showConfidence: boolean;
   /** 발음 표기 위치: note = 노트마다 위에 부착, bottom = 화면 하단 중앙(진행률 그라데이션) */
@@ -206,6 +210,14 @@ function solfegeNames(): string[] {
 // 사이드바 음정 라벨 (영문, 멜로다인식) — C4 = MIDI 60
 const PITCH_NAMES_EN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
+
+/** K2: 노트 바에 붙는 음정 라벨 — korean은 기존 계이름(solfegeNames, i18n 카탈로그),
+ *  english는 사이드바와 같은 멜로다인식 음이름+옥타브(C4 = MIDI 60, 같은 계산식 재사용). */
+function noteLabel(midi: number, notation: 'korean' | 'english'): string {
+  const pc = ((midi % 12) + 12) % 12;
+  if (notation === 'english') return `${PITCH_NAMES_EN[pc]}${Math.floor(midi / 12) - 1}`;
+  return solfegeNames()[pc];
+}
 
 /** CTC 신뢰도 로그 버킷 색 — 패널(overlay.css의 .ey-conf-*)과 반드시 같은 값 유지 */
 const CONF_COLOR_LOW = '#ff6b6b';
@@ -376,6 +388,14 @@ export class PipController {
   private pitchWindowMeasures = 4;
   private pitchScrollMode: 'page' | 'scroll' = 'page';
   private pitchFontScale = 1.2;
+  /** K1: 레인 위 마우스 휠 줌이 ±버튼과 같은 값을 저장하려면 그 콜백을 들고 있어야 한다
+   *  (attachPitchPointer는 별도 메서드라 open()의 opts 클로저에 안 잡힌다 — onSeek와 같은
+   *  패턴). open()에서 opts.onPitchWindowChange로 채워진다. */
+  private onPitchWindowChange: (measures: number) => void = () => {};
+  /** K2: 계이름 표기 — korean(도레미)·english(C4·D#5) */
+  private solfegeNotation: 'korean' | 'english' = 'korean';
+  /** K3: 음정선(f0 곡선·노트 바) 밝기 배율 — 기존 알파값에 곱해진다 */
+  private pitchLineOpacity = 1;
   private pitchCountdown = true;
   private pitchPronPosition: 'note' | 'bottom' = 'note';
   /** 발음 표기 방식 — setLines가 만드는 pitch.notes의 발음 부착(collectPitchData)도
@@ -479,6 +499,9 @@ export class PipController {
     this.pitchScrollMode = opts.pitchScrollMode;
     this.pitchFontScale = opts.pitchFontScale;
     this.pitchCountdown = opts.pitchCountdown;
+    this.onPitchWindowChange = opts.onPitchWindowChange;
+    this.solfegeNotation = opts.solfegeNotation;
+    this.pitchLineOpacity = opts.pitchLineOpacity;
     this.pitchPronPosition = opts.pitchPronPosition;
     this.pronScript = opts.pronScript;
     this.showConfidence = opts.showConfidence;
@@ -919,6 +942,19 @@ export class PipController {
   setPitchScrollMode(mode: 'page' | 'scroll'): void {
     this.pitchScrollMode = mode;
     this.updateWindowControls();
+  }
+
+  /** K2: 계이름 표기(korean/english) 즉시 반영 — 다음 프레임까지 안 기다린다(일시정지 중
+   *  설정을 바꿔도 바로 보이게, pointermove 팬과 같은 이유). */
+  setSolfegeNotation(notation: 'korean' | 'english'): void {
+    this.solfegeNotation = notation;
+    this.renderPitch(this.lastTime);
+  }
+
+  /** K3: 음정선(f0 곡선·노트 바) 밝기 배율 즉시 반영 — [0.2, 1] 클램프. */
+  setPitchLineOpacity(opacity: number): void {
+    this.pitchLineOpacity = Math.min(1, Math.max(0.2, opacity));
+    this.renderPitch(this.lastTime);
   }
 
   /** 창 안 레인 조절 버튼(마디 ±·진행 방식)의 라벨을 현재 값에 맞춘다 */
@@ -1475,6 +1511,22 @@ export class PipController {
       this.onSeek(hit ? hit.start : Math.max(0, t));
     });
     canvas.addEventListener('wheel', e => {
+      // K1: 순수 세로 휠 = 줌(레인 표시 구간 조절). Ctrl+휠은 브라우저 확대/축소와
+      // 충돌하니 절대 안 건드리고, 가로 휠·Shift+세로휠은 기존 팬(아래)에 그대로 맡긴다.
+      // ±버튼(windowMinusBtn/windowPlusBtn)과 정확히 같은 값·같은 클램프(setPitchWindow가
+      // 이미 [0.25,16]으로 한 번 더 clamp)를 재사용해 저장·복원·렌더 경로가 전부 기존
+      // 그대로다 — 새 배율 축을 만들지 않는 것이 버그 표면을 최소화한다는 지시.
+      // 재생 중에도 동작한다(아래 팬과 달리 paused 조건 없음 — ±버튼도 마찬가지다).
+      if (!e.ctrlKey && !e.shiftKey && e.deltaX === 0 && e.deltaY !== 0) {
+        e.preventDefault(); // 레인 위에서만 막는다 — 페이지 스크롤 침범 금지
+        const next = e.deltaY < 0
+          ? Math.max(0.5, this.pitchWindowMeasures / 2)   // 휠 위로 = 확대(표시 구간 축소)
+          : Math.min(16, this.pitchWindowMeasures * 2);   // 휠 아래로 = 축소(표시 구간 확장)
+        this.setPitchWindow(next);
+        this.onPitchWindowChange(next);
+        this.renderPitch(this.lastTime); // 일시정지 중엔 tick이 없어도 즉시 반영(아래 팬과 같은 이유)
+        return;
+      }
       if (!this.paused) return;
       const view = this.pitchView;
       if (!view) return;
@@ -1777,7 +1829,6 @@ export class PipController {
     const vis = notes.filter(n => n.end > t0 - edgePad && n.start < t0 + W + edgePad);
     const noteH = Math.max(5, Math.min(13, semiPx * 1.6));
     const noteR = Math.min(noteH / 2, 4);
-    const solfege = solfegeNames();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const n of vis) {
@@ -1787,16 +1838,17 @@ export class PipController {
       const top = y(n.midi) - noteH / 2;
       const isCurrent = n.start <= now && now < n.end;
 
-      // 노트 채움은 반투명 — 채워진 뒤에도 격자·f0 곡선이 비쳐 보이게
+      // 노트 채움은 반투명 — 채워진 뒤에도 격자·f0 곡선이 비쳐 보이게. K3: 기존 알파값에
+      // pitchLineOpacity를 곱한다(기본 1 = 현행과 동일, 무회귀).
       ctx.fillStyle = colors.dim;
-      ctx.globalAlpha = 0.55;
+      ctx.globalAlpha = 0.55 * this.pitchLineOpacity;
       ctx.beginPath();
       ctx.roundRect(x1, top, w, noteH, noteR);
       ctx.fill();
       if (now > n.start) {
         const sungW = Math.max(2, Math.min(w, x(now) - x1));
         ctx.fillStyle = colors.accent;
-        ctx.globalAlpha = 0.65;
+        ctx.globalAlpha = 0.65 * this.pitchLineOpacity;
         ctx.beginPath();
         ctx.roundRect(x1, top, sungW, noteH, noteR);
         ctx.fill();
@@ -1822,7 +1874,7 @@ export class PipController {
       if (w >= 14) {
         ctx.font = `bold ${namePx}px system-ui, sans-serif`;
         ctx.fillStyle = isCurrent ? colors.text : colors.dim;
-        ctx.fillText(solfege[((n.midi % 12) + 12) % 12], lx, Math.max(namePx * 0.7, top - namePx * 0.7));
+        ctx.fillText(noteLabel(n.midi, this.solfegeNotation), lx, Math.max(namePx * 0.7, top - namePx * 0.7));
       }
       // 발음 — 계이름처럼 노트 바로 아래에 부착 (설정 pitchPronPosition === 'note'일 때만;
       // 'bottom'이면 collectPitchData가 채워둔 n.pron은 무시하고 하단 폴백 줄만 사용)
@@ -2020,7 +2072,8 @@ export class PipController {
   ): void {
     const f0 = this.debugMeta?.f0_curve;
     if (!f0 || f0.dt <= 0 || f0.midi.length === 0) return;
-    ctx.strokeStyle = 'rgba(77, 171, 247, 0.65)';
+    // K3: 기존 알파(0.65)에 pitchLineOpacity를 곱한다(기본 1 = 현행과 동일, 무회귀)
+    ctx.strokeStyle = `rgba(77, 171, 247, ${0.65 * this.pitchLineOpacity})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
     let pen = false;

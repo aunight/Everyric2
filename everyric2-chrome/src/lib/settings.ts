@@ -34,6 +34,8 @@ export const DEFAULT_SETTINGS: Settings = {
   pitchFontScale: 1.2,
   pitchCountdown: true,
   pitchF0Curve: true,
+  solfegeNotation: 'korean',
+  pitchLineOpacity: 1,
   pitchPronPosition: 'note',
   lowConfWarning: true,
   notifyOnComplete: true,

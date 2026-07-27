@@ -1531,6 +1531,16 @@ export class LyricsOverlay {
       v => this.callbacks.onSettingsChange({ pitchFontScale: Number(v) }),
     );
 
+    // K2: 계이름 표기 — 한국어(도레미)/영어(C4·D#5)
+    const solfegeNotation = this.buildSelect(
+      [
+        ['korean', t('overlay.settings.solfegeNotation.korean')],
+        ['english', t('overlay.settings.solfegeNotation.english')],
+      ],
+      this.settings.solfegeNotation,
+      v => this.callbacks.onSettingsChange({ solfegeNotation: v as Settings['solfegeNotation'] }),
+    );
+
     const pitchCountdown = h('input', { attrs: { type: 'checkbox' } });
     pitchCountdown.checked = this.settings.pitchCountdown;
     pitchCountdown.addEventListener('change', () =>
@@ -1540,6 +1550,12 @@ export class LyricsOverlay {
     pitchF0Curve.checked = this.settings.pitchF0Curve;
     pitchF0Curve.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ pitchF0Curve: pitchF0Curve.checked }));
+
+    // K3: 음정선(f0 곡선·노트 바) 밝기 — 0.2~1.0(기존 볼륨 슬라이더와 같은 buildRange,
+    // 범위만 좁힌다)
+    const pitchLineOpacity = this.buildRange(
+      this.settings.pitchLineOpacity, v => this.callbacks.onSettingsChange({ pitchLineOpacity: v }), 0.2, 1,
+    );
 
     const pitchPronPosition = this.buildSelect(
       [['note', t('overlay.settings.pronPosition.note')], ['bottom', t('overlay.settings.pronPosition.bottom')]],
@@ -1671,8 +1687,10 @@ export class LyricsOverlay {
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchWindow') }), pitchWindow),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchMode') }), pitchMode),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchFont') }), pitchFont),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.solfegeNotation') }), solfegeNotation),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchCountdown') }), pitchCountdown),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchF0Curve'), attrs: { title: t('overlay.settings.row.pitchF0CurveTitle') } }), pitchF0Curve),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchLineOpacity'), attrs: { title: t('overlay.settings.row.pitchLineOpacityTitle') } }), pitchLineOpacity),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pronPosition'), attrs: { title: t('overlay.settings.row.pronPositionTitle') } }), pitchPronPosition),
       h('div', { className: 'ey-settings-row' },
         h('label', { text: t('overlay.settings.row.melodyPlayback'), attrs: { title: t('overlay.settings.row.melodyPlaybackTitle') } }),
@@ -1712,15 +1730,6 @@ export class LyricsOverlay {
     );
   }
 
-  private buildRange(value: number, onChange: (v: number) => void): HTMLInputElement {
-    const range = h('input', {
-      className: 'ey-settings-range',
-      attrs: { type: 'range', min: '0', max: '100', step: '1', value: String(Math.round(value * 100)) },
-    });
-    range.addEventListener('change', () => onChange(Number(range.value) / 100));
-    return range;
-  }
-
   /** 오디오 입출력 기기 목록 채우기 — 라벨은 마이크 권한을 허용해야 브라우저가 내려준다 */
   private async populateAudioDevices(outSel: HTMLSelectElement, inSel: HTMLSelectElement): Promise<void> {
     const fill = (sel: HTMLSelectElement, devices: MediaDeviceInfo[], defLabel: string, cur: string) => {
@@ -1739,6 +1748,22 @@ export class LyricsOverlay {
     }
     fill(outSel, devices.filter(d => d.kind === 'audiooutput'), t('overlay.settings.defaultOutput'), this.settings.audioOutputId);
     fill(inSel, devices.filter(d => d.kind === 'audioinput'), t('overlay.settings.defaultMic'), this.settings.micDeviceId);
+  }
+
+  /** min/max는 buildRange의 출력 스케일 기준 소수(예: 0.2~1) — 생략하면 기존 호출부와
+   *  똑같이 0~1 전체 범위(K3 이전부터 있던 볼륨류 슬라이더는 인자를 안 넘기므로 그대로다). */
+  private buildRange(
+    value: number, onChange: (v: number) => void, min = 0, max = 1,
+  ): HTMLInputElement {
+    const range = h('input', {
+      className: 'ey-settings-range',
+      attrs: {
+        type: 'range', min: String(Math.round(min * 100)), max: String(Math.round(max * 100)), step: '1',
+        value: String(Math.round(value * 100)),
+      },
+    });
+    range.addEventListener('change', () => onChange(Number(range.value) / 100));
+    return range;
   }
 
   private buildSelect(options: [string, string][], value: string, onChange: (v: string) => void): HTMLSelectElement {
