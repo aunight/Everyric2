@@ -6,6 +6,7 @@ import { describeRemoved, stripPartMarkers } from './lib/lyrics-clean';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
 import { resolveScript } from './lib/lang';
+import { setUiLanguage, t } from './lib/i18n';
 import { LyricsOverlay } from './ui/overlay';
 import { PipController } from './ui/pip';
 import {
@@ -90,7 +91,7 @@ const linkJobs = new Map<string, { linkJobId: string; title?: string; started: n
 const LINK_JOB_WATCH_MS = 10 * 60 * 1000;
 /** 이 세션에서 후보 탐색을 이미 물어본 영상 — 같은 영상을 다시 열 때 중복 질의를 막는다 */
 const linkProbed = new Set<string>();
-const LINK_PROBE_CHIP = '동일 곡 추정 — 자동 연결 확인 중…';
+// t()는 uiLanguage가 바뀔 수 있으므로 모듈 상수로 얼리지 않고 쓰는 시점에 매번 부른다
 /** 알림 칩이 현재 어느 영상의 것인가 — 영상이 바뀔 때만 칩을 비우기 위한 표식 */
 let noticeVideoId: string | null = null;
 // 현재 영상의 사용자 싱크 오프셋(초) — 영상마다 서버에 저장·복원된다 (전역 설정 아님)
@@ -107,6 +108,7 @@ const pendingTranslate = new Map<string, Promise<TranslatedLine[] | undefined>>(
 
 async function init(): Promise<void> {
   settings = await getSettings();
+  setUiLanguage(settings.uiLanguage); // 이 콘텐츠 스크립트가 실제로 t()를 쓰는 유일한 곳 — 세션 시작 시 한 번 맞춘다
   [cssText, initialGeometry] = await Promise.all([loadCss(), getGeometry()]);
   chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   await restoreActiveJobs();
@@ -216,8 +218,7 @@ function handleRuntimeMessage(message: ContentMessage): void {
 async function openPermissionsPage(): Promise<void> {
   const res = await sendToBackground({ type: 'OPEN_OPTIONS' });
   if (res.error) {
-    showNotice('권한 설정 페이지를 열지 못했어요 — 확장 관리 페이지(chrome://extensions)에서 '
-      + 'Everyric의 "확장 프로그램 옵션"을 열어 주세요', 20000);
+    showNotice(t('content.notice.permPageFailed'), 20000);
   }
 }
 
@@ -613,17 +614,15 @@ async function handleLinkSync(sourceVideoId: string, offsetSec: number, rate: nu
   const videoId = currentVideoId;
   if (!videoId) return;
   if (sourceVideoId === videoId) {
-    ensureOverlay().setLinkStatus('자기 자신에게는 연결할 수 없어요');
+    ensureOverlay().setLinkStatus(t('content.link.cannotSelf'));
     return;
   }
   // 자체 전사가 있으면 조회가 링크보다 자체 전사를 우선해 연결이 무시된다 —
   // 사용자가 명시적으로 연결을 원했으니 확인 후 자체 전사를 지우고 연결한다
   if (currentData?.synced && currentData.source === 'everyric' && !currentData.linked) {
-    const ok = window.confirm(
-      '이 영상에는 자체 전사가 이미 있어요.\n연결하면 자체 전사를 삭제하고 원본 영상의 싱크를 대신 사용합니다. 계속할까요?',
-    );
+    const ok = window.confirm(t('content.link.replaceOwnConfirm'));
     if (!ok) {
-      ensureOverlay().setLinkStatus('연결 취소됨 — 자체 전사를 유지합니다');
+      ensureOverlay().setLinkStatus(t('content.link.cancelledKeepOwn'));
       return;
     }
     const reset = await sendToBackground<{ removed_syncs: number }>({
@@ -631,7 +630,7 @@ async function handleLinkSync(sourceVideoId: string, offsetSec: number, rate: nu
     });
     if (reset.error) {
       const note = failureNote(noteFailure(reset.failure));
-      ensureOverlay().setLinkStatus(`자체 전사 삭제에 실패했어요${note ? ` — ${note}` : ''}`);
+      ensureOverlay().setLinkStatus(t('content.link.ownDeleteFailed', [note ? ` — ${note}` : '']));
       return;
     }
     for (const key of [...translationCache.keys()]) {
@@ -647,8 +646,8 @@ async function handleLinkSync(sourceVideoId: string, offsetSec: number, rate: nu
     // 원본에 전사가 없어서일 수도, 서버 자체 문제일 수도 있다 — 아는 사유가 있으면 그것을 쓴다
     const note = failureNote(noteFailure(res.failure));
     ensureOverlay().setLinkStatus(note
-      ? `연결 실패 — ${note}`
-      : '연결 실패 — 원본 영상에 전사(싱크)가 있는지 확인해 주세요');
+      ? t('content.link.failedWithNote', [note])
+      : t('content.link.failedNoNote'));
     return;
   }
   void searchLyrics(); // 링크된 싱크를 즉시 불러온다
@@ -661,7 +660,7 @@ async function handleUnlinkSync(): Promise<void> {
   if (videoId !== currentVideoId) return;
   if (res.error) {
     const note = failureNote(noteFailure(res.failure));
-    ensureOverlay().setLinkStatus(`해제 실패${note ? ` — ${note}` : ' — 서버 상태를 확인해 주세요'}`);
+    ensureOverlay().setLinkStatus(t('content.link.unlinkFailed', [note ? ` — ${note}` : t('content.link.unlinkFailedCheckServer')]));
     return;
   }
   ensureOverlay().setLinked(null);
@@ -707,7 +706,7 @@ async function probeLinkCandidates(videoId: string, song: SongInfo): Promise<voi
   // disabled(서버 설정 off)·has_sync·linked는 사용자가 할 수 있는 일이 없어 소음이다.
   if ((data.status === 'submitted' || data.status === 'pending') && data.job_id) {
     linkJobs.set(videoId, { linkJobId: data.job_id, title: song.title, started: Date.now() });
-    if (videoId === currentVideoId) showNotice(LINK_PROBE_CHIP);
+    if (videoId === currentVideoId) showNotice(t('content.linkProbe.chip'));
     ensurePolling();
   }
 }
@@ -741,8 +740,8 @@ async function pollLinkJobs(): Promise<void> {
       showNotice(null); // 미매치·실패는 조용히 원래 상태로
       continue;
     }
-    const conf = status.confidence != null ? ` (반주 일치 ${Math.round(status.confidence * 100)}%)` : '';
-    showNotice(`자동 연결됨 — 같은 곡의 싱크를 가져왔어요${conf}`, 12000);
+    const conf = status.confidence != null ? t('content.link.autoConfSuffix', [String(Math.round(status.confidence * 100))]) : '';
+    showNotice(t('content.link.autoLinked', [conf]), 12000);
     void searchLyrics(); // 링크된 싱크를 즉시 불러온다
   }
 }
@@ -755,6 +754,7 @@ async function handleRequestSyncList(): Promise<void> {
 
 async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   settings = await saveSettings(patch);
+  if (patch.uiLanguage !== undefined) setUiLanguage(settings.uiLanguage);
   overlay?.applySettings(settings);
   // 키를 고치는 것이 인증 실패의 정상 복구 경로다 — URL과 함께 즉시 재확인한다
   if (patch.serverUrl !== undefined || patch.apiKey !== undefined) void refreshServerStatus();
@@ -887,10 +887,10 @@ function applyAudioSettings(): void {
 function debugZoneAt(time: number | null): string | null {
   const meta = currentData?.debugMeta;
   if (!meta || time === null) return null;
-  const t = time - videoOffset;
-  if (meta.star_spans?.some(([s, e]) => t >= s && t < e)) return '추임새★';
+  const relT = time - videoOffset;
+  if (meta.star_spans?.some(([s, e]) => relT >= s && relT < e)) return t('content.debug.zoneAdlib');
   if (meta.vad_regions == null) return null;
-  return meta.vad_regions.some(([s, e]) => t >= s && t < e) ? '가창' : '간주·무성';
+  return meta.vad_regions.some(([s, e]) => relT >= s && relT < e) ? t('content.debug.zoneVocal') : t('content.debug.zoneInstrumental');
 }
 
 /** 디버그 스트립에 현재 내부 상태를 밀어넣는다 (설정 꺼져 있으면 no-op) */
@@ -945,10 +945,10 @@ function formatSyncCreated(raw: string | undefined): string | null {
   const stamp = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
     + ` ${pad(at.getHours())}:${pad(at.getMinutes())}`;
   const mins = Math.round((Date.now() - at.getTime()) / 60000);
-  const age = mins < 1 ? '방금'
-    : mins < 60 ? `${mins}분 전`
-      : mins < 60 * 48 ? `${Math.round(mins / 60)}시간 전`
-        : `${Math.round(mins / 1440)}일 전`;
+  const age = mins < 1 ? t('content.age.justNow')
+    : mins < 60 ? t('content.age.minutesAgo', [String(mins)])
+      : mins < 60 * 48 ? t('content.age.hoursAgo', [String(Math.round(mins / 60))])
+        : t('content.age.daysAgo', [String(Math.round(mins / 1440))]);
   return `${stamp} (${age})`;
 }
 
@@ -1080,10 +1080,10 @@ async function loadTranslations(): Promise<void> {
 
   // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
   if (serverKnownBad(serverStatus)) {
-    overlay?.setTranslationStatus(`번역 불가 — ${statusLine(serverStatus)}`);
+    overlay?.setTranslationStatus(t('content.translation.unavailable', [statusLine(serverStatus)]));
     return;
   }
-  overlay?.setTranslationStatus('번역·발음 생성 중…');
+  overlay?.setTranslationStatus(t('content.translation.generating'));
   const lines = await requestTranslation(videoId, srcLines);
   if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜
   if (!settings.showTranslation || settings.translationLanguage !== lang) return;
@@ -1091,8 +1091,8 @@ async function loadTranslations(): Promise<void> {
   if (!lines || lines.length === 0) {
     // requestTranslation이 실패 사유를 이미 상태에 반영했다 — 그 사유를 그대로 보여 준다
     overlay?.setTranslationStatus(serverKnownBad(serverStatus)
-      ? `번역 실패 — ${statusLine(serverStatus)}`
-      : '번역 실패 — 서버가 결과를 주지 않았어요');
+      ? t('content.translation.failedWithStatus', [statusLine(serverStatus)])
+      : t('content.translation.failedNoResult'));
     return;
   }
   applyTranslations(data, lines);
@@ -1106,7 +1106,7 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   // 어긋난 번역을 붙이는 것보다 안 붙이고 사유를 말하는 편이 낫다.
   if (translated.length !== data.lines.length) {
     overlay?.setTranslationStatus(
-      `번역을 적용하지 못했어요 — 줄 수가 달라요 (번역 ${translated.length}줄 · 가사 ${data.lines.length}줄)`,
+      t('content.translation.lineCountMismatch', [String(translated.length), String(data.lines.length)]),
     );
     return;
   }
@@ -1135,9 +1135,9 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   });
   // 서버가 복구하지 못한 줄(응답 잘림 등)은 failed로 온다. 조용히 비워 두면 사용자는
   // 왜 그 줄만 번역이 없는지 알 수 없다 — 완료 알림까지 기다리지 않고 여기서 바로 말한다.
-  const failed = translated.filter(t => t?.failed).length;
+  const failed = translated.filter(tl => tl?.failed).length;
   overlay?.setTranslationStatus(
-    failed > 0 ? `번역 일부 실패 — ${failed}줄은 서버가 결과를 주지 못했어요` : null,
+    failed > 0 ? t('content.translation.partialFailure', [String(failed)]) : null,
   );
   overlay?.refreshTranslations();
   // 발음이 새로 붙었으면 PiP 내부 변환 캐시(setLines 시점 복사)도 다시 채운다
@@ -1256,7 +1256,7 @@ async function fetchLlmLineMeta(
 ): Promise<{ text: string; pronunciation?: string; translation?: string }[] | undefined> {
   const lang = settings.translationLanguage;
   try {
-    overlay?.setTranslationStatus('AI 번역·독음 생성 중…');
+    overlay?.setTranslationStatus(t('content.translation.aiGenerating'));
     let translated = translationCacheGet(translationKey(videoId, lang, srcLines));
     // 발음이 빠진 캐시(구버전 응답 등)는 다시 받아온다
     if (
@@ -1295,7 +1295,7 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   // 여기서 무조건 지우면 방금 띄운 '자동 연결됨'을 스스로 삭제한다.
   if (noticeVideoId !== videoId) {
     noticeVideoId = videoId;
-    showNotice(linkJobs.has(videoId) ? LINK_PROBE_CHIP : null);
+    showNotice(linkJobs.has(videoId) ? t('content.linkProbe.chip') : null);
   }
   engine.stop();
 
@@ -1353,8 +1353,8 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
     // (currentSong은 인식에 성공한 새 곡이므로 유지)
     applyLyricsData(null);
     const note = failureNote(lookupFailure);
-    panel.showError('가사를 불러오지 못했어요', note);
-    if (pip.isOpen()) pip.showPanelError('가사를 불러오지 못했어요', note);
+    panel.showError(t('content.error.lyricsLoadFailed'), note);
+    if (pip.isOpen()) pip.showPanelError(t('content.error.lyricsLoadFailed'), note);
     return;
   }
 
@@ -1557,7 +1557,7 @@ async function handleCandidateSearch(query: { title: string; artist: string }): 
   // 사용자가 직접 누른 버튼이니 실패는 실패라고 말한다.
   if (!res.data) {
     showNotice(
-      `후보를 불러오지 못했어요 — ${failureNote(noteFailure(res.failure)) ?? res.error ?? '알 수 없는 오류'}`,
+      t('content.error.candidatesLoadFailed', [failureNote(noteFailure(res.failure)) ?? res.error ?? t('content.error.unknown')]),
       8000,
     );
     return;
@@ -1580,7 +1580,7 @@ async function handlePickCandidate(candidate: SearchCandidate): Promise<void> {
   updateGenChip();
   engine.stop();
   const panel = ensureOverlay();
-  panel.showLoading('선택한 가사를 불러오는 중…');
+  panel.showLoading(t('content.loading.selectedCandidate'));
 
   let data: LyricsData | null = null;
   currentSourceUrl = null;
@@ -1605,7 +1605,7 @@ async function handlePickCandidate(candidate: SearchCandidate): Promise<void> {
     // 이전 가사를 되돌리고(검색 시트의 '← 보던 가사로 돌아가기'와 같은 복귀 경로) 실패는
     // 칩으로만 말한다 — 예전에는 오류 화면이 이전 가사를 통째로 버렸다.
     applyLyricsData(currentData);
-    showNotice('선택한 가사를 불러오지 못했어요 — 다른 후보를 골라 보세요', 12000);
+    showNotice(t('content.notice.candidateLoadFailed'), 12000);
     return;
   }
   applyLyricsData(data);
@@ -1662,7 +1662,7 @@ function applyLyricsData(data: LyricsData | null): void {
   // 자동 생성 자막은 싱크 생성의 원문으로 쓸 수 없다(handleGenerate가 막는다) — 배너에
   // 버튼 대신 사유를 띄워, 눌러 보고 거절당하는 경험을 만들지 않는다
   const generateBlocked = data.source === 'caption' && data.captionAuto
-    ? '자동 생성 자막이라 전사가 부정확해요 — 정확한 가사를 붙여넣으면 싱크를 만들 수 있어요'
+    ? t('content.generate.blockedAutoCaption')
     : undefined;
 
   if (data.synced) {
@@ -1854,7 +1854,7 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
     // 입력 검증은 **입력을 지우면서** 말할 것이 아니다 — 오류 화면(showError→resetBody)은
     // 방금 붙여넣은 본문까지 날려, 사용자는 줄을 줄이려 해도 다시 옮겨 적어야 했다.
     // 여기서는 화면 상태와 무관하게 늘 칩으로만 알린다 (줄일 대상이 화면에 남아 있어야 한다).
-    showNotice(`가사가 너무 길어요 (${srcLines.length}줄) — 500줄 이하로 줄여 주세요`, 15000);
+    showNotice(t('content.generate.tooManyLines', [String(srcLines.length)]), 15000);
     return;
   }
   const text = srcLines.join('\n');
@@ -1873,7 +1873,7 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
   // 발음·번역도 의미가 없어진다. 화면을 지우지 않고 사유만 알린다.
   if (fromCaption && currentData?.captionAuto) {
     showNotice(
-      '자동 생성 자막은 전사가 부정확해 싱크를 만들 수 없어요 — 가사를 검색하거나 붙여넣어 주세요',
+      t('content.generate.autoCaptionBlocked'),
       15000,
     );
     return;
@@ -1954,7 +1954,7 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
       const note = failureNote(noteFailure(res.failure));
       if (videoId === currentVideoId && seq === searchSeq) {
         // 요청이 실패했다고 붙여넣던 가사·보던 가사를 버리지 않는다 (reportFailure가 가른다)
-        reportFailure('싱크 생성 요청에 실패했어요.', note);
+        reportFailure(t('content.failure.generateRequest'), note);
       }
       return;
     }
@@ -2066,7 +2066,7 @@ async function handleRegenerate(): Promise<void> {
     if (res.error || !res.data) {
       const note = failureNote(noteFailure(res.failure));
       // 재생성 실패는 **기존 싱크가 멀쩡하다는 뜻**이다 — 보고 있던 가사를 지우면 안 된다
-      if (videoId === currentVideoId) reportFailure('재생성 요청에 실패했어요.', note);
+      if (videoId === currentVideoId) reportFailure(t('content.failure.regenerateRequest'), note);
       return;
     }
     generatingJobs.set(videoId, { jobId: res.data.job_id, progress: 0, title: currentSong?.title });
@@ -2087,7 +2087,7 @@ async function handleResetSync(): Promise<void> {
   });
   if (res.error) {
     // 초기화가 실패했으면 서버 싱크는 그대로 남아 있다 — 화면의 가사도 그대로 두고 사유만 알린다
-    reportFailure('싱크 초기화에 실패했어요.', failureNote(noteFailure(res.failure)));
+    reportFailure(t('content.failure.resetSync'), failureNote(noteFailure(res.failure)));
     return;
   }
   // 지운 것은 **타이밍**이다 — 원문·발음·번역은 남겨 두었다가 재조회가 빈손이면
@@ -2134,7 +2134,7 @@ async function handleCancelGenerate(): Promise<void> {
   });
   if (res.error) {
     // 취소가 실패해도 사용자는 계속 그 가사를 보고 있다 — 화면을 갈아치울 근거가 없다
-    reportFailure('취소 요청에 실패했어요.', failureNote(noteFailure(res.failure)));
+    reportFailure(t('content.failure.cancelRequest'), failureNote(noteFailure(res.failure)));
     return;
   }
   // 그 사이 이미 완료된 잡이면 취소 대신 결과를 반영한다
@@ -2176,7 +2176,7 @@ async function pollJobs(): Promise<void> {
         void searchLyrics().then(() => {
           if (videoId !== currentVideoId) return;
           const verdict = completionVerdict(label);
-          notifyJobDone(job.jobId, '전사 완료', verdict.message);
+          notifyJobDone(job.jobId, t('content.notify.transcribeComplete'), verdict.message);
           if (verdict.warning) showNotice(verdict.warning, 20000);
         });
       } else {
@@ -2185,15 +2185,15 @@ async function pollJobs(): Promise<void> {
         // 현재 영상은 completionVerdict로 결과를 보고 말하는데 여기만 무검증으로
         // "준비됐어요"라고 단정하면, 없는 것을 있다고 말하는 절반짜리가 된다.
         // 그래서 사실인 것(잡이 끝났고 싱크가 만들어졌다)만 말하고 확인은 사용자에게 넘긴다.
-        notifyJobDone(job.jobId, '전사 완료', `${label} — 싱크가 만들어졌어요. 영상을 열어 확인해 주세요`);
+        notifyJobDone(job.jobId, t('content.notify.transcribeComplete'), t('content.notify.otherVideoReady', [label]));
       }
     } else if (status.status === 'failed') {
       removeJob(videoId);
       // gone = 서버에 잡 기록이 없음(재시작 등) — 무한 폴링 대신 명시적으로 마감
       const errMsg = status.gone
-        ? '서버에서 작업 기록을 찾을 수 없어요 (서버 재시작 등) — 다시 생성해 주세요'
-        : (status.error || '싱크 생성에 실패했어요');
-      notifyJobDone(job.jobId, '전사 실패', `${job.title ?? videoId} — ${errMsg}`);
+        ? t('content.error.jobGone')
+        : (status.error || t('content.error.syncGenerationFailed'));
+      notifyJobDone(job.jobId, t('content.notify.transcribeFailed'), `${job.title ?? videoId} — ${errMsg}`);
       if (videoId === currentVideoId) {
         // 전사가 실패해도 지금 보고 있는 가사(자막·LRCLIB·위키·기존 싱크)는 멀쩡하다 —
         // 오류 화면으로 덮으면 실패 문구 하나 때문에 읽던 가사를 잃는다
@@ -2204,8 +2204,8 @@ async function pollJobs(): Promise<void> {
       job.stage = status.stage ?? undefined;
       job.stageProgress = status.stage_progress ?? undefined;
       job.queueLabel = status.queue_position != null && status.queue_position > 0
-        ? `대기열 ${status.queue_position}번째`
-        : (status.status === 'queued' || status.status === 'pending' ? '대기열' : undefined);
+        ? t('content.queue.position', [String(status.queue_position)])
+        : (status.status === 'queued' || status.status === 'pending' ? t('content.queue.label') : undefined);
     }
   }
   // 서버가 계속 무응답이면 폴링 간격을 늘려 무의미한 요청을 줄인다 (응답 오면 즉시 복귀)
@@ -2231,12 +2231,12 @@ async function pollJobs(): Promise<void> {
 function completionVerdict(label: string): { message: string; warning: string | null } {
   const data = currentData;
   if (!data?.synced) {
-    return { message: `${label} — 싱크를 불러오지 못했어요`, warning: '싱크를 불러오지 못했어요' };
+    return { message: t('content.completion.notLoadedMsg', [label]), warning: t('content.completion.notLoadedWarning') };
   }
   // 발음·번역 부재 판정은 CJK 원문에서만 의미가 있다 — 한국어 가사에 독음·번역이
   // 없는 것은 정상이므로 경고하지 않는다
   if (!expectsPronunciation(data.lines.map(l => l.text))) {
-    return { message: `${label} — 가사 싱크가 준비됐어요`, warning: null };
+    return { message: t('content.completion.readyMsg', [label]), warning: null };
   }
   // `some()`으로 "하나라도 있는가"만 보면 안 된다 — 한 줄만 붙고 나머지가 비어도 "준비됐어요"가
   // 된다. 서버는 응답이 잘린 줄을 failed로 표시해 보내는데(TranslatedLine.failed) 그것도
@@ -2246,26 +2246,26 @@ function completionVerdict(label: string): { message: string; warning: string | 
   const noTr = data.lines.filter(l => !l.translation).length;
   const missing: string[] = [];
   const partial: string[] = [];
-  if (noPron === n) missing.push('발음');
-  else if (noPron > 0) partial.push(`발음 ${n - noPron}/${n}줄`);
-  if (noTr === n) missing.push('번역');
-  else if (noTr > 0) partial.push(`번역 ${n - noTr}/${n}줄`);
+  if (noPron === n) missing.push(t('content.completion.pronWord'));
+  else if (noPron > 0) partial.push(t('content.completion.partialPron', [String(n - noPron), String(n)]));
+  if (noTr === n) missing.push(t('content.completion.trWord'));
+  else if (noTr > 0) partial.push(t('content.completion.partialTr', [String(n - noTr), String(n)]));
 
   if (missing.length === 0 && partial.length === 0) {
-    return { message: `${label} — 가사 싱크·발음·번역이 준비됐어요`, warning: null };
+    return { message: t('content.completion.allReadyMsg', [label]), warning: null };
   }
   if (missing.length === 0) {
     const some = partial.join(' · ');
     return {
-      message: `${label} — 싱크는 준비됐지만 일부 줄이 비었어요 (${some})`,
-      warning: `일부 줄에 ${some}만 붙었어요 — 재생성하면 다시 시도해요`,
+      message: t('content.completion.partialReadyMsg', [label, some]),
+      warning: t('content.completion.partialReadyWarning', [some]),
     };
   }
   const what = missing.join('·');
   const tail = partial.length ? ` (${partial.join(' · ')})` : '';
   return {
-    message: `${label} — 싱크는 만들어졌지만 ${what}이 없어요${tail}`,
-    warning: `싱크는 만들어졌지만 ${what}이 붙지 않았어요${tail} — 재생성하면 다시 시도해요`,
+    message: t('content.completion.missingMsg', [label, what, tail]),
+    warning: t('content.completion.missingWarning', [what, tail]),
   };
 }
 
@@ -2285,16 +2285,17 @@ function updateGenChip(): void {
   let text: string | null = null;
   if (!cur && currentVideoId && preparingGenerate.has(currentVideoId)) {
     // 잡 등록 전 준비 단계 — 버튼이 무반응처럼 보이지 않게 즉시 표시
-    text = '싱크 생성 준비 중 — AI 번역·독음 요청…';
+    text = t('content.genChip.preparing');
   } else if (cur) {
     // 단계명이 오면 "보컬 분리 60% · 전체 68%"처럼 무슨 과정인지 함께 보여준다
+    // (cur.stage 자체는 서버가 주는 값이라 여기서 번역하지 않는다 — 서버 i18n은 범위 밖)
     const state = cur.queueLabel
       ?? (cur.stage
-        ? `${cur.stage} ${cur.stageProgress ?? 0}% · 전체 ${cur.progress}%`
-        : `${cur.progress}%`);
-    text = `전사 중 ${state}${others > 0 ? ` · 외 ${others}건` : ''}`;
+        ? t('content.genChip.stageProgress', [cur.stage, String(cur.stageProgress ?? 0), String(cur.progress)])
+        : t('content.genChip.percentOnly', [String(cur.progress)]));
+    text = t('content.genChip.transcribing', [state, others > 0 ? t('content.genChip.othersSuffix', [String(others)]) : '']);
   } else if (others > 0) {
-    text = `다른 영상 전사 중 ${others}건`;
+    text = t('content.genChip.othersOnly', [String(others)]);
   }
   // 칩 클릭 시 펼칠 내 대기열 목록 — 곡명+상태. activeJobs에 이 브라우저가 시킨
   // 잡만 저장되므로 다른 사용자의 큐는 구조적으로 노출되지 않는다.
@@ -2302,7 +2303,7 @@ function updateGenChip(): void {
     .map(([v, j]) => ({
       title: j.title ?? v,
       state: j.queueLabel
-        ?? (j.stage ? `${j.stage} ${j.stageProgress ?? 0}%` : `${j.progress}%`),
+        ?? (j.stage ? t('content.genChip.stageOnly', [j.stage, String(j.stageProgress ?? 0)]) : t('content.genChip.percentOnly', [String(j.progress)])),
       isCurrent: v === currentVideoId,
     }))
     .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent));
@@ -2556,11 +2557,40 @@ function showNotice(text: string | null, autoHideMs?: number): void {
   pip.setNoticeChip(text, autoHideMs);
 }
 
+/**
+ * 서버 오류 detail의 관용적(tolerant) 파싱 — 계획 Task 13 잔여.
+ *
+ * 오늘 everyric-api.ts의 readErrorDetail은 detail이 문자열이 아니면 JSON.stringify해
+ * 문자열로 넘긴다 — 그래서 서버가 `{code, message}` 객체로 바꿔도(다음 릴리스 예정) 지금은
+ * 그 JSON을 문자열째로 받는다. 여기서 다시 파싱을 시도해 code가 있으면 카탈로그
+ * (`serverError.<code>`)에서 로컬라이즈를 찾고, 없으면 message를, 그마저 없으면 원문을
+ * 그대로 쓴다 — 평범한 문자열(오늘 거의 모든 경우)은 JSON.parse가 실패해 그대로 통과한다.
+ * 서버가 실제로 객체를 보내기 시작해도(everyric-api.ts가 그때 맞춰 바뀌면) 이 함수는
+ * 손대지 않아도 된다.
+ */
+function tolerantDetailText(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (!parsed || typeof parsed !== 'object') return raw;
+  const obj = parsed as { code?: string; message?: string };
+  if (obj.code) {
+    const key = `serverError.${obj.code}`;
+    const localized = t(key);
+    if (localized !== key) return localized; // 카탈로그에 없으면 t()가 키 자체를 돌려준다
+  }
+  return obj.message ?? raw;
+}
+
 /** 실패 사유를 화면 문구 뒤에 붙일 한 줄로 — 없으면 undefined */
 function failureNote(failure: ApiFailure | undefined): string | undefined {
   if (!failure) return undefined;
   const status = failureToStatus(failure);
-  return status.detail ? `${statusLine(status)} — ${status.detail}` : statusLine(status);
+  const detail = status.detail ? tolerantDetailText(status.detail) : undefined;
+  return detail ? `${statusLine(status)} — ${detail}` : statusLine(status);
 }
 
 async function sendToBackground<T>(message: BgRequest): Promise<MessageResponse<T>> {
