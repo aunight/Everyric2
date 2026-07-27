@@ -668,6 +668,13 @@ async def _apply_translation_lang(
         available.add("ko")
     resp.available_langs = sorted(available)
 
+    # segments가 아직 lang별로 덮이기 전(레거시 원본 상태)의 스냅샷으로 계산한다 —
+    # 아래에서 특정 lang이 요청되면 segments["translation"]이 그 언어 값으로 덮이므로,
+    # 그 뒤에 계산하면 legacy ko 항목이 엉뚱한 언어 값을 legacy로 착각해 담게 된다.
+    resp.translations_by_lang = await _build_translations_by_lang(
+        repo, video_id, link_source_video_id, fingerprint, layer_langs, segments, has_legacy_translation
+    )
+
     if not lang:
         resp.timestamps = segments
         return resp
@@ -795,6 +802,85 @@ async def _try_cross_fingerprint_migration(
         other.origin,
     )
     return True
+
+
+# translations_by_lang 응답 크기 상한 — 언어가 늘어날수록 응답이 커진다(세그당 배열
+# 원소 하나씩). gzip 후엔 미미하지만(가라오케 표기 다중 문자열에 비하면 순수 텍스트
+# 배열은 압축률이 높다) 무한정 담지 않도록 막아 둔다.
+_TRANSLATIONS_BY_LANG_MAX_LANGS = 5
+
+
+async def _build_translations_by_lang(
+    repo: TranslationLayerRepository,
+    video_id: str,
+    link_source_video_id: str | None,
+    fingerprint: str,
+    layer_langs: list[str],
+    segments: list[dict[str, Any]],
+    has_legacy_translation: bool,
+) -> dict[str, list[str | None]]:
+    """조회 응답의 translations_by_lang — 그 지문의 전 레이어(+legacy ko)를 세그 순서로
+    정렬된 배열로 담는다. 확장이 lang= 재조회 없이 즉시 언어를 전환할 수 있게 한다.
+
+    우선순위(비용이 싼 순서, `_TRANSLATIONS_BY_LANG_MAX_LANGS`까지):
+    1. 이 지문(또는 링크 폴백)에 이미 있는 레이어 — normalize_line 정확 매칭.
+    2. legacy ko — 레이어가 없고 세그 자체에 레거시 번역이 남아 있는 경우.
+    3. 크로스 지문 이관 후보 — 다른 지문에 사람 origin 레이어가 있고, 지금 세그에
+       재정렬(`align_translation_lines`)했을 때 커버리지가 문턱을 넘는 언어.
+
+    **읽기 전용이다** — 3번에서 이관 가능함을 확인해도 여기서는 새 지문에 저장하지
+    않는다(그건 실제로 그 언어가 lang= 요청된 순간 `_try_cross_fingerprint_migration`이
+    한다 — 모든 lookup마다 아직 아무도 안 쓴 언어까지 선제적으로 써 두면 배경 작업이
+    지나치게 늘어난다)."""
+    seg_texts = [seg.get("text", "") or "" for seg in segments]
+    result: dict[str, list[str | None]] = {}
+    if not seg_texts:
+        return result
+
+    for lang_code in layer_langs:
+        if len(result) >= _TRANSLATIONS_BY_LANG_MAX_LANGS:
+            return result
+        layer = await repo.get_layer(video_id, fingerprint, lang_code)
+        if layer is None and link_source_video_id:
+            layer = await repo.get_layer(link_source_video_id, fingerprint, lang_code)
+        if layer is None:
+            continue
+        by_text: dict[str, str] = {}
+        for item in layer.lines or []:
+            key = normalize_line(item.get("text", "") or "")
+            if not key:
+                continue
+            value = item.get("translation", "") or ""
+            if key not in by_text or (not by_text[key] and value):
+                by_text[key] = value
+        result[lang_code] = [by_text.get(normalize_line(t)) or None for t in seg_texts]
+
+    if (
+        "ko" not in result
+        and has_legacy_translation
+        and len(result) < _TRANSLATIONS_BY_LANG_MAX_LANGS
+    ):
+        result["ko"] = [(seg.get("translation") or "").strip() or None for seg in segments]
+
+    if len(result) < _TRANSLATIONS_BY_LANG_MAX_LANGS:
+        for search_vid in (video_id, *((link_source_video_id,) if link_source_video_id else ())):
+            candidate_langs = await repo.list_human_langs_other_fingerprint(search_vid, fingerprint)
+            for lang_code in candidate_langs:
+                if lang_code in result:
+                    continue
+                if len(result) >= _TRANSLATIONS_BY_LANG_MAX_LANGS:
+                    return result
+                other = await repo.find_human_layer_other_fingerprint(
+                    search_vid, lang_code, fingerprint
+                )
+                if other is None:
+                    continue
+                remapped = align_translation_lines(seg_texts, other.lines or [])
+                matched = sum(1 for value in remapped if value is not None)
+                if matched / len(seg_texts) >= _CROSS_FINGERPRINT_MIGRATION_MIN_COVERAGE:
+                    result[lang_code] = [value or None for value in remapped]
+
+    return result
 
 
 async def _persist_pron_variants(sync_id: str, attached_segments: list[dict[str, Any]]) -> None:

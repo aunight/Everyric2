@@ -1872,3 +1872,190 @@ def test_cross_fingerprint_migration_prefers_exact_match_when_current_fingerprin
             assert resp.timestamps[0]["translation"] == "정확매칭하나"
 
     asyncio.run(body())
+
+
+# ── translations_by_lang — 보유 언어 전부를 lookup에 동봉 (사용자 채택안) ─────────
+
+
+def test_translations_by_lang_includes_all_layers_matching_segment_order():
+    """2언어 레이어 곡의 lookup에 두 배열이 동봉되고, 각 배열은 세그 길이와 같으며
+    매칭 안 된 세그는 None으로 채워진다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "First line"}],  # 둘째 줄은 없음
+                    attribution=None,
+                    origin="llm",
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "ja",
+                    lines=[
+                        {"text": "첫 줄", "translation": "最初の行"},
+                        {"text": "둘째 줄", "translation": "二番目の行"},
+                    ],
+                    attribution=None,
+                    origin="wiki",
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)  # lang 미지정 — 그래도 동봉된다
+            assert resp.translations_by_lang == {
+                "en": ["First line", None],  # 둘째 줄은 레이어에 없어 None
+                "ja": ["最初の行", "二番目の行"],
+            }
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_present_regardless_of_lang_param():
+    # lang= 지정 요청에도 동봉되고, 요청한 lang과 무관하게 다른 언어도 함께 담긴다
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, FP, "en",
+                    lines=[
+                        {"text": "첫 줄", "translation": "First"},
+                        {"text": "둘째 줄", "translation": "Second"},
+                    ],
+                    attribution=None, origin="llm",
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, FP, "ja",
+                    lines=[{"text": "첫 줄", "translation": "最初"}],
+                    attribution=None, origin="wiki",
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="en")
+            # 요청한 lang(en)에 따라 timestamps.translation은 en으로 덮이지만,
+            # translations_by_lang은 두 언어 모두 담는다
+            assert resp.translation_lang == "en"
+            assert [seg["translation"] for seg in resp.timestamps] == ["First", "Second"]
+            assert resp.translations_by_lang == {
+                "en": ["First", "Second"],
+                "ja": ["最初", None],
+            }
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_includes_legacy_ko_when_no_ko_layer():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1",
+                    timestamps=_seed_segments(["레거시 번역 1", ""]),
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)
+            assert resp.translations_by_lang == {"ko": ["레거시 번역 1", None]}
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_ko_layer_takes_precedence_over_legacy():
+    # ko 레이어가 있으면 그걸 쓴다 — 세그의 레거시 텍스트로 덮지 않는다
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1",
+                    timestamps=_seed_segments(["레거시 번역 1", ""]),
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, FP, "ko",
+                    lines=[{"text": "첫 줄", "translation": "정식 레이어 번역"}],
+                    attribution=None, origin="wiki",
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)
+            assert resp.translations_by_lang == {"ko": ["정식 레이어 번역", None]}
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_cross_fingerprint_candidate_when_fingerprints_differ():
+    async def body():
+        async with _env() as sm:
+            old_seg_texts = ["hello", "world"]
+            new_seg_texts = ["hello world"]  # 세그 개수가 달라 지문도 다르다(합침)
+
+            async with sm() as s:
+                old_fp = lines_fingerprint(old_seg_texts)
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO, old_fp, "en",
+                    lines=[
+                        {"text": "hello", "translation": "Hello"},
+                        {"text": "world", "translation": "World"},
+                    ],
+                    attribution=None, origin="wiki",
+                )
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h_new",
+                    timestamps=[{"text": t, "translation": ""} for t in new_seg_texts],
+                )
+                await s.commit()
+
+            new_fp = lines_fingerprint(new_seg_texts)
+            assert old_fp != new_fp
+
+            resp = await get_sync(VIDEO)
+            # "hello"+"world" 결합이 세그 "hello world"와 일치(위키가 쪼갬 반대 — 위키가
+            # 더 잘게 쪼개져 있고 세그가 합쳐졌으므로 실제로는 "위키가 합침" 케이스와 대칭인
+            # "세그가 합침" — align_translation_lines 관점에서는 위키 여러 줄이 세그 하나와
+            # 일치하는 "위키가 쪼갬" 케이스로 해석된다(번역을 이어 붙여 배정)
+            assert resp.translations_by_lang == {"en": ["HelloWorld"]}
+
+            # 읽기 전용 확인 — 이 조회만으로는 새 지문에 저장되지 않는다(lang= 요청 전까지)
+            async with sm() as s:
+                assert await TranslationLayerRepository(s).get_layer(VIDEO, new_fp, "en") is None
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_is_capped_at_five_languages():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                for lang_code in ["en", "ja", "zh", "fr", "de", "es", "it"]:  # 7개 — 5개로 잘려야 한다
+                    await TranslationLayerRepository(s).upsert_layer(
+                        VIDEO, FP, lang_code,
+                        lines=[{"text": "첫 줄", "translation": f"T-{lang_code}"}],
+                        attribution=None, origin="llm",
+                    )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)
+            assert len(resp.translations_by_lang) == 5
+
+    asyncio.run(body())
+
+
+def test_translations_by_lang_is_none_when_sync_not_found():
+    async def body():
+        async with _env():
+            resp = await get_sync("NOSYNCNOS01")
+            assert resp.found is False
+            assert resp.translations_by_lang is None
+
+    asyncio.run(body())
