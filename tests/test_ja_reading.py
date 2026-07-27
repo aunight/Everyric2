@@ -129,11 +129,13 @@ def test_moras_keep_original_char_offsets_across_a_space():
     assert [m.kana for m in moras] == [
         "す", "が", "っ", "て", "い", "つ", "も", "す", "が", "っ", "て",
     ]
-    # 공백은 모라를 만들지 않고 글자 인덱스만 건너뛴다
-    assert (moras[0].char_start, moras[0].char_end) == (0, 2)   # 縋っ
+    # 공백은 모라를 만들지 않고 글자 인덱스만 건너뛴다. 정밀 귀속(2026-07-28) 후
+    # 촉음·가나는 자기 글자에, 한자는 자기 런에 붙는다.
+    assert (moras[0].char_start, moras[0].char_end) == (0, 1)   # 縋
+    assert (moras[2].char_start, moras[2].char_end) == (1, 2)   # っ (자기 글자)
     assert (moras[3].char_start, moras[3].char_end) == (2, 3)   # て
-    assert (moras[4].char_start, moras[4].char_end) == (4, 6)   # いつ (공백 뒤)
-    assert (moras[7].char_start, moras[7].char_end) == (7, 9)   # 縋っ (두 번째)
+    assert (moras[4].char_start, moras[4].char_end) == (4, 5)   # い (공백 뒤)
+    assert (moras[7].char_start, moras[7].char_end) == (7, 8)   # 縋 (두 번째)
     assert (moras[-1].char_start, moras[-1].char_end) == (9, 10)
     # 모라 구간은 원문 범위를 넘지 않고 순서대로 증가한다
     assert all(0 <= m.char_start < m.char_end <= len(text) for m in moras)
@@ -210,8 +212,9 @@ def test_sokuon_survives_as_its_own_mora():
     assert kana_reading("行った") == "いった"
     moras = text_to_moras("行った")
     assert [m.kana for m in moras] == ["い", "っ", "た"]
-    # 촉음은 활용 어간 토큰(行っ)에 붙어 그 글자 구간을 공유한다
-    assert (moras[1].char_start, moras[1].char_end) == (0, 2)
+    # 정밀 귀속(2026-07-28): 촉음은 어간 토큰 안에서도 **자기 글자**(っ, 원문 1번)에 붙는다
+    assert (moras[0].char_start, moras[0].char_end) == (0, 1)  # 行=い
+    assert (moras[1].char_start, moras[1].char_end) == (1, 2)  # っ
     assert (moras[2].char_start, moras[2].char_end) == (2, 3)
 
 

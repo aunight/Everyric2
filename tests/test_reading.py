@@ -32,16 +32,16 @@ def test_text_to_moras_youon_combines_into_one_mora():
     assert len(moras) == 6
 
 
-def test_text_to_moras_sokuon_shares_kanji_char_span():
-    # 背負った: pykakasi 읽기 せおった 기준 ッ은 1모라이며, おくりがな 촉음이
-    # 한자(背負) 토큰에 붙어 있으므로 그 한자 글자 구간(0,3)을 공유한다.
+def test_text_to_moras_sokuon_gets_its_own_char_span():
+    # 背負った: 정밀 귀속(2026-07-28) 후 — 한자 런(背負)이 せ·お를 공유하고, 오쿠리가나
+    # 촉음 っ은 **자기 글자**(원문 2번째 위치)에 붙는다. 예전에는 토큰 전체(0,3)를
+    # 공유해 순간이동 뭉침의 재료가 됐다.
     moras = text_to_moras("背負った")
     kanas = [m.kana for m in moras]
     assert kanas == ["せ", "お", "っ", "た"]
-    assert moras[2].kana == "っ"
-    assert (moras[2].char_start, moras[2].char_end) == (0, 3)
-    assert (moras[0].char_start, moras[0].char_end) == (0, 3)
-    assert (moras[1].char_start, moras[1].char_end) == (0, 3)
+    assert (moras[0].char_start, moras[0].char_end) == (0, 2)
+    assert (moras[1].char_start, moras[1].char_end) == (0, 2)
+    assert (moras[2].char_start, moras[2].char_end) == (2, 3)
     # た는 별도 토큰(원문 3번째 글자)
     assert (moras[3].char_start, moras[3].char_end) == (3, 4)
 
@@ -109,8 +109,9 @@ def test_align_pron_to_moras_kanji_multi_mora():
     # 4모라(ま,え,が,み)를 갖는다. pron과 1:1 정렬되어야 한다.
     moras = text_to_moras("長い前髪")
     assert [m.kana for m in moras] == ["な", "が", "い", "ま", "え", "が", "み"]
-    assert (moras[0].char_start, moras[0].char_end) == (0, 2)
-    assert (moras[2].char_start, moras[2].char_end) == (0, 2)
+    # 정밀 귀속: 長(한자)=なが, 오쿠리가나 い는 자기 글자. 前髪(전부 한자)은 통짜 유지.
+    assert (moras[0].char_start, moras[0].char_end) == (0, 1)
+    assert (moras[2].char_start, moras[2].char_end) == (1, 2)
     assert (moras[3].char_start, moras[3].char_end) == (2, 4)
 
     syllables, quality = align_pron_to_moras(moras, "나가이 마에가미")
@@ -183,3 +184,43 @@ if __name__ == "__main__":
         _fn()
         print(f"PASS {_fn.__name__}")
     print(f"\n{len(_fns)} passed")
+
+
+# ---------------------------------------------------------------------------
+# 모라 → 글자 정밀 귀속 (2026-07-28) — «순간이동» 사고의 뿌리 수정
+# ---------------------------------------------------------------------------
+# 한 토큰의 모든 모라가 토큰 전체 구간을 공유하면, 역매핑에서 그 글자들이 같은 스팬을
+# 받고 단조 클램프가 첫 글자에 몰아준 뒤 나머지를 제로폭으로 만든다 — JW3N-HvU0MA의
+# フラッシュバック(외래어 한 토큰) ラ~ク 7글자가 한 시각에 점등한 실측 사고. 가나는
+# 표면과 읽기가 위치 대응하므로 세분하고, 한자 런은 가나 앵커 사이 읽기를 공유한다.
+
+
+def test_moras_attribute_kana_tokens_per_char():
+    moras = text_to_moras("フラッシュバック")
+    assert [(m.kana, m.char_start, m.char_end) for m in moras] == [
+        ("ふ", 0, 1), ("ら", 1, 2), ("っ", 2, 3), ("しゅ", 3, 5),
+        ("ば", 5, 6), ("っ", 6, 7), ("く", 7, 8),
+    ]
+
+
+def test_moras_distribute_okurigana_like_furigana():
+    # 愛し合える → 愛=あい / し / 合=あ / え / る (후리가나 분배와 동일)
+    moras = text_to_moras("愛し合える")
+    assert [(m.kana, m.char_start, m.char_end) for m in moras] == [
+        ("あ", 0, 1), ("い", 0, 1), ("し", 1, 2), ("あ", 2, 3), ("え", 3, 4), ("る", 4, 5),
+    ]
+
+
+def test_moras_keep_long_vowel_marks_positional():
+    moras = text_to_moras("スーパー")
+    assert [(m.kana, m.char_start) for m in moras] == [
+        ("す", 0), ("ー", 1), ("ぱ", 2), ("ー", 3),
+    ]
+
+
+def test_token_span_refinement_falls_back_on_mismatch():
+    # 표면 가나와 읽기가 어긋나면(아테지류) 확신이 없다 — None을 돌려 통짜 구간을 지킨다
+    from everyric2.text.reading import _token_mora_char_spans
+
+    assert _token_mora_char_spans("は", 0, ["わ"]) is None
+    assert _token_mora_char_spans("愛", 0, []) is None

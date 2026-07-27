@@ -76,6 +76,91 @@ def _hira_to_kana_moras(hira: str) -> list[str]:
     return moras
 
 
+def _norm_kana_char(ch: str) -> str:
+    """가타카나 → 히라가나 (비교용). 장음 ー 등 대응 없는 글자는 그대로."""
+    cp = ord(ch)
+    if 0x30A1 <= cp <= 0x30F6:
+        return chr(cp - 0x60)
+    return ch
+
+
+def _surface_kana_elements(surface: str, base: int):
+    """토큰 표면 → [(정규화 모라 또는 None=불투명 블록, char_start, char_end)].
+
+    가나 글자는 자기 위치의 1모라 요소(요음 소문자는 직전에 결합), 그 외(한자·기호)는
+    연속 런을 하나의 불투명 블록으로 합친다. 모라→글자 정밀 귀속(_token_mora_char_spans)의
+    재료다.
+    """
+    out: list[list] = []
+    for k, ch in enumerate(surface):
+        cp = ord(ch)
+        if 0x3040 <= cp <= 0x30FF:
+            norm = _norm_kana_char(ch)
+            if norm in _SMALL_COMBINING and out and out[-1][0] is not None:
+                out[-1][0] += norm
+                out[-1][2] = base + k + 1
+                continue
+            out.append([norm, base + k, base + k + 1])
+        elif out and out[-1][0] is None:
+            out[-1][2] = base + k + 1
+        else:
+            out.append([None, base + k, base + k + 1])
+    return out
+
+
+def _token_mora_char_spans(
+    surface: str, base: int, kana_moras: list[str]
+) -> list[tuple[int, int]] | None:
+    """토큰 안에서 각 읽기 모라의 글자 구간을 세분한다. 확신이 없으면 None(통짜 폴백).
+
+    왜: 한 토큰의 모든 모라가 토큰 전체 구간을 공유하면, 역매핑에서 그 글자들이 전부
+    같은 스팬을 받고 단조 클램프가 첫 글자에 몰아준 뒤 나머지를 제로폭으로 만든다 —
+    フラッシュバック(외래어 한 토큰)의 ラ~ク 7글자가 한 시각에 «순간이동»으로 점등한
+    실측 사고(JW3N-HvU0MA, 2026-07-28)의 뿌리다. 한자는 낱글자 세분이 원리적으로
+    불가하지만 가나는 표면과 읽기가 위치 대응하므로 자명하게 세분된다.
+
+    방식은 후리가나 분배와 같다: 표면의 가나를 앵커로 좌→우 매칭하고, 한자(불투명
+    블록) 런은 다음 가나 앵커 앞까지의 읽기 모라를 통째로 갖는다(愛し合える →
+    愛=あい, し, 合=あ, え, る). 앵커가 읽기와 안 맞으면(아테지·표기 어긋남) None —
+    기존 통짜 동작으로 떨어지는 보수적 실패다.
+    """
+    elems = _surface_kana_elements(surface, base)
+    spans: list[tuple[int, int]] = []
+    r, n_r = 0, len(kana_moras)
+    k = 0
+    while k < len(elems):
+        norm, cs, ce = elems[k]
+        if norm is not None:
+            if r >= n_r or "".join(_norm_kana_char(c) for c in kana_moras[r]) != norm:
+                return None
+            spans.append((cs, ce))
+            r += 1
+            k += 1
+            continue
+        # 불투명 블록 — 다음 가나 앵커 직전까지의 읽기 모라를 갖는다
+        k2 = k + 1
+        while k2 < len(elems) and elems[k2][0] is None:
+            ce = elems[k2][2]
+            k2 += 1
+        if k2 >= len(elems):
+            count = n_r - r
+        else:
+            anchor = elems[k2][0]
+            rr = r
+            while rr < n_r and "".join(_norm_kana_char(c) for c in kana_moras[rr]) != anchor:
+                rr += 1
+            if rr >= n_r:
+                return None
+            count = rr - r
+        if count <= 0:
+            return None  # 한자가 읽기 모라 0개 — 앵커 오매칭 신호, 신뢰하지 않는다
+        for _ in range(count):
+            spans.append((cs, ce))
+            r += 1
+        k = k2
+    return spans if r == n_r else None
+
+
 def text_to_moras(text: str) -> list[Mora]:
     """원문 라인을 모라 시퀀스로 분해.
 
@@ -84,8 +169,9 @@ def text_to_moras(text: str) -> list[Mora]:
     공백·문장부호는 모라를 만들지 않고 글자 인덱스만 건너뛴다.
 
     토큰은 원문 글자 구간(start/end)을 직접 들고 오며, 표면을 이어 붙이면 원문이
-    복원된다(ja_reading의 계약). 한 토큰에서 나온 여러 모라는 그 토큰의 글자 구간을
-    공유한다(한자 낱글자 단위로는 세분화할 수 없기 때문).
+    복원된다(ja_reading의 계약). 한 토큰에서 나온 여러 모라는 가능하면 **글자 단위로
+    정밀 귀속**된다(_token_mora_char_spans — 가나는 위치 대응, 한자 런은 앵커 사이
+    읽기를 공유). 귀속이 확실치 않으면 예전처럼 토큰 전체 구간을 공유한다.
     """
     tokens = tokenize_reading(text)
     moras: list[Mora] = []
@@ -93,8 +179,12 @@ def text_to_moras(text: str) -> list[Mora]:
     while i < n:
         token = tokens[i]
         if any(_is_japanese_char(c) for c in token.surface):
-            for kana in _hira_to_kana_moras(token.reading):
-                moras.append(Mora(kana=kana, char_start=token.start, char_end=token.end))
+            kana_moras = _hira_to_kana_moras(token.reading)
+            fine = _token_mora_char_spans(token.surface, token.start, kana_moras)
+            if fine is None:
+                fine = [(token.start, token.end)] * len(kana_moras)
+            for kana, (cs, ce) in zip(kana_moras, fine):
+                moras.append(Mora(kana=kana, char_start=cs, char_end=ce))
             i += 1
             continue
 
