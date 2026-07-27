@@ -25,12 +25,24 @@ YAIBA_CHOSEN_HANGUL = "야이바오 토구"
 
 
 def _words(text: str, step: float = 0.5) -> list[dict]:
-    """글자별 (start, end) 스팬 — CTC 정렬이 내는 seg["words"]와 같은 모양."""
+    """비공백 글자별 (start, end) 스팬 — 정렬 word_segments(공백을 만들지 않는 CTC 토큰)와
+    같은 모양이다. ``_full_coverage_words``가 직렬화에서 실제로 만드는 ``seg["words"]``는
+    이것과 **다르다**(라인 전체 글자를 공백까지 포함해 1:1로 덮는다) — 그 모양은
+    ``_full_words``가 낸다."""
     return [
         {"word": ch, "start": i * step, "end": (i + 1) * step}
         for i, ch in enumerate(text)
         if not ch.isspace()
     ]
+
+
+def _full_words(text: str, step: float = 0.5) -> list[dict]:
+    """글자별(공백 포함) (start, end) 스팬 — ``_full_coverage_words``가 직렬화에서 실제로
+    만드는 ``seg["words"]``와 같은 모양(실측: "옛날 머나먼 그 어느 마을엔" → words 15개,
+    그중 공백 4개). ko 분기의 ``_ko_char_time``이 공백 항목을 걸러내지 않으면 원문의
+    비공백 글자와 개수가 어긋나 kana/romaji 시각이 전멸했던 실사용 버그(N_vYUNEktsA)의
+    재현 픽스처다."""
+    return [{"word": ch, "start": i * step, "end": (i + 1) * step} for i, ch in enumerate(text)]
 
 
 def _seg(text: str, pronunciation: str, *, words: bool = True) -> dict:
@@ -190,6 +202,45 @@ def test_ko_segment_kana_segs_are_monotonic_and_bisect_the_coda():
     assert ra["start"] == lang_span["start"]
     assert ra["end"] == n["start"] == (lang_span["start"] + lang_span["end"]) / 2
     assert n["end"] == lang_span["end"]
+
+
+def test_ko_segment_romaja_segs_are_monotonic_and_rebuild_the_display():
+    seg = _seg("사랑해", "", words=True)
+    attach_pron_variants(seg)
+
+    segments = seg["pron_segs"]["romaji"]
+    # 한 글자 = 로마자 한 덩이(받침이 갈라지지 않는다) — kana처럼 이등분이 없다
+    assert [s["text"] for s in segments] == ["sa", "rang", "hae"]
+    assert "".join(s["text"] for s in segments) == seg["pron"]["romaji"]
+    for prev, cur in zip(segments, segments[1:]):
+        assert cur["start"] >= prev["end"]
+        assert cur["end"] >= cur["start"]
+    # 글자 스팬을 그대로 옮겨 붙인다 — 랑의 스팬과 정확히 같아야 한다(균등분할 없음)
+    lang_span = _words("사랑해")[1]
+    assert segments[1]["start"] == lang_span["start"]
+    assert segments[1]["end"] == lang_span["end"]
+
+
+def test_ko_segment_kana_and_romaja_segs_survive_words_with_blank_entries():
+    # 실사용 버그 재현: _full_coverage_words가 만드는 words는 공백도 항목으로 포함한다.
+    # 필터링 없이 원문 비공백 글자와 zip하면 전 줄에서 개수 불일치 → kana/romaji segs 전멸.
+    from everyric2.text.ko_reading import hangul_line_moras, hangul_line_romaja_syllables
+
+    text = "사랑해 진짜"
+    seg = _seg(text, "", words=False)
+    seg["words"] = _full_words(text)  # 공백 포함 — 실제 _full_coverage_words 모양
+    attach_pron_variants(seg)
+
+    kana_segments = seg["pron_segs"]["kana"]
+    romaja_segments = seg["pron_segs"]["romaji"]
+
+    assert len(kana_segments) == len(hangul_line_moras(text)) > 0
+    assert len(romaja_segments) == len(hangul_line_romaja_syllables(text)) > 0
+
+    for segments in (kana_segments, romaja_segments):
+        for prev, cur in zip(segments, segments[1:]):
+            assert cur["start"] >= prev["end"]
+            assert cur["end"] >= cur["start"]
 
 
 def test_ko_segment_display_survives_when_timing_is_unavailable():

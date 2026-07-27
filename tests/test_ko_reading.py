@@ -10,6 +10,7 @@ import pytest
 
 from everyric2.text.ko_reading import (
     hangul_line_moras,
+    hangul_line_romaja_syllables,
     hangul_to_kana,
     hangul_to_romaja,
     latin_to_kana,
@@ -81,6 +82,28 @@ def test_hangul_line_moras_full_line_char_spans():
         ("ン", 1, 2),
         ("ヘ", 2, 3),
     ]
+
+
+def test_hangul_line_romaja_syllables_matches_hangul_to_romaja():
+    # 사랑해 = sa+rang+hae (연음 없음), 각 음절 1글자 1스팬 — kana처럼 2모라로 갈리지 않는다.
+    assert hangul_line_romaja_syllables("사랑해") == [
+        ("sa", 0, 1), ("rang", 1, 2), ("hae", 2, 3),
+    ]
+    # 먹어 = 연음(먹어→머거) 후 meo+geo
+    assert hangul_line_romaja_syllables("먹어") == [
+        ("meo", 0, 1), ("geo", 1, 2),
+    ]
+    # 흘러 = 설측음화(heulleo)까지 음절 함수에도 반영돼야 한다 — heul+leo
+    assert hangul_line_romaja_syllables("흘러") == [
+        ("heul", 0, 1), ("leo", 1, 2),
+    ]
+    # 이어붙이면 hangul_to_romaja와 항상 같다(같은 내부 함수를 공유하므로)
+    for text in ("사랑해", "먹어", "흘러", "신라"):
+        assert "".join(s for s, _, _ in hangul_line_romaja_syllables(text)) == hangul_to_romaja(text)
+
+
+def test_hangul_line_romaja_syllables_passthrough_non_hangul():
+    assert hangul_line_romaja_syllables("사 랑!") == [("sa", 0, 1), ("rang", 2, 3), ("!", 3, 4)]
 
 
 def test_hangul_line_moras_skips_space_passes_through_punctuation():

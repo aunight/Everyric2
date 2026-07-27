@@ -274,23 +274,52 @@ def _rr_liquid_overrides(run: list[list]) -> tuple[list[bool], list[bool]]:
     return coda_l, onset_l
 
 
+def _rr_render_run(run: list[list]) -> list[tuple[str, int]]:
+    """연음+설측음화 적용 후 음절별 (RR 문자열, 글자위치).
+
+    ``hangul_to_romaja``와 ``hangul_line_romaja_syllables``가 이 하나를 공유한다 —
+    두 함수의 값이 갈릴 일이 없다(연음·설측음화가 한 곳에만 있다)."""
+    _liaise(run)
+    coda_l, onset_l = _rr_liquid_overrides(run)
+    out: list[tuple[str, int]] = []
+    for k, (cho, jung, jong, idx) in enumerate(run):
+        eff_jong = _COMPLEX_JONG_SURFACE.get(jong, jong)
+        onset = "l" if onset_l[k] else _RR_ONSET.get(cho, "")
+        coda = "l" if coda_l[k] else _RR_CODA.get(eff_jong, "")
+        out.append((onset + _RR_VOWEL.get(jung, "") + coda, idx))
+    return out
+
+
 def hangul_to_romaja(text: str) -> str:
     """한국어 텍스트를 국립국어원 로마자 표기법으로 바꾼다. 비한글 문자는 그대로 통과."""
     out: list[str] = []
     for is_hangul, payload in _hangul_runs(text):
         if is_hangul:
-            _liaise(payload)
-            coda_l, onset_l = _rr_liquid_overrides(payload)
-            for k, (cho, jung, jong, _idx) in enumerate(payload):
-                eff_jong = _COMPLEX_JONG_SURFACE.get(jong, jong)
-                onset = "l" if onset_l[k] else _RR_ONSET.get(cho, "")
-                coda = "l" if coda_l[k] else _RR_CODA.get(eff_jong, "")
-                out.append(onset)
-                out.append(_RR_VOWEL.get(jung, ""))
-                out.append(coda)
+            for syllable, _idx in _rr_render_run(payload):
+                out.append(syllable)
         else:
             out.append(payload[0])
     return "".join(out)
+
+
+def hangul_line_romaja_syllables(text: str) -> list[tuple[str, int, int]]:
+    """원문 한글 라인을 (RR 음절 문자열, char_start, char_end) 리스트로 분해한다.
+
+    ``hangul_line_moras``와 같은 계약(비한글 통과, 공백 생략)이지만 음절 단위다 —
+    받침이 독립 모라로 갈라지는 kana와 달리 RR은 한 글자가 항상 로마자 한 덩이라
+    (한→han, 국→guk) 한 글자에 토큰 2개를 만들지 않는다. 연음·설측음화(흘러→heulleo)는
+    ``hangul_to_romaja``와 내부 함수(``_rr_render_run``)를 공유하므로 항상 일치한다.
+    """
+    result: list[tuple[str, int, int]] = []
+    for is_hangul, payload in _hangul_runs(text):
+        if is_hangul:
+            for syllable, idx in _rr_render_run(payload):
+                result.append((syllable, idx, idx + 1))
+        else:
+            ch, idx = payload
+            if not ch.isspace():
+                result.append((ch, idx, idx + 1))
+    return result
 
 
 def hangul_line_moras(text: str) -> list[tuple[str, int, int]]:

@@ -395,33 +395,45 @@ def _romaji_mora_segments(
     return segments
 
 
-def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any]] | None:
-    """ko 곡 세그: ``hangul_line_moras`` + ``words``(글자별 스팬)로 kana 모라 시각을 만든다.
+def _ko_char_time(seg: dict[str, Any], text: str) -> dict[int, tuple[float, float]] | None:
+    """ko 곡 세그의 ``words``를 글자 인덱스별 (start, end)로 정리한다.
 
-    ``words``는 원문(한글) 글자별 정렬 스팬이라 위치가 이미 1:1이다 — ja 쪽처럼 글자
-    매칭으로 스팬을 찾을 필요 없이, 순서대로 짝짓기만 하면 된다. 개수가 다르거나
-    글자 자체가 어긋나면(다른 줄의 words가 섞였거나 공백 처리가 다르면) None — 표시
-    문자열만 남기고 확장이 그라데이션으로 폴백한다(``_attach_pron_segments``와 같은
-    실패 규약).
-
-    받침이 독립 가나가 되어 한 글자에 모라 2개가 붙으면(한→ハ+ン), 그 글자의 시간
-    구간을 모라 개수만큼 균등 분할한다(``reading._build_mora_time``과 같은 방식).
+    ``_full_coverage_words``가 만드는 ``words``는 라인의 **모든 글자를 공백까지 포함해**
+    1:1로 덮는다(실측: "옛날 머나먼 그 어느 마을엔" → words 15개, 그중 공백 4개) —
+    비한글 원문 글자별 스팬 없이 통짜로 붙는 kana/romaji의 «전멸» 원인이었다. 여기서
+    공백뿐인 항목을 걸러낸 뒤 원문의 비공백 글자와 순서대로 짝짓는다. 개수가 안
+    맞거나(다른 줄의 words가 섞였거나 정렬 토큰이 여러 글자를 한 덩이로 묶은 예외
+    케이스) 글자 자체가 어긋나면 None — 표시만 남기고 확장이 그라데이션으로 폴백한다
+    (``_attach_pron_segments``와 같은 실패 규약).
     """
     words = seg.get("words")
     if not words:
         return None
+    non_blank_words = [w for w in words if (w.get("word") or "").strip()]
     non_space_idx = [i for i, ch in enumerate(text) if not ch.isspace()]
-    if len(words) != len(non_space_idx):
+    if len(non_blank_words) != len(non_space_idx):
         return None
 
     char_time: dict[int, tuple[float, float]] = {}
-    for w, idx in zip(words, non_space_idx):
+    for w, idx in zip(non_blank_words, non_space_idx):
         if w.get("word") != text[idx]:
             return None
         try:
             char_time[idx] = (float(w.get("start", 0.0)), float(w.get("end", 0.0)))
         except (TypeError, ValueError):
             return None
+    return char_time
+
+
+def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any]] | None:
+    """ko 곡 세그: ``hangul_line_moras`` + ``_ko_char_time``으로 kana 모라 시각을 만든다.
+
+    받침이 독립 가나가 되어 한 글자에 모라 2개가 붙으면(한→ハ+ン), 그 글자의 시간
+    구간을 모라 개수만큼 균등 분할한다(``reading._build_mora_time``과 같은 방식).
+    """
+    char_time = _ko_char_time(seg, text)
+    if char_time is None:
+        return None
 
     try:
         from everyric2.text.ko_reading import hangul_line_moras
@@ -460,6 +472,44 @@ def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any
 
     if not segments:
         return None
+    for idx in range(1, len(segments)):
+        if segments[idx]["start"] < segments[idx - 1]["end"]:
+            segments[idx]["start"] = segments[idx - 1]["end"]
+        if segments[idx]["end"] < segments[idx]["start"]:
+            segments[idx]["end"] = segments[idx]["start"]
+    return segments
+
+
+def _romaja_syllable_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any]] | None:
+    """ko 곡 세그: ``hangul_line_romaja_syllables`` + ``_ko_char_time``으로 RR 시각을 만든다.
+
+    kana와 달리 한 글자는 항상 로마자 음절 한 덩이다(받침이 독립 모라로 갈라지지
+    않는다 — 한→han, 국→guk) — 그래서 글자 스팬을 그대로 옮겨 붙이면 되고, 균등
+    분할이 필요 없다.
+    """
+    char_time = _ko_char_time(seg, text)
+    if char_time is None:
+        return None
+
+    try:
+        from everyric2.text.ko_reading import hangul_line_romaja_syllables
+
+        syllables = hangul_line_romaja_syllables(text)
+    except Exception:
+        logger.exception("ko romaja timing failed; keeping the display string only")
+        return None
+    if not syllables:
+        return None
+
+    segments: list[dict[str, Any]] = []
+    for token, cs, _ce in syllables:
+        t = char_time.get(cs)
+        if t is None:
+            continue
+        segments.append({"text": token, "start": round(t[0], 3), "end": round(t[1], 3)})
+    if not segments:
+        return None
+
     for idx in range(1, len(segments)):
         if segments[idx]["start"] < segments[idx - 1]["end"]:
             segments[idx]["start"] = segments[idx - 1]["end"]
@@ -509,6 +559,8 @@ def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
 
     ``pronunciation``(독음) 필드가 없는 게 정상이다 — 원문 한글 자체가 표시이므로
     "hangul" 표기 키는 만들지 않는다(공유 계약: 클라이언트는 script 하나만 고른다).
+    두 표기(kana/romaji) 모두 시각 부착을 독립 시도한다 — 한쪽이 실패해도(예:
+    words 불일치) 다른 쪽 타이밍은 살아남는다.
     """
     try:
         from everyric2.text.ko_reading import hangul_to_kana, hangul_to_romaja
@@ -520,9 +572,14 @@ def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
         return
 
     seg["pron"] = {"kana": kana, "romaji": romaja}
-    segments = _kana_mora_segments_ko(seg, text)
-    if segments:
-        seg.setdefault("pron_segs", {})["kana"] = segments
+
+    kana_segments = _kana_mora_segments_ko(seg, text)
+    if kana_segments:
+        seg.setdefault("pron_segs", {})["kana"] = kana_segments
+
+    romaja_segments = _romaja_syllable_segments_ko(seg, text)
+    if romaja_segments:
+        seg.setdefault("pron_segs", {})["romaji"] = romaja_segments
 
 
 def _attach_latin_pron_variants(seg: dict[str, Any], text: str) -> None:
