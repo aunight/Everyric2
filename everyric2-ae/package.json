@@ -13,8 +13,9 @@
     "build": "npm run clean && npm run typecheck && npm test && npm run build:panel && npm run build:jsx",
     "install-plugin": "node scripts/install.mjs",
     "dev": "npm run build && npm run install-plugin",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "build:zxp": "node scripts/build-zxp.mjs",
-    "release:zxp": "npm run build && npm run build:zxp"
+    "release:zxp": "npm run build && npm run build:runtime && npm run build:zxp"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

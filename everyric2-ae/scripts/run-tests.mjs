@@ -318,6 +318,22 @@ try {
   assert.ok(/beginUndoGroup\("Everyric Studio - Split text layer"\)/.test(hostSource), "a cut must be a single undo step");
   assert.ok(/if \(sourceText\.numKeys > 0\)[\s\S]{0,200}자를 수 없습니다/.test(hostSource), "layers with Source Text keyframes must be refused by the host too");
 
+  const engineInstallSource = fs.readFileSync(path.join(root, "src/panel/engine-install.ts"), "utf8");
+  // 주석은 "왜 건드리지 않는지"를 설명하므로 검사 대상이 아니다. 실제 코드만 본다.
+  const engineInstallCode = engineInstallSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert.ok(
+    !/HF_HOME|HF_HUB_CACHE|TRANSFORMERS_CACHE|--cache-dir/.test(engineInstallCode),
+    "the model cache must stay at its default in the user's home — redirecting it re-downloads gigabytes on every panel update",
+  );
+  assert.ok(engineInstallSource.includes("function seedRuntimeDir"), "the ZXP-bundled runtime must be located as a seed");
+  assert.ok(
+    engineInstallSource.includes("fs.cpSync(seed, managedRuntimeDir()"),
+    "the seed must be copied out of the extension folder, otherwise a panel update wipes the installed engine",
+  );
+  assert.ok(engineInstallSource.includes("function venvPythonPath"), "existing uv installs must keep working");
+  const installSource = fs.readFileSync(path.join(root, "scripts/install.mjs"), "utf8");
+  assert.ok(installSource.includes('"junction"'), "dev installs should link the runtime instead of copying 30MB each time");
+
   const versionOutfile = path.join(temp, "version.mjs");
   await build({
     entryPoints: [path.join(root, "src/panel/version.ts")],

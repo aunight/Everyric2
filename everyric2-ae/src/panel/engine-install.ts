@@ -7,6 +7,8 @@ export interface EngineInstallOptions {
   wheelUrl?: string;
   onProgress: (message: string) => void;
   signal?: AbortSignal;
+  /** 설치된 확장 폴더. 여기 동봉된 python 런타임을 씨앗으로 쓴다. */
+  extensionRoot?: string | null;
 }
 
 const UV_VERSION = "0.11.29";
@@ -19,12 +21,38 @@ function managedRoot(): string {
   return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Everyric");
 }
 
+function managedRuntimeDir(): string {
+  return path.join(managedRoot(), "runtime");
+}
+
+/** ZXP에 동봉된 임베디드 런타임을 복사해 만든 python. */
+function embeddedPythonPath(): string {
+  return path.join(managedRuntimeDir(), "python.exe");
+}
+
+/** 예전 설치(uv가 만든 가상환경)의 python. 이미 깔린 사용자를 위해 계속 인식한다. */
+function venvPythonPath(): string {
+  return path.join(managedRuntimeDir(), "Scripts", "python.exe");
+}
+
 export function managedPythonPath(): string {
-  return path.join(managedRoot(), "runtime", "Scripts", "python.exe");
+  return fs.existsSync(embeddedPythonPath()) ? embeddedPythonPath() : venvPythonPath();
 }
 
 export function hasManagedRuntime(): boolean {
-  return fs.existsSync(managedPythonPath());
+  return fs.existsSync(embeddedPythonPath()) || fs.existsSync(venvPythonPath());
+}
+
+/**
+ * ZXP에 동봉된 python 런타임 씨앗의 경로. 없으면 null(개발 중이거나 경량 배포).
+ *
+ * 이 씨앗을 그대로 쓰지 않고 %LOCALAPPDATA%로 복사해서 쓴다. 확장 폴더 안에 패키지를 깔면
+ * 패널을 업데이트할 때마다 엔진이 통째로 날아가기 때문이다.
+ */
+export function seedRuntimeDir(extensionRoot: string | null): string | null {
+  if (!extensionRoot) return null;
+  const candidate = path.join(extensionRoot, "runtime", "python.exe");
+  return fs.existsSync(candidate) ? path.join(extensionRoot, "runtime") : null;
 }
 
 function abortError(): Error {
@@ -113,25 +141,54 @@ export function detectNvidiaGpu(): Promise<boolean> {
   });
 }
 
+/**
+ * 동봉된 런타임을 %LOCALAPPDATA%로 복사한다. 네트워크를 쓰지 않는 유일한 준비 경로다.
+ */
+function copySeedRuntime(seed: string, onProgress: (message: string) => void): void {
+  onProgress("Python 런타임 준비 중… (최초 1회)");
+  fs.mkdirSync(managedRoot(), { recursive: true });
+  fs.cpSync(seed, managedRuntimeDir(), { recursive: true });
+  if (!fs.existsSync(embeddedPythonPath())) {
+    throw new Error("동봉된 Python 런타임 복사에 실패했습니다.");
+  }
+}
+
+/** 씨앗이 없을 때만 쓰는 예비 경로 — uv로 python을 내려받아 가상환경을 만든다. */
+async function bootstrapWithUv(
+  onProgress: (message: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const uvPath = await ensureUv(onProgress, signal);
+  if (signal?.aborted) throw abortError();
+  onProgress(`Python ${PYTHON_VERSION} 가상환경 생성 중… (최초 1회)`);
+  await runCommand(uvPath, ["venv", managedRuntimeDir(), "--python", PYTHON_VERSION], onProgress, signal);
+  return venvPythonPath();
+}
+
 export async function installEngine(options: EngineInstallOptions): Promise<string> {
   const { onProgress, signal } = options;
   if (process.platform !== "win32") throw new Error("관리형 런타임 설치는 Windows에서만 지원합니다.");
   fs.mkdirSync(managedRoot(), { recursive: true });
-  const uvPath = await ensureUv(onProgress, signal);
-  if (signal?.aborted) throw abortError();
 
-  const runtimeDir = path.join(managedRoot(), "runtime");
-  const pythonPath = managedPythonPath();
+  let pythonPath = managedPythonPath();
   if (!fs.existsSync(pythonPath)) {
-    onProgress(`Python ${PYTHON_VERSION} 가상환경 생성 중… (최초 1회)`);
-    await runCommand(uvPath, ["venv", runtimeDir, "--python", PYTHON_VERSION], onProgress, signal);
+    const seed = seedRuntimeDir(options.extensionRoot ?? null);
+    if (seed) {
+      copySeedRuntime(seed, onProgress);
+      pythonPath = embeddedPythonPath();
+    } else {
+      pythonPath = await bootstrapWithUv(onProgress, signal);
+    }
   }
   if (signal?.aborted) throw abortError();
 
   const gpu = await detectNvidiaGpu();
   onProgress(gpu ? "엔진 설치 중 · CUDA 빌드 (수 GB 다운로드)…" : "엔진 설치 중 · CPU 빌드…");
-  const args = ["pip", "install", "--python", pythonPath, "--upgrade", options.wheelUrl || FALLBACK_ENGINE_SPEC];
-  if (gpu) args.push("--extra-index-url", CUDA_INDEX_URL, "--index-strategy", "unsafe-best-match");
-  await runCommand(uvPath, args, onProgress, signal);
+  const spec = options.wheelUrl || FALLBACK_ENGINE_SPEC;
+  // 모델 캐시(HF_HOME)는 건드리지 않는다. 기본값인 사용자 홈에 두어야 패널·엔진을 몇 번
+  // 갈아끼워도 수 GB를 다시 받지 않는다.
+  const args = ["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", spec];
+  if (gpu) args.push("--extra-index-url", CUDA_INDEX_URL);
+  await runCommand(pythonPath, args, onProgress, signal);
   return pythonPath;
 }

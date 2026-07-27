@@ -1,5 +1,6 @@
 interface AdobeCepBridge {
   evalScript(script: string, callback: (result: string) => void): void;
+  getSystemPath?(type: string): string;
 }
 
 declare global {
@@ -29,6 +30,23 @@ function bridge(): AdobeCepBridge {
 
 export function isCepHost(): boolean {
   return Boolean(window.__adobe_cep__);
+}
+
+/**
+ * 설치된 확장 폴더의 파일 시스템 경로. ZXP에 동봉한 python 런타임 씨앗을 찾는 데 쓴다.
+ *
+ * CEP 버전에 따라 file:/// URL을 돌려주기도 해서 둘 다 받아 넘긴다.
+ * 브라우저에서 열었을 때처럼 알아낼 수 없으면 null.
+ */
+export function extensionRoot(): string | null {
+  const raw = window.__adobe_cep__?.getSystemPath?.("extension");
+  if (typeof raw !== "string" || raw === "") return null;
+  if (!raw.startsWith("file://")) return raw;
+  try {
+    return decodeURIComponent(raw.replace(/^file:\/{2,3}/, "")).replace(/\//g, "\\");
+  } catch {
+    return null;
+  }
 }
 
 export function evalHost<T>(functionName: string, payload?: unknown): Promise<T> {

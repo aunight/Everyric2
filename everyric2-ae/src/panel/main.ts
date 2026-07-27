@@ -1,4 +1,4 @@
-import { evalHost, isCepHost } from "./cep";
+import { evalHost, extensionRoot, isCepHost } from "./cep";
 import {
   buildCutSession,
   computePieces,
@@ -1425,6 +1425,7 @@ class EveryricStudioPanel {
         wheelUrl: this.latestManifest?.engine?.wheelUrl,
         onProgress: (message) => this.statusKey("busy", "statusEngineInstalling", { message }),
         signal: this.abortController.signal,
+        extensionRoot: extensionRoot(),
       });
       this.settings.pythonPath = pythonPath;
       this.saveSettings();

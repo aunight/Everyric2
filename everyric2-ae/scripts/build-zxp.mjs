@@ -13,6 +13,8 @@ const secretsDir = path.join(repoRoot, "secrets");
 const ZXPSIGN_URL = "https://github.com/Adobe-CEP/CEP-Resources/raw/master/ZXPSignCMD/4.1.1/win64/ZXPSignCmd.exe";
 const TSA_CANDIDATES = ["http://timestamp.digicert.com", "http://timestamp.sectigo.com", null];
 const RUNTIME_ENTRIES = ["index.html", "css", "CSXS", "dist"];
+// 임베디드 Python. 없으면 없는 대로 서명한다 — 그 ZXP는 첫 실행 때 uv로 python을 받는다.
+const OPTIONAL_ENTRIES = ["runtime"];
 
 function fail(message) {
   console.error(`[build-zxp] ${message}`);
@@ -49,6 +51,14 @@ fs.rmSync(stagingDir, { recursive: true, force: true });
 fs.mkdirSync(stagingDir, { recursive: true });
 for (const entry of RUNTIME_ENTRIES) {
   fs.cpSync(path.join(root, entry), path.join(stagingDir, entry), { recursive: true });
+}
+for (const entry of OPTIONAL_ENTRIES) {
+  const source = path.join(root, entry);
+  if (!fs.existsSync(source)) {
+    console.warn(`[build-zxp] 경고: ${entry}/ 가 없어 빼고 패키징합니다 — npm run build:runtime으로 만들 수 있습니다.`);
+    continue;
+  }
+  fs.cpSync(source, path.join(stagingDir, entry), { recursive: true });
 }
 
 // --- ZXPSignCmd 확보 ---
