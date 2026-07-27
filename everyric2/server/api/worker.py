@@ -81,11 +81,13 @@ def _pop_stashes(job_id: str) -> None:
         _PENDING_ATTRIBUTION,
         _PENDING_FORCE,
         _PENDING_LINE_META,
+        _PENDING_LINE_META_LANG,
         _PENDING_META_WAIT,
         _PENDING_TITLE,
     )
 
     _PENDING_LINE_META.pop(job_id, None)
+    _PENDING_LINE_META_LANG.pop(job_id, None)
     _PENDING_ATTRIBUTION.pop(job_id, None)
     _PENDING_TITLE.pop(job_id, None)
     _PENDING_FORCE.discard(job_id)
@@ -572,29 +574,31 @@ async def submit_result(
             _LEASES.pop(job_id, None)
             raise HTTPException(status_code=409, detail=f"잡이 이미 {job.status} 상태예요")
         from everyric2.server.worker import (
-            job_target_lang,
             layer_origin,
             peek_attribution,
             peek_title,
             record_translation_layer,
+            resolve_layer_lang,
             translation_layer_lines,
         )
 
         # 인프로세스 저장 경로(_process_job_inner)와 같은 번역 언어 분리 — 프로덕션은
         # 이 원격 워커 경로로 생성되므로 여기 없으면 새 싱크의 레이어가 영영 안 남고,
         # 비ko 번역이 legacy 슬롯에 실려 한국어 사용자가 남의 언어를 받는다.
-        target_lang = job_target_lang(job)
+        # 판정 기준은 요청자 언어가 아니라 세그에 실린 번역의 언어다(resolve_layer_lang).
+        # 스태시는 아래 _pop_stashes 전까지 살아 있으므로 여기서 읽을 수 있다.
+        meta_lang = resolve_layer_lang(job, job_id)
         job_attr = peek_attribution(job_id)
         await record_translation_layer(
             session,
             job.video_id,
             [s.get("text") or "" for s in request.timestamps],
             translation_layer_lines(request.timestamps),
-            target_lang,
+            meta_lang,
             origin=layer_origin(job_attr),
             attribution=job_attr,
         )
-        if target_lang != "ko":
+        if meta_lang != "ko":
             for seg in request.timestamps:
                 seg.pop("translation", None)
 

@@ -56,6 +56,7 @@ async def _env(worker_key: str = WKEY):
     worker_api._LEASES.clear()
     worker_core._CANCEL_REQUESTED.clear()
     worker_core._PENDING_LINE_META.clear()
+    worker_core._PENDING_LINE_META_LANG.clear()
     worker_core._PENDING_ATTRIBUTION.clear()
     worker_core._PENDING_FORCE.clear()
     try:

@@ -25,12 +25,34 @@ logger = logging.getLogger(__name__)
 # 않는다 (stash_line_meta 참고). 빈 리스트의 "확정 신호" 계약은 그대로 유지되고, 비우는
 # 방향만 막힌다.
 _PENDING_LINE_META: dict[str, list[dict[str, Any]]] = {}
+# line_meta에 실린 **번역의 언어**. 위 dict의 값에 합치지 않고 나란히 둔다 — 그 값은
+# 원격 워커 claim 응답(api/worker._peek_line_meta → 응답의 line_meta 필드)에 그대로 실려
+# 나가는 와이어 포맷이고, 테스트 여러 파일이 그것이 라인 dict의 리스트임을 직접 단언한다.
+#
+# **요청자의 언어(Job.target_lang)와 다른 값이다.** 가사 출처가 번역까지 들고 오면
+# (vocaro=한국어) 요청자가 영어권이어도 세그에 실리는 번역은 한국어다. 레이어 언어와
+# legacy 슬롯 유지 여부는 전부 이 값으로 정한다 (resolve_layer_lang 참고).
+# 값이 없으면 "ko" — lang을 안 싣는 구버전 호출부의 기존 동작이다.
+_PENDING_LINE_META_LANG: dict[str, str] = {}
 # 강제 재생성 잡 — 동일 (audio_hash, lyrics_hash) 재사용을 건너뛰고 정렬을 다시 돌린다
 _PENDING_FORCE: set[str] = set()
 
 
-def stash_line_meta(job_id: str, line_meta: list[dict[str, Any]]) -> None:
+def _norm_lang(lang: str | None) -> str:
+    """언어 코드 정규화 — 비었으면 "ko"(기존 동작이 기본값)."""
+    return (lang or "ko").strip() or "ko"
+
+
+def peek_line_meta_lang(job_id: str) -> str:
+    """스태시된 line_meta 번역의 언어 조회 (pop 없음). 안 실렸으면 "ko"."""
+    return _PENDING_LINE_META_LANG.get(job_id) or "ko"
+
+
+def stash_line_meta(job_id: str, line_meta: list[dict[str, Any]], lang: str = "ko") -> None:
     """잡의 라인 메타(발음/번역)를 스태시한다 — **이미 있는 값을 빈 리스트로 지우지 않는다.**
+
+    ``lang``은 ``line_meta``의 **번역**이 무슨 언어인가다(발음은 언어와 무관한 결정론
+    한글 독음이라 해당 없음). 기본 "ko"라 lang을 안 넘기는 기존 호출부는 동작이 같다.
 
     재현(무조건 덮어쓰던 예전 규칙): ``line_meta_pending=true``로 잡 생성 → 확장이 번역에
     성공해 35줄을 attach → 클라이언트 재시도 로직이 같은 잡에 ``line_meta: []``를 재전송 →
@@ -46,8 +68,16 @@ def stash_line_meta(job_id: str, line_meta: list[dict[str, Any]]) -> None:
             f"Job {job_id}: ignored an empty line_meta re-send; keeping the "
             f"{len(_PENDING_LINE_META[job_id])} line(s) already stashed"
         )
-        return
+        return  # 언어도 그대로 둔다 — 지키기로 한 그 메타의 언어이므로
     _PENDING_LINE_META[job_id] = line_meta
+    # 기본값(ko)은 **저장하지 않는다** — 원격 워커 프로세스(cli.py)도 이 함수로 자기 프로세스
+    # 전역에 메타를 스태시하는데 그쪽 정리 경로는 이 dict의 존재를 모른다. 기본값을 안 넣으면
+    # lang을 넘기지 않는 그 경로에 남는 항목이 아예 없다. 조회는 부재를 ko로 읽는다.
+    # ko로 되쓰는 경우 이전 비ko 값을 지워야 stale 언어가 남지 않는다.
+    if (norm := _norm_lang(lang)) == "ko":
+        _PENDING_LINE_META_LANG.pop(job_id, None)
+    else:
+        _PENDING_LINE_META_LANG[job_id] = norm
 
 
 # ── line_meta 지연 도착 (번역·독음을 다운로드·분리와 병렬로) ─────────
@@ -564,8 +594,38 @@ def _referee_token_set(text: str, chosen: str) -> list | None:
 
 
 def job_target_lang(job: Any) -> str:
-    """잡의 번역 대상 언어. 컬럼이 없거나 비어 있으면 "ko" — 기존 동작이 기본값이다."""
+    """잡의 번역 대상 언어(요청자가 **원한** 언어). 컬럼이 없거나 비면 "ko".
+
+    **레이어 언어·legacy 판정에 쓰지 마라** — 그 둘은 세그에 실제로 실린 번역의 언어로
+    정한다(``resolve_layer_lang``). 요청자 언어는 조회 시 ``lang`` 파라미터로만 의미가 있고,
+    여기서는 «원한 것과 받은 것이 다르다»를 진단 로그로 남기는 데만 쓴다.
+    """
     return (getattr(job, "target_lang", None) or "ko").strip() or "ko"
+
+
+def resolve_layer_lang(job: Any, job_id: str) -> str:
+    """이 잡의 번역을 어느 언어로 기록할 것인가 = **세그에 실제로 실린 번역의 언어**.
+
+    요청자 언어(``Job.target_lang``)로 정하면 안 된다. 실사용 사고: 영어 설정 사용자가
+    vocaro(한국어 번역까지 들어 있는 위키) 가사로 생성하면 세그에 붙는 번역은 한국어인데,
+    그것을 en 레이어에 기록하고 legacy 슬롯에서는 벗겨 버렸다 → ``lang=en`` 조회가
+    한국어 번역을 en으로 내주고 ``translation_lang="en"``까지 붙어, 확장은 «내 언어 번역이
+    있다»고 보고 영어를 영영 요청하지 않았다. 한국어 번역은 legacy에서도 사라져 ko
+    사용자까지 잃었다.
+
+    올바른 규칙은 «담긴 것에 맞는 라벨을 붙인다»다: 한국어 번역이면 ko 레이어에 넣고
+    legacy 슬롯에도 남긴다(구버전·ko 사용자에게 유효). 그러면 ``lang=en`` 조회는 비어
+    나가고(``translation_lang=None``) 확장이 영어 번역을 요청한다 — 원래 의도한 흐름이다.
+    """
+    meta_lang = peek_line_meta_lang(job_id)
+    target = job_target_lang(job)
+    if target != meta_lang:
+        logger.info(
+            f"Job {job_id}: line_meta translation is {meta_lang!r} but the requester asked for "
+            f"{target!r}; recording the {meta_lang} layer only. The {target} translation is not "
+            f"created here — a lang={target} lookup stays empty so the client requests it."
+        )
+    return meta_lang
 
 
 def translation_layer_lines(items: list[dict[str, Any]] | None) -> list[dict[str, str]]:
@@ -805,16 +865,17 @@ async def _complete_from_cache_db(
                 f"Job {job_id}: reusing this video's own sync {target.id} "
                 f"(same audio+lyrics, no copy needed)"
             )
-        target_lang = job_target_lang(job)
+        meta_lang = resolve_layer_lang(job, job_id)
         updated = dict(target.timestamps)
         changed = False
         if meta:
             segs = [dict(s) for s in updated.get("segments", [])]
-            # 비ko 요청의 번역은 legacy 슬롯에 넣지 않는다 — 이 행은 **이미 존재하던 싱크**라
-            # 다른 언어 사용자의 번역이 들어 있을 수 있고, 그 위에 덮으면 그 사용자가 다음
-            # 조회에서 남의 언어를 받는다. 언어별 값은 아래 레이어에만 남긴다.
+            # 비ko 번역은 legacy 슬롯에 넣지 않는다 — 이 행은 **이미 존재하던 싱크**라 다른
+            # 언어 사용자의 번역이 들어 있을 수 있고, 그 위에 덮으면 그 사용자가 다음 조회에서
+            # 남의 언어를 받는다. 언어별 값은 아래 레이어에만 남긴다. 기준은 요청자 언어가
+            # 아니라 **이 메타에 실린 번역의 언어**다(resolve_layer_lang).
             # (발음은 언어 무관한 결정론 한글 독음이라 그대로 병합한다.)
-            if merge_line_meta(segs, meta, with_translation=(target_lang == "ko")):
+            if merge_line_meta(segs, meta, with_translation=(meta_lang == "ko")):
                 updated["segments"] = segs
                 changed = True
         if attr is not None:
@@ -828,7 +889,7 @@ async def _complete_from_cache_db(
             job.video_id,
             [s.get("text") or "" for s in updated.get("segments", [])],
             translation_layer_lines(meta),
-            target_lang,
+            meta_lang,
             origin=layer_origin(attr),
             attribution=attr,
         )
@@ -1078,6 +1139,7 @@ async def _process_job_inner(job_id: str, job) -> None:
     cache_path, fail_reason = await prepare_cached_audio(job.video_id, job_id, max_audio_sec)
     if fail_reason:
         _PENDING_LINE_META.pop(job_id, None)
+        _PENDING_LINE_META_LANG.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
         _PENDING_TITLE.pop(job_id, None)
         async with get_session() as session:
@@ -1102,6 +1164,7 @@ async def _process_job_inner(job_id: str, job) -> None:
         if result is None:
             # 취소 또는 캐시 완결 — 잡 상태·오디오 정리는 각 경로가 이미 끝냈다
             _PENDING_LINE_META.pop(job_id, None)
+            _PENDING_LINE_META_LANG.pop(job_id, None)
             _PENDING_ATTRIBUTION.pop(job_id, None)
             _PENDING_TITLE.pop(job_id, None)
             return
@@ -1110,22 +1173,23 @@ async def _process_job_inner(job_id: str, job) -> None:
             job_repo = JobRepository(session)
             sync_repo = SyncRepository(session)
 
-            # 번역 언어 분리: 생성 결과의 번역을 그 언어의 레이어에 남기고, ko가 아니면
-            # legacy 슬롯(seg["translation"])에서는 비운다. 남겨 두면 모국어가 다른 다음
-            # 사용자가 lang 없이 조회했을 때 남의 언어 번역을 받는다 — 이 작업의 출발점인
-            # 바로 그 사고다. target_lang을 안 싣는 구버전 요청은 "ko"라 기존 동작 그대로다.
-            target_lang = job_target_lang(job)
+            # 번역 언어 분리: 생성 결과의 번역을 **그 번역의 언어** 레이어에 남기고, 그것이
+            # ko가 아닐 때만 legacy 슬롯(seg["translation"])을 비운다. ko 번역을 legacy에
+            # 남기는 이유는 구버전 확장과 ko 사용자에게 그대로 유효해서고, 비ko를 비우는
+            # 이유는 lang 없이 조회한 다른 사용자가 남의 언어를 받지 않게 하기 위해서다.
+            # lang을 안 싣는 구버전 생성 요청은 "ko"라 기존 동작 그대로다.
+            meta_lang = resolve_layer_lang(job, job_id)
             job_attr = _PENDING_ATTRIBUTION.get(job_id)
             await record_translation_layer(
                 session,
                 job.video_id,
                 [s.get("text") or "" for s in result.timestamps],
                 translation_layer_lines(result.timestamps),
-                target_lang,
+                meta_lang,
                 origin=layer_origin(job_attr),
                 attribution=job_attr,
             )
-            if target_lang != "ko":
+            if meta_lang != "ko":
                 for seg in result.timestamps:
                     seg.pop("translation", None)
 
@@ -1148,12 +1212,14 @@ async def _process_job_inner(job_id: str, job) -> None:
             )
             logger.info(f"Job completed: {job_id}")
         _PENDING_LINE_META.pop(job_id, None)
+        _PENDING_LINE_META_LANG.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
         _PENDING_TITLE.pop(job_id, None)
 
     except PipelineError as e:
         # 사용자 노출 실패 (과길이 등) — 친절한 한국어 문구를 그대로 보존
         _PENDING_LINE_META.pop(job_id, None)
+        _PENDING_LINE_META_LANG.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
         _PENDING_TITLE.pop(job_id, None)
         async with get_session() as session:
@@ -1163,6 +1229,7 @@ async def _process_job_inner(job_id: str, job) -> None:
     except Exception as e:
         logger.exception(f"Job failed: {job_id}")
         _PENDING_LINE_META.pop(job_id, None)
+        _PENDING_LINE_META_LANG.pop(job_id, None)
         _PENDING_ATTRIBUTION.pop(job_id, None)
         _PENDING_TITLE.pop(job_id, None)
         _PENDING_FORCE.discard(job_id)
