@@ -50,6 +50,11 @@ class Job(Base):
     lyrics: Mapped[str] = mapped_column(Text)
     lyrics_hash: Mapped[str] = mapped_column(String(64))
     language: Mapped[str | None] = mapped_column(String(8))
+    # 요청자의 **번역 대상 언어**. 바로 위 language는 원문 언어다(SyncResult.language 주석).
+    # 생성 결과 번역은 이 언어의 TranslationLayer에 기록되고, "ko"일 때만 세그먼트의 legacy
+    # translation 슬롯에도 병기된다 — 구버전 확장은 그 슬롯만 읽으므로 남의 언어를 넣으면
+    # 한국어 사용자가 영어 번역을 받는다. 값을 안 주는 구버전 생성 요청은 "ko"(기존 동작).
+    target_lang: Mapped[str] = mapped_column(String(8), default="ko", server_default="ko")
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     result_id: Mapped[str | None] = mapped_column(String(36))
     error: Mapped[str | None] = mapped_column(Text)

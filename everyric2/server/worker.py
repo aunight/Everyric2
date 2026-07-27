@@ -246,8 +246,18 @@ def _referee_switched(seg: dict[str, Any]) -> bool:
     return bool(chosen) and chosen != ref.get("default")
 
 
-def merge_line_meta(timestamps: list[dict[str, Any]], line_meta: list[dict[str, Any]]) -> int:
-    """세그먼트에 발음/번역을 라인 텍스트 매칭으로 병합. 병합된 세그먼트 수를 반환."""
+def merge_line_meta(
+    timestamps: list[dict[str, Any]],
+    line_meta: list[dict[str, Any]],
+    *,
+    with_translation: bool = True,
+) -> int:
+    """세그먼트에 발음/번역을 라인 텍스트 매칭으로 병합. 병합된 세그먼트 수를 반환.
+
+    ``with_translation=False``면 번역만 건너뛰고 발음은 그대로 병합한다 — 독음은 언어와
+    무관한 결정론 한글이지만 번역은 요청자의 언어라, **여러 언어 사용자가 공유하는 행**에
+    비ko 번역을 legacy 슬롯으로 밀어 넣으면 안 되는 경로(캐시 재사용)를 위한 문이다.
+    """
     by_text = _index_line_meta(line_meta)
 
     merged = 0
@@ -263,8 +273,12 @@ def merge_line_meta(timestamps: list[dict[str, Any]], line_meta: list[dict[str, 
             if not _referee_switched(seg):
                 seg["pronunciation"] = m["pronunciation"]
             _attach_pron_segments(seg)
-        if m.get("translation"):
+        if with_translation and m.get("translation"):
             seg["translation"] = m["translation"]
+        # 캐시 재사용·늦은 병합으로 들어온 세그먼트도 표기별 발음을 갖게 한다. 직렬화에서
+        # 이미 붙였으면 멱등 가드가 지킨다. 심판 개입 라인은 여기에 이긴 읽기의 토큰 열이
+        # 없으므로 attach가 romaji를 스스로 생략한다(기본 읽기로 렌더하면 표기가 어긋난다).
+        attach_pron_variants(seg)
         merged += 1
     return merged
 
@@ -299,6 +313,175 @@ def _attach_pron_segments(seg: dict[str, Any]) -> None:
     except Exception:
         logger.exception("pron_segments computation failed; falling back to gradient fill")
         seg.pop("pron_segments", None)
+
+
+# 일본어 글자 — reading._is_japanese_char와 같은 범위(U+3040~U+30FF 가나, U+3400~U+9FFF 한자).
+# 문자 클래스의 경계 글자는 그 코드포인트의 실제 글자다(편집 시 치환 주의).
+_JA_CHAR_RE = re.compile("[぀-ヿ㐀-鿿]")
+
+
+def _romaji_mora_segments(
+    seg: dict[str, Any],
+    text: str,
+    mora_tokens: list[str],
+    space_after: list[bool],
+    tokens: list | None,
+) -> list[dict[str, Any]] | None:
+    """romaji 모라 토큰에 세그먼트의 글자 타이밍(``words``)으로 시각을 부여한다.
+
+    모라 수가 어긋나면(글자 스팬이 다른 읽기에서 왔거나 시각 환산이 실패) None —
+    표시 문자열만 남기고 확장이 그라데이션으로 폴백하는 편이, 틀린 시각으로 엉뚱한
+    글자를 점등시키는 것보다 낫다(``_attach_pron_segments``의 실패 규약과 같다).
+    """
+    words = seg.get("words")
+    if not words:
+        return None
+    try:
+        from everyric2.text.reading import mora_segments_for_line
+
+        char_spans = [
+            (w.get("word", ""), float(w.get("start", 0.0)), float(w.get("end", 0.0)))
+            for w in words
+        ]
+        mora_times = mora_segments_for_line(char_spans, text, tokens=tokens)
+    except Exception:
+        logger.exception("romaji mora timing failed; keeping the display string only")
+        return None
+    if not mora_times or len(mora_times) != len(mora_tokens):
+        return None
+
+    segments: list[dict[str, Any]] = []
+    for (_, start, end), token, space in zip(mora_times, mora_tokens, space_after):
+        entry: dict[str, Any] = {"text": token, "start": round(start, 3), "end": round(end, 3)}
+        if space:
+            entry["space"] = True
+        segments.append(entry)
+    return segments
+
+
+def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = None) -> None:
+    """세그먼트에 표기별 발음(``pron``)과 romaji 모라 스팬(``pron_segs``)을 얹는다.
+
+    기존 ``pronunciation``/``pron_segments``(한글)는 손대지 않는다 — 구버전 확장은 그
+    필드만 읽으므로 새 표기는 **추가 필드로만** 올라간다(공유 계약).
+
+    ``referee_tokens``를 주면(오디오 심판이 이긴 후보의 토큰 열 —
+    ``pron_style.candidate_token_sets``) 그 읽기로 romaji를 만든다. 주지 않았는데 심판이
+    이 줄의 독음을 바꿨으면(``_referee_switched``) romaji를 **아예 붙이지 않는다**:
+    기본 읽기로 렌더하면 화면의 한글 독음(심판이 오디오로 고른 읽기)과 다른 낱말을 읽는
+    romaji가 나란히 찍힌다. 표기가 없으면 확장이 한글로 폴백하므로 손해는 표기 하나뿐이다.
+
+    멱등 — 이미 ``pron``이 있으면 아무것도 하지 않는다. 캐시 재사용·늦은 메타 병합이
+    직렬화 때 만든(심판 판정을 반영한) 값을 덮지 않게 하는 가드다.
+    """
+    if seg.get("pron"):
+        return
+    pron = (seg.get("pronunciation") or "").strip()
+    text = seg.get("text") or ""
+    if not pron or not _JA_CHAR_RE.search(text):
+        return
+
+    seg["pron"] = {"hangul": pron}
+    if referee_tokens is None and _referee_switched(seg):
+        return
+
+    try:
+        from everyric2.text.pron_style import romaji_line
+
+        rendered = romaji_line(text, tokens=referee_tokens)
+    except Exception:
+        logger.exception("romaji rendering failed; keeping the hangul-only pron dict")
+        return
+    if not rendered or not rendered[0]:
+        return
+
+    display, mora_tokens, space_after = rendered
+    seg["pron"]["romaji"] = display
+    segments = _romaji_mora_segments(seg, text, mora_tokens, space_after, referee_tokens)
+    if segments:
+        seg.setdefault("pron_segs", {})["romaji"] = segments
+
+
+def _referee_token_set(text: str, chosen: str) -> list | None:
+    """심판이 이긴 독음 문자열을 만든 토큰 열 — 다른 표기가 같은 읽기를 따르게 하는 다리.
+
+    후보 문자열 목록은 ``_referee_candidates``가 쓰는 ``pronunciation_candidates``와 같은
+    순서·같은 내용이다(둘 다 ``_pronunciation_candidates_with_tokens`` 하나를 쓴다). 심판이
+    **바꾼** 줄에서만 부르므로 chosen은 결정론 후보 중 하나이고 거의 항상 찾힌다 — 못 찾으면
+    (후보 상한을 8보다 크게 올린 설정 등) None을 돌려 기본 읽기로 조용히 떨어진다.
+    """
+    from everyric2.text.pron_style import candidate_token_sets
+
+    rendered, token_sets = candidate_token_sets(text)
+    for candidate, tokens in zip(rendered, token_sets):
+        if candidate == chosen:
+            return tokens
+    return None
+
+
+def job_target_lang(job: Any) -> str:
+    """잡의 번역 대상 언어. 컬럼이 없거나 비어 있으면 "ko" — 기존 동작이 기본값이다."""
+    return (getattr(job, "target_lang", None) or "ko").strip() or "ko"
+
+
+def translation_layer_lines(items: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """(원문, 번역) 쌍 목록 — ``TranslationLayer.lines``에 그대로 들어가는 형태.
+
+    직렬화된 세그먼트와 line_meta 항목이 같은 ``text``/``translation`` 키를 쓰므로 두
+    경로가 이 함수 하나를 공유한다. 번역이 빈 줄은 넣지 않는다(간주·공백 줄).
+    """
+    lines: list[dict[str, str]] = []
+    for item in items or []:
+        text = (item.get("text") or "").strip()
+        translation = (item.get("translation") or "").strip()
+        if text and translation:
+            lines.append({"text": text, "translation": translation})
+    return lines
+
+
+async def record_translation_layer(
+    session: Any,
+    video_id: str,
+    segment_texts: list[str],
+    lines: list[dict[str, str]],
+    target_lang: str,
+    *,
+    origin: str = "llm",
+    attribution: dict[str, Any] | None = None,
+) -> bool:
+    """생성 시 번역을 (video_id, 가사 지문, 언어) 레이어에 기록한다. 기록했으면 True.
+
+    지문은 **세그먼트 원문 텍스트 전체**로 계산한다 — 조회(``GET /api/sync?lang=``)가 같은
+    싱크의 세그먼트 텍스트로 지문을 만들어 찾으므로, 번역이 붙은 줄만으로 계산하면 저장은
+    되는데 영영 못 찾는 레이어가 된다.
+
+    실패해도 예외를 밖으로 던지지 않는다 — 레이어는 곁다리 기록이고, 이것 때문에 정렬을
+    다 끝낸 잡이 failed로 마감되면 손해가 훨씬 크다.
+    """
+    if not lines or not segment_texts:
+        return False
+    try:
+        from everyric2.server.db.repository import TranslationLayerRepository
+        from everyric2.server.text_fingerprint import lines_fingerprint
+
+        await TranslationLayerRepository(session).upsert_layer(
+            video_id=video_id,
+            fingerprint=lines_fingerprint(segment_texts),
+            target_lang=target_lang,
+            lines=lines,
+            attribution=attribution,
+            origin=origin,
+        )
+    except Exception:
+        logger.exception(
+            f"Translation layer record failed for {video_id} ({target_lang}); "
+            "the sync itself is unaffected"
+        )
+        return False
+    logger.info(
+        f"Recorded {len(lines)} translated line(s) for {video_id} in the {target_lang} layer"
+    )
+    return True
 
 
 def compute_audio_hash(file_path: Path) -> str:
@@ -454,11 +637,16 @@ async def _complete_from_cache_db(
                 f"Job {job_id}: reusing this video's own sync {target.id} "
                 f"(same audio+lyrics, no copy needed)"
             )
+        target_lang = job_target_lang(job)
         updated = dict(target.timestamps)
         changed = False
         if meta:
             segs = [dict(s) for s in updated.get("segments", [])]
-            if merge_line_meta(segs, meta):
+            # 비ko 요청의 번역은 legacy 슬롯에 넣지 않는다 — 이 행은 **이미 존재하던 싱크**라
+            # 다른 언어 사용자의 번역이 들어 있을 수 있고, 그 위에 덮으면 그 사용자가 다음
+            # 조회에서 남의 언어를 받는다. 언어별 값은 아래 레이어에만 남긴다.
+            # (발음은 언어 무관한 결정론 한글 독음이라 그대로 병합한다.)
+            if merge_line_meta(segs, meta, with_translation=(target_lang == "ko")):
                 updated["segments"] = segs
                 changed = True
         if attr is not None:
@@ -467,6 +655,13 @@ async def _complete_from_cache_db(
         if changed:
             # JSON 컬럼은 재할당해야 변경이 감지된다
             target.timestamps = updated
+        await record_translation_layer(
+            session,
+            job.video_id,
+            [s.get("text") or "" for s in updated.get("segments", [])],
+            translation_layer_lines(meta),
+            target_lang,
+        )
         await JobRepository(session).update_status(
             job_id, "completed", progress=100, result_id=target.id
         )
@@ -744,6 +939,22 @@ async def _process_job_inner(job_id: str, job) -> None:
         async with get_session() as session:
             job_repo = JobRepository(session)
             sync_repo = SyncRepository(session)
+
+            # 번역 언어 분리: 생성 결과의 번역을 그 언어의 레이어에 남기고, ko가 아니면
+            # legacy 슬롯(seg["translation"])에서는 비운다. 남겨 두면 모국어가 다른 다음
+            # 사용자가 lang 없이 조회했을 때 남의 언어 번역을 받는다 — 이 작업의 출발점인
+            # 바로 그 사고다. target_lang을 안 싣는 구버전 요청은 "ko"라 기존 동작 그대로다.
+            target_lang = job_target_lang(job)
+            await record_translation_layer(
+                session,
+                job.video_id,
+                [s.get("text") or "" for s in result.timestamps],
+                translation_layer_lines(result.timestamps),
+                target_lang,
+            )
+            if target_lang != "ko":
+                for seg in result.timestamps:
+                    seg.pop("translation", None)
 
             title, artist = peek_title(job_id)
             sync_result = await sync_repo.create(
@@ -2826,7 +3037,7 @@ def _align_with_pronunciation(
     반환: (results, pron_data)
       results: 원문 텍스트 SyncResult 목록 (타이밍/word_segments는 독음 정렬 역매핑값).
       pron_data: line_idx → {"pronunciation", "translation", "pron_segments", "heard",
-          "heard_spans", "referee"}.
+          "heard_spans", "referee", "tokens"}.
     """
     from everyric2.inference.prompt import LyricLine, SyncResult, WordSegment
     from everyric2.text.reading import map_pron_alignment_to_line
@@ -2936,6 +3147,15 @@ def _align_with_pronunciation(
             "heard_spans": heard_spans.get(i) or None,
             "referee": (
                 {k: v for k, v in decision.items() if k != "line"} if decision else None
+            ),
+            # 심판이 바꾼 줄의 **이긴 읽기**를 토큰 열로 실어 보낸다 — 직렬화에서
+            # romaji 등 다른 표기가 같은 읽기를 따르게 하는 유일한 통로다(안 실으면
+            # 기본 읽기로 렌더돼 화면의 한글 독음과 다른 낱말이 나란히 찍힌다).
+            # 안 바뀐 줄은 기본 읽기 = romaji_line의 자체 토큰화라 실을 것이 없다.
+            "tokens": (
+                _referee_token_set(ln.text, aligned)
+                if decision and decision.get("chosen") != decision.get("default")
+                else None
             ),
         }
     return results, pron_data
@@ -3592,6 +3812,9 @@ def _run_alignment(
                 debug["referee"] = pd["referee"]
             if debug:
                 seg["debug"] = debug
+            # 세그 완성 직후(독음·글자 스팬·심판 debug가 모두 자리를 잡은 뒤): 표기별 발음을
+            # 얹는다. debug["referee"]가 이미 실려 있어야 attach가 심판 개입 라인을 알아본다.
+            attach_pron_variants(seg, referee_tokens=pd.get("tokens"))
             timestamps.append(seg)
 
         # 정렬 입력에서 뺀 병기 줄을 표시용으로 되붙인다 — 사용자가 붙여넣은 줄이 화면에서

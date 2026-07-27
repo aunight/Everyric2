@@ -649,6 +649,38 @@ def pron_segments_for_line(
     return segments if segments else None
 
 
+def mora_segments_for_line(
+    char_spans: list[tuple[str, float, float]],
+    text: str,
+    tokens: list | None = None,
+) -> list[tuple[int, float, float]] | None:
+    """CTC 글자 타이밍을 모라별 (모라 인덱스, start, end)로 환산한다. 실패 시 None.
+
+    ``pron_segments_for_line``이 «글자 타이밍 → 모라 → 한글 발음 음절»의 마지막 단계까지
+    가는 것과 달리, 여기서는 **모라에서 멈춘다** — 한글이 아닌 다른 표기(romaji 등)는
+    모라와 1:1로 대응하므로 DP 정렬 없이 이 시각을 그대로 쓰면 된다. 반환 길이는 항상
+    ``text_to_moras(text, tokens=tokens)``의 모라 수와 같으므로, 호출부는 자기 표기의
+    토큰 수와 비교해 어긋나면 시각 부여를 포기할 수 있다.
+
+    ``tokens``를 주면 그 읽기로 모라를 만든다(오디오 심판이 이긴 후보 —
+    ``pron_style.candidate_token_sets``). 시각은 단조 증가하도록 클램프한다.
+    """
+    if not char_spans or not text.strip():
+        return None
+
+    moras = text_to_moras(text, tokens=tokens)
+    if not moras:
+        return None
+
+    char_time = _build_char_time(text, char_spans)
+    if all(t is None for t in char_time):
+        return None
+
+    spans = [{"start": s, "end": e} for s, e in _build_mora_time(moras, char_time)]
+    _clamp_monotonic(spans)
+    return [(i, span["start"], span["end"]) for i, span in enumerate(spans)]
+
+
 # ---------------------------------------------------------------------------
 # 독음(ko) 정렬 결과의 역매핑 (map_pron_alignment_to_line)
 # ---------------------------------------------------------------------------

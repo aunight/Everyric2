@@ -31,6 +31,10 @@ async def init_db():
             cols = {row[1] for row in await conn.execute(text("PRAGMA table_info(jobs)"))}
             if "stage" not in cols:
                 await conn.execute(text("ALTER TABLE jobs ADD COLUMN stage VARCHAR(24)"))
+            if "target_lang" not in cols:
+                await conn.execute(
+                    text("ALTER TABLE jobs ADD COLUMN target_lang VARCHAR(8) DEFAULT 'ko'")
+                )
             link_cols = {
                 row[1] for row in await conn.execute(text("PRAGMA table_info(sync_links)"))
             }
