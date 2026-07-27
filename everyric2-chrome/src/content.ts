@@ -15,6 +15,7 @@ import {
   mergeCaptionTranslation,
   selectLyricTrack,
   selectTranslationTrack,
+  type YtCaptionTrack,
 } from './lib/yt-captions';
 import type {
   ApiFailure,
@@ -204,7 +205,12 @@ function handleRuntimeMessage(message: ContentMessage): void {
   } else if (message.type === 'TOGGLE_DEBUG') {
     void toggleDebugInfo();
   } else if (message.type === 'SYNC_GENERATED' && message.payload.videoId === currentVideoId) {
-    void searchLyrics();
+    // 생성 직후(트리거 a) — searchLyrics로 새 싱크를 화면에 반영한 뒤, 아직 없는
+    // 언어의 사람 번역을 수확한다(harvestTranslations 문서 참고).
+    const videoId = message.payload.videoId;
+    void searchLyrics().then(() => {
+      if (videoId === currentVideoId) void harvestTranslations(videoId);
+    });
   } else if (message.type === 'PERMISSIONS_CHANGED') {
     // 옵션 페이지(다른 탭)에서 로컬 서버 권한을 허용·철회했다 — 서버 상태는 그 권한을
     // 근거로 판정되므로 다시 물어야 배너가 사라지거나 나타난다.
@@ -1094,6 +1100,30 @@ function persistTranslationLayer(
 }
 
 /**
+ * 대상 언어의 유튜브 수동 자막을 시간 겹침으로 세그에 대응시킨다 — tryCaptionTranslationLayer
+ * (화면 반영)와 harvestCaptions(저장만) 둘 다 이 조회+매칭 로직을 공유한다. tracks를
+ * 인자로 받는다 — harvestCaptions는 여러 언어를 훑으므로 getCaptionTracks를 언어마다
+ * 새로 부르면 안 된다(한 번 받아 재사용).
+ */
+async function fetchCaptionMatch(
+  data: LyricsData, videoId: string, lang: string, tracks: YtCaptionTrack[],
+): Promise<(string | undefined)[] | null> {
+  const base: CaptionLine[] = data.lines
+    .filter((l): l is LyricLine & { time: number; endTime: number } => l.time != null && l.endTime != null)
+    .map(l => ({ start: l.time, end: l.endTime, text: l.text }));
+  // 타이밍 없는 줄이 하나라도 섞여 있으면 base와 data.lines의 인덱스가 어긋난다 — 포기.
+  if (base.length !== data.lines.length) return null;
+  // chosen(원어 트랙)을 모른다 — 호출부가 이미 대각선(곡 자신의 언어)을 걸러내고 부르므로
+  // null로 넘겨도 안전하다.
+  const track = selectTranslationTrack(tracks, null, lang);
+  if (!track) return null;
+  const trLines = await fetchCaptionLines(videoId, track.lang, track.auto);
+  if (videoId !== currentVideoId || trLines.length === 0) return null;
+  const merged = mergeCaptionTranslation(base, trLines);
+  return merged.some(m => m !== undefined) ? merged : null;
+}
+
+/**
  * 이미 서버 싱크가 있는 곡(everyric·synced)에서 내 번역 언어의 유튜브 수동 자막을
  * LLM보다 먼저 시도한다 — tryCaptionFallback(첫 로딩·싱크 자체가 없을 때의 폴백)과 같은
  * 원칙을 "이미 싱크가 있어 번역 레이어만 미스인" 사후 경로에 적용한 것.
@@ -1107,22 +1137,10 @@ async function tryCaptionTranslationLayer(
   data: LyricsData, videoId: string, lang: string,
 ): Promise<boolean> {
   if (data.source !== 'everyric' || !data.synced) return false;
-  const base: CaptionLine[] = data.lines
-    .filter((l): l is LyricLine & { time: number; endTime: number } => l.time != null && l.endTime != null)
-    .map(l => ({ start: l.time, end: l.endTime, text: l.text }));
-  // 타이밍 없는 줄이 하나라도 섞여 있으면 base와 data.lines의 인덱스가 어긋난다 — 포기.
-  if (base.length !== data.lines.length) return false;
   const tracks = await getCaptionTracks(videoId);
   if (videoId !== currentVideoId) return false;
-  // chosen(원어 트랙)을 모른다 — 대각선은 loadTranslations의 조기 반환이 이미 걸러
-  // 여기 닿을 때는 곡 스크립트!=lang이 보장되므로 null로 넘겨도 안전하다.
-  const track = selectTranslationTrack(tracks, null, lang);
-  if (!track) return false;
-  const trLines = await fetchCaptionLines(videoId, track.lang, track.auto);
-  if (videoId !== currentVideoId) return false;
-  if (trLines.length === 0) return false;
-  const merged = mergeCaptionTranslation(base, trLines);
-  if (!merged.some(m => m !== undefined)) return false;
+  const merged = await fetchCaptionMatch(data, videoId, lang, tracks);
+  if (!merged) return false;
   // applyTranslations를 재사용 — translationLang 기록·availableLangs 칩 반영·pip 갱신까지
   // 기존 LLM 경로와 동일하게 맞아떨어진다. pronunciation은 안 실어 보낸다(자막엔 없다).
   const translated = data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' }));
@@ -1136,81 +1154,162 @@ async function tryCaptionTranslationLayer(
 }
 
 /**
- * 이미 싱크가 있는 곡에서 대상 언어의 위키(미라헤즈/보카로) 사람 번역을 자막 다음,
- * LLM보다 먼저 시도한다 — tryCaptionTranslationLayer와 같은 자리, 그다음 단계.
- *
- * 위키는 언어가 소스별로 고정된 단일언어다(미라헤즈=en, vocaro=ko) — 대상 언어가 그
- * 언어와 일치할 때만 두드린다. ja는 대응하는 번역 위키가 없어 건너뛴다(자막·LLM만).
+ * 위키(미라헤즈=en/vocaro=ko) 사람 번역을 조회해 순서 보존 결합 매칭(V1,
+ * matchWikiLinesToSegments)으로 현재 싱크 세그에 대응시킨다 — tryWikiTranslationLayer
+ * (화면 반영)와 harvestWiki(저장만) 둘 다 이 조회+매칭 로직을 공유한다.
  *
  * 위키 페이지는 시간 정보가 없는 줄 단위 텍스트라 mergeCaptionTranslation(시간 겹침)을
- * 못 쓴다 — 대신 matchWikiLinesToSegments(lib/lang.ts, 감사 V1)로 현재 싱크 줄과
- * 순서 보존 결합 매칭한다. 위키·싱크가 같은 가사를 서로 다른 기준으로 줄 나눌 수 있어
- * (실측 H7PR: 미라헤즈 기반 싱크 36줄 vs vocaro 페이지 42줄) 줄 대 줄 완전 일치만 보면
- * 분할이 갈리는 구간마다 미스가 나 매칭률이 실측 50% 미달로 떨어졌었다 — 결합 매칭이
- * 그 갭을 메운다. 그래도 매칭률이 절반 미만이면 신뢰할 수 없다고 보고 버린다(잘못된
+ * 못 쓴다 — 위키·싱크가 같은 가사를 서로 다른 기준으로 줄 나눌 수 있어(실측 H7PR:
+ * 미라헤즈 기반 싱크 36줄 vs vocaro 페이지 42줄) 줄 대 줄 완전 일치만 보면 분할이
+ * 갈리는 구간마다 미스가 나 매칭률이 실측 50% 미달로 떨어졌었다 — 결합 매칭이 그
+ * 갭을 메운다. 그래도 매칭률이 절반 미만이면 신뢰할 수 없다고 보고 버린다(잘못된
  * 줄에 번역이 얹히는 것보다 아예 안 붙는 게 낫다는 이 파일 전체의 원칙과 같다).
  *
- * 성공하면 persistTranslationLayer로 서버에도 origin='wiki'로 저장을 시도한다(캡션
- * 단계와 같은 새 엔드포인트) — attribution은 실제로 히트한 위키 응답에서 그대로 뽑는다
- * (miraheze는 attributionFromSource 재사용, vocaro는 handleGenerate와 같은 이름 관례).
- * **결합 매칭으로 재매핑된 세그 기준 lines를 보낸다**(위키 줄 기준이 아니라) — 서버도
- * 이 매칭 개선을 병행 반영 중이라, 세그 기준으로 보내면 어느 쪽이 먼저 배포되든 정합이
- * 맞는다(matchWikiLinesToSegments의 반환값 자체가 이미 세그 인덱스 기준이다).
+ * wikiName은 배지 병기용 짧은 이름(U2) — attribution.name은 저장용(곡 제목 포함,
+ * 길다)과 다르다(overlay.source.* 라벨 — setSourceBadge의 base 라벨과 동일 문구를
+ * 재사용해 "가사 원출처"와 "번역 출처"가 같은 위키를 가리킬 때 같은 이름으로 보이게).
  */
-async function tryWikiTranslationLayer(
-  data: LyricsData, videoId: string, lang: string,
-): Promise<boolean> {
-  if (data.source !== 'everyric' || !data.synced || !currentSong) return false;
+async function fetchWikiMatch(
+  data: LyricsData, lang: 'en' | 'ko', videoId: string,
+): Promise<{ translations: (string | undefined)[]; attribution?: SourceAttribution; wikiName: string } | null> {
+  if (!currentSong) return null;
   let wikiLines: { text: string; translation?: string }[] | null;
   let wikiAttribution: SourceAttribution | undefined;
-  // 배지 병기용 짧은 이름(U2) — attribution.name은 저장용(곡 제목 포함, 길다), 이건
-  // 표시용(overlay.source.*와 같은 라벨 — setSourceBadge의 base 라벨과 동일한 문구를
-  // 재사용해 "가사 원출처"와 "번역 출처"가 같은 위키를 가리킬 때 같은 이름으로 보이게 한다).
-  let wikiShortName: string | undefined;
+  const wikiShortName = lang === 'en' ? t('overlay.source.miraheze') : t('overlay.source.vocaro');
   if (lang === 'en') {
     const res = await sendToBackground<SourceResult | null>({
       type: 'MIRAHEZE_LOOKUP', payload: { title: currentSong.title },
     });
-    if (videoId !== currentVideoId) return false;
+    if (videoId !== currentVideoId) return null;
     wikiLines = res.data?.lines ?? null;
-    if (res.data) {
-      wikiAttribution = attributionFromSource(res.data);
-      wikiShortName = t('overlay.source.miraheze');
-    }
-  } else if (lang === 'ko') {
+    if (res.data) wikiAttribution = attributionFromSource(res.data);
+  } else {
     const res = await sendToBackground<VocaroResult | null>({
       type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
     });
-    if (videoId !== currentVideoId) return false;
+    if (videoId !== currentVideoId) return null;
     wikiLines = res.data?.lines ?? null;
-    if (res.data) {
-      wikiAttribution = { name: '보카로 가사 위키', url: res.data.pageUrl };
-      wikiShortName = t('overlay.source.vocaro');
-    }
-  } else {
-    return false; // ja 등 대응 번역 위키가 없다
+    if (res.data) wikiAttribution = { name: '보카로 가사 위키', url: res.data.pageUrl };
   }
-  if (!wikiLines || wikiLines.length === 0) return false;
+  if (!wikiLines || wikiLines.length === 0) return null;
 
   // 순서 보존 결합 매칭(V1) — 완전 일치·쪼갬·합침·재동기화 순으로 시도한다.
   // lib/lang.ts의 matchWikiLinesToSegments 문서 참고.
   const translations = matchWikiLinesToSegments(data.lines, wikiLines);
   const matched = translations.filter(Boolean).length;
-  if (matched === 0 || matched / data.lines.length < 0.5) return false;
+  if (matched === 0 || matched / data.lines.length < 0.5) return null;
+  return { translations, attribution: wikiAttribution, wikiName: wikiShortName };
+}
 
-  // pronunciation은 절대 싣지 않는다 — miraheze 로마자는 정렬용이 아니라 표시용이고,
-  // 발음은 서버 pron dict가 정본이다(라틴 정렬 붕괴 실측 — 로마자를 정렬 입력에 쓰면
-  // 무너진다는 것과 같은 이유로, 표시에서도 로마자 대신 pron dict 값을 신뢰한다).
-  const translated = data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' }));
-  applyTranslations(data, translated, { kind: 'wiki', wikiName: wikiShortName });
+/**
+ * 이미 싱크가 있는 곡에서 대상 언어의 위키(미라헤즈/보카로) 사람 번역을 자막 다음,
+ * LLM보다 먼저 시도한다 — tryCaptionTranslationLayer와 같은 자리, 그다음 단계.
+ * 위키는 언어가 소스별로 고정된 단일언어다 — 대상 언어가 그 언어와 일치할 때만
+ * 두드린다. ja는 대응하는 번역 위키가 없어 건너뛴다(자막·LLM만).
+ *
+ * 성공하면 persistTranslationLayer로 서버에도 origin='wiki'로 저장을 시도한다(S6이
+ * 만든 POST /api/sync/{video_id}/translations, fire-and-forget). **결합 매칭으로
+ * 재매핑된 세그 기준 lines를 보낸다**(위키 줄 기준이 아니라) — 서버도 이 매칭 개선을
+ * 병행 반영 중이라, 세그 기준으로 보내면 어느 쪽이 먼저 배포되든 정합이 맞는다
+ * (matchWikiLinesToSegments의 반환값 자체가 이미 세그 인덱스 기준이다). pronunciation은
+ * 절대 싣지 않는다 — miraheze 로마자는 정렬용이 아니라 표시용이고, 발음은 서버 pron
+ * dict가 정본이다(라틴 정렬 붕괴 실측).
+ */
+async function tryWikiTranslationLayer(
+  data: LyricsData, videoId: string, lang: string,
+): Promise<boolean> {
+  if (data.source !== 'everyric' || !data.synced || (lang !== 'en' && lang !== 'ko')) return false;
+  const result = await fetchWikiMatch(data, lang, videoId);
+  if (!result) return false;
+  const translated = data.lines.map((line, i) => ({ original: line.text, translation: result.translations[i] ?? '' }));
+  applyTranslations(data, translated, { kind: 'wiki', wikiName: result.wikiName });
   data.humanTranslated = true;
   // 세션 캐시에도 남긴다(V2) — 캡션 단계와 같은 이유(setTranslationCache 문서 참고).
   setTranslationCache(
-    translationKey(videoId, lang, data.lines.map(l => l.text)), translated, { kind: 'wiki', wikiName: wikiShortName },
+    translationKey(videoId, lang, data.lines.map(l => l.text)), translated, { kind: 'wiki', wikiName: result.wikiName },
   );
-  // 결합 매칭으로 재매핑된 세그 기준 lines를 보낸다 — 위 문서 참고.
-  persistTranslationLayer(videoId, lang, data.lines, translations, 'wiki', wikiAttribution);
+  persistTranslationLayer(videoId, lang, data.lines, result.translations, 'wiki', result.attribution);
   return true;
+}
+
+/**
+ * 수확(harvest) — 생성 직후·이미 싱크 있는 곡의 첫 로딩에서, 아직 안 가진 언어의
+ * **사람 번역만** fire-and-forget으로 확보해 서버에 저장한다(사용자 채택안). LLM은
+ * 여기서 절대 안 부른다 — 기존 하이브리드 결정 유지(안 보는 언어에 3배 LLM 비용을
+ * 물릴 이유가 없다, lazy는 loadTranslations 체인이 그대로 담당).
+ *
+ * **화면엔 손대지 않는다** — applyTranslations를 안 부르고 fetchWikiMatch/
+ * fetchCaptionMatch(조회+매칭까지는 tryWiki/tryCaptionTranslationLayer와 100% 같은
+ * 코드)의 결과를 세션 캐시(V2, 다음 전환이 즉시이게)와 서버 레이어(persistTranslationLayer,
+ * 다음 방문자가 즉시 받게)에만 반영한다.
+ *
+ * 세션당 videoId 1회로 제한한다(harvestedVideos) — trigger (a)(생성 직후)·trigger
+ * (b)(이미 싱크 있는 곡의 첫 로딩) 둘 다 이 Set을 공유해 중복 실행을 막는다(가드 표는
+ * 완료 보고 참고). 실패는 콘솔에만 남긴다 — 미래 방문자를 위한 백그라운드 최적화지,
+ * 지금 사용자가 기다리는 작업이 아니라 화면에 실패를 알릴 이유가 없다.
+ */
+const harvestedVideos = new Set<string>();
+
+async function harvestTranslations(videoId: string): Promise<void> {
+  if (harvestedVideos.has(videoId)) return;
+  harvestedVideos.add(videoId);
+  const data = currentData;
+  if (!data || data.source !== 'everyric' || !data.synced || videoId !== currentVideoId || !currentSong) return;
+  // 대각선(곡 자신의 언어)은 제외 — 번역 레이어가 절대 안 생기는 언어라 조회 자체가 낭비다.
+  const songLang = detectSongScript(data.lines.map(l => l.text));
+  const have = new Set(data.availableLangs ?? []);
+  have.add(songLang);
+
+  const jobs: Promise<void>[] = [];
+  if (!have.has('ko')) jobs.push(harvestWiki(data, videoId, 'ko'));
+  if (!have.has('en')) jobs.push(harvestWiki(data, videoId, 'en'));
+  jobs.push(harvestCaptions(data, videoId, have));
+  await Promise.allSettled(jobs);
+}
+
+async function harvestWiki(data: LyricsData, videoId: string, lang: 'ko' | 'en'): Promise<void> {
+  try {
+    const result = await fetchWikiMatch(data, lang, videoId);
+    if (!result) return;
+    setTranslationCache(
+      translationKey(videoId, lang, data.lines.map(l => l.text)),
+      data.lines.map((line, i) => ({ original: line.text, translation: result.translations[i] ?? '' })),
+      { kind: 'wiki', wikiName: result.wikiName },
+    );
+    persistTranslationLayer(videoId, lang, data.lines, result.translations, 'wiki', result.attribution);
+  } catch (e) {
+    console.debug('[everyric] harvest wiki failed', lang, e);
+  }
+}
+
+/**
+ * 수동 자막 트랙 중 아직 안 가진 언어(ko/en/ja)를 각각 확보한다. tryCaptionTranslationLayer
+ * 와 같은 fetchCaptionMatch(시간 겹침 병합)를 재사용한다 — matchWikiLinesToSegments가
+ * 아니라 mergeCaptionTranslation을 쓰는 이유: 자막 트랙은 위키 페이지처럼 "원문+번역이
+ * 한 줄에 짝지어" 오지 않는다(각 언어가 독립된 트랙이라 원문과 텍스트로 대조할 짝이
+ * 없다) — 세그 자체가 이미 정확한 타이밍을 갖고 있으므로 시간 겹침이 여기서는 더
+ * 정확하고 자연스러운 매칭이다. getCaptionTracks는 언어마다 다시 부르지 않고 한 번만
+ * 받아 재사용한다(같은 영상의 트랙 목록은 언어에 안 따라 바뀐다).
+ */
+async function harvestCaptions(data: LyricsData, videoId: string, have: Set<string>): Promise<void> {
+  try {
+    const candidates = (['ko', 'en', 'ja'] as const).filter(lang => !have.has(lang));
+    if (candidates.length === 0) return;
+    const tracks = await getCaptionTracks(videoId);
+    if (videoId !== currentVideoId || tracks.length === 0) return;
+    await Promise.allSettled(candidates.map(async lang => {
+      const merged = await fetchCaptionMatch(data, videoId, lang, tracks);
+      if (!merged) return;
+      setTranslationCache(
+        translationKey(videoId, lang, data.lines.map(l => l.text)),
+        data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' })),
+        { kind: 'caption' },
+      );
+      persistTranslationLayer(videoId, lang, data.lines, merged, 'caption');
+    }));
+  } catch (e) {
+    console.debug('[everyric] harvest captions failed', e);
+  }
 }
 
 /**
@@ -2139,6 +2238,11 @@ function applyLyricsData(data: LyricsData | null): void {
   // 곡이 바뀌면 이전 곡에 걸려 있던 로딩 표시도 함께 지운다.
   panel.setAvailableLangs(availableLangsForChip(data));
   panel.setLangPending(null);
+  // 수확 트리거 (b) — 이미 싱크가 있는 곡의 첫 로딩에서, availableLangs에 빠진 언어가
+  // 있으면 수확을 시도한다. harvestTranslations 내부의 harvestedVideos 가드가 세션당
+  // videoId 1회로 제한하므로(트리거 a와 공유) 매 로딩마다 반복되지 않는다 — 여기서는
+  // 무조건 불러도 안전하다(놓친 언어가 없으면 harvestTranslations가 스스로 no-op한다).
+  if (data?.source === 'everyric' && data.synced && currentVideoId) void harvestTranslations(currentVideoId);
 
   if (!data) {
     // 싱크가 없다고 PiP를 닫지 않는다 — 재생목록을 돌리다 가사 없는 곡이 나오면
@@ -2512,7 +2616,12 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
       });
     }
     // 캐시 히트로 이미 끝난 잡은 위 첨부가 완성된 싱크에 메타를 병합한 뒤 다시 조회한다
-    if (alreadyDone && videoId === currentVideoId) void searchLyrics();
+    // 생성 직후(트리거 a, 캐시 히트로 즉시 완료된 경우) — pollJobs의 완료 분기와 같은 이유
+    if (alreadyDone && videoId === currentVideoId) {
+      void searchLyrics().then(() => {
+        if (videoId === currentVideoId) void harvestTranslations(videoId);
+      });
+    }
   } finally {
     preparingGenerate.delete(videoId);
     updateGenChip();
@@ -2715,6 +2824,8 @@ async function pollJobs(): Promise<void> {
           const verdict = completionVerdict(label);
           notifyJobDone(job.jobId, t('content.notify.transcribeComplete'), verdict.message);
           if (verdict.warning) showNotice(verdict.warning, 20000);
+          // 생성 직후(트리거 a) — 아직 없는 언어의 사람 번역을 수확한다(harvestTranslations 문서 참고)
+          void harvestTranslations(videoId);
         });
       } else {
         // 다른 영상의 잡은 **검증할 근거가 없다** — currentData는 지금 보는 영상의 것이라
