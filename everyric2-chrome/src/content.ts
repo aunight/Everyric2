@@ -2585,7 +2585,17 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
       const note = failureNote(noteFailure(res.failure));
       if (videoId === currentVideoId && seq === searchSeq) {
         // 요청이 실패했다고 붙여넣던 가사·보던 가사를 버리지 않는다 (reportFailure가 가른다)
-        reportFailure(t('content.failure.generateRequest'), note);
+        // 한도(429)로 막혔을 때만 우회로를 함께 알린다 — 이미 등록된 곡이라면 수동
+        // 잇기(검색 시트의 링크 섹션)가 생성 한도와 별개다. 자동 연결을 기다리라는
+        // 안내는 하지 않는다(실사용에서 자동 연결이 성사되는 경우가 드물다는 피드백).
+        const quotaHint = res.failure?.status === 429
+          ? t('content.generate.quotaLinkHint')
+          : undefined;
+        const detailParts = [note, quotaHint].filter((s): s is string => Boolean(s));
+        reportFailure(
+          t('content.failure.generateRequest'),
+          detailParts.length > 0 ? detailParts.join(' ') : undefined,
+        );
       }
       return;
     }

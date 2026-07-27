@@ -1232,6 +1232,9 @@
   "content_generate_autoCaptionBlocked": {
     "message": "자동 생성 자막은 전사가 부정확해 싱크를 만들 수 없어요 — 가사를 검색하거나 붙여넣어 주세요"
   },
+  "content_generate_quotaLinkHint": {
+    "message": "이미 싱크가 등록된 곡(원곡·다른 커버 영상)이라면 잇기는 한도와 무관해요 — 검색 화면 하단 '다른 영상의 싱크 연결'에 원곡 영상 주소를 넣어 직접 이어 보세요."
+  },
   "content_notify_transcribeComplete": {
     "message": "전사 완료"
   },

@@ -1232,6 +1232,9 @@
   "content_generate_autoCaptionBlocked": {
     "message": "自動生成字幕は転写が不正確なため同期を作成できません — 歌詞を検索するか貼り付けてください"
   },
+  "content_generate_quotaLinkHint": {
+    "message": "この曲に既に同期が登録されている場合(原曲や別のカバー動画)、リンクは上限の対象外です — 検索画面下部の「別の動画の同期をリンク」に原曲動画のURLを入れて直接つないでください。"
+  },
   "content_notify_transcribeComplete": {
     "message": "転写完了"
   },

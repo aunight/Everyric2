@@ -1232,6 +1232,9 @@
   "content_generate_autoCaptionBlocked": {
     "message": "Auto-generated captions aren't accurate enough to build a sync from — search for lyrics or paste them instead"
   },
+  "content_generate_quotaLinkHint": {
+    "message": "If this song already has a sync (on the original or another cover video), linking doesn't count against the limit — open the search screen and use 'Link another video's sync' at the bottom with the original video's URL."
+  },
   "content_notify_transcribeComplete": {
     "message": "Transcription complete"
   },
