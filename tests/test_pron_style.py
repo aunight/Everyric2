@@ -559,3 +559,78 @@ def test_deterministic_pronunciation_survives_finalize(monkeypatch, tmp_path):
 
     pron = wiki_pronunciation("叫んだ音は既に列を成さないで")
     assert finalize_pronunciation(pron) == pron
+
+
+# ---------------------------------------------------------------------------
+# 6. romaji 라인 렌더 + 심판 후보 토큰 노출 (다국어화, 2026-07-28, Task 4)
+# ---------------------------------------------------------------------------
+
+
+def test_romaji_line_basic():
+    from everyric2.text.pron_style import romaji_line
+
+    display, moras, spaces = romaji_line("アルバイトはネクラモード")
+    assert display == "arubaito wa nekura moodo"
+    assert len(moras) == 12  # text_to_moras와 같은 모라 수
+    assert "".join(m + (" " if s else "") for m, s in zip(moras, spaces)).strip() == display
+
+
+def test_romaji_line_latin_passthrough():
+    from everyric2.text.pron_style import romaji_line
+
+    display, _, _ = romaji_line("Take it easy なんて言葉じゃ")
+    assert display.startswith("Take it easy")  # 라틴 원형 유지
+
+
+def test_candidate_token_sets_parallel():
+    from everyric2.text.pron_style import candidate_token_sets, pronunciation_candidates
+
+    text = "ずっと見てたよ"
+    rendered, tokens = candidate_token_sets(text)
+    assert rendered == pronunciation_candidates(text)
+    assert len(rendered) == len(tokens)
+
+
+def test_romaji_line_none_for_non_japanese_non_latin_text():
+    from everyric2.text.pron_style import romaji_line
+
+    assert romaji_line("") is None
+    assert romaji_line("오늘 밤") is None
+    assert romaji_line("1234 (56)") is None
+
+
+def test_romaji_line_display_matches_moras_invariant_across_lines():
+    # 표시=세그 단일 소스 불변식은 특정 라인 하나만의 우연이 아니어야 한다
+    from everyric2.text.pron_style import romaji_line
+
+    for text in (
+        "フラッシュバック・蝉の声・二度とは帰らぬ君",
+        "背負った",
+        "ずっと見 てたよ",
+        "縋って 縋って",
+        "左から右へと",
+    ):
+        result = romaji_line(text)
+        assert result is not None
+        display, moras, spaces = result
+        assert len(moras) == len(spaces)
+        assert "".join(m + (" " if s else "") for m, s in zip(moras, spaces)).strip() == display
+
+
+def test_candidate_token_sets_tokens_feed_text_to_moras():
+    # 심판이 고른 대안 읽기(대체 토큰 열)를 text_to_moras에 넘기면 모라 수가 따라온다
+    from everyric2.text.pron_style import candidate_token_sets
+    from everyric2.text.reading import text_to_moras
+
+    text = "ずっと観てたよ"
+    rendered, tokens = candidate_token_sets(text)
+    assert len(rendered) >= 2  # 観て(みて/みえて) 애매어휘 후보가 있다
+    for cand_tokens in tokens:
+        moras = text_to_moras(text, tokens=cand_tokens)
+        assert moras  # 재토크나이즈 없이도 모라를 만든다
+
+
+def test_text_to_moras_default_unchanged_by_new_tokens_param():
+    # 기존 호출자(인자 없이 호출)는 동작이 그대로다
+    text = "叫んだ音は既に列を成さないで"
+    assert text_to_moras(text) == text_to_moras(text, tokens=None)

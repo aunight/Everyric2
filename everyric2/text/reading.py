@@ -161,7 +161,7 @@ def _token_mora_char_spans(
     return spans if r == n_r else None
 
 
-def text_to_moras(text: str) -> list[Mora]:
+def text_to_moras(text: str, tokens: list | None = None) -> list[Mora]:
     """원문 라인을 모라 시퀀스로 분해.
 
     ``ja_reading``으로 토큰화 + 읽기(히라가나)를 얻은 뒤, 일본어 토큰은 읽기를 모라로
@@ -172,8 +172,14 @@ def text_to_moras(text: str) -> list[Mora]:
     복원된다(ja_reading의 계약). 한 토큰에서 나온 여러 모라는 가능하면 **글자 단위로
     정밀 귀속**된다(_token_mora_char_spans — 가나는 위치 대응, 한자 런은 앵커 사이
     읽기를 공유). 귀속이 확실치 않으면 예전처럼 토큰 전체 구간을 공유한다.
+
+    ``tokens``를 주면 재토크나이즈하지 않고 그 읽기로 모라를 만든다 — 오디오 심판이
+    고른 대안 읽기(``pron_style.candidate_token_sets``)의 모라 수를 그대로 반영하려는
+    호출부를 위한 것이다. 생략하면(``None``) 기존과 동일하게 ``tokenize_reading(text)``로
+    새로 토큰화한다 — 기존 호출자는 무변경.
     """
-    tokens = tokenize_reading(text)
+    if tokens is None:
+        tokens = tokenize_reading(text)
     moras: list[Mora] = []
     i, n = 0, len(tokens)
     while i < n:

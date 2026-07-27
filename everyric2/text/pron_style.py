@@ -19,7 +19,9 @@ import unicodedata
 
 from everyric2.text import kana_hangul
 from everyric2.text.ja_reading import ReadingToken, tokenize_reading
+from everyric2.text.kana_romaji import moras_to_romaji
 from everyric2.text.latin_hangul import transliterate_latin
+from everyric2.text.reading import text_to_moras
 
 # ---------------------------------------------------------------------------
 # 문절(文節) 띄어쓰기
@@ -482,13 +484,17 @@ def _substitute_reading(
     return out
 
 
-def _ambiguous_word_candidates(text: str, default_tokens: list[ReadingToken]) -> list[str]:
-    """줄에 있는 애매 어휘마다, 그 낱말만 대립 읽기로 바꾼 후보 하나씩.
+def _ambiguous_word_candidates(
+    text: str, default_tokens: list[ReadingToken]
+) -> list[tuple[str, list[ReadingToken]]]:
+    """줄에 있는 애매 어휘마다, 그 낱말만 대립 읽기로 바꾼 후보 (렌더 문자열, 토큰 열) 하나씩.
 
     다른 모든 토큰(따라서 문절 띄어쓰기·다른 낱말의 독음)은 기본값과 완전히 같다 — 이
     후보와 기본값의 유일한 차이가 그 낱말의 독음이어야 심판이 "독음 차이"만 재게 된다.
+    토큰 열을 같이 반환하는 이유는 ``candidate_token_sets``(다국어화, 2026-07-28)가
+    심판이 고른 후보의 모라 수를 romaji 등 다른 표기에도 그대로 반영해야 해서다.
     """
-    out: list[str] = []
+    out: list[tuple[str, list[ReadingToken]]] = []
     for word, (reading_a, reading_b) in _AMBIGUOUS_WORDS.items():
         search_from = 0
         while True:
@@ -512,19 +518,22 @@ def _ambiguous_word_candidates(text: str, default_tokens: list[ReadingToken]) ->
             candidate_tokens = _substitute_reading(default_tokens, covered, alternative)
             rendered = _render_pronunciation(text, candidate_tokens)
             if rendered:
-                out.append(rendered)
+                out.append((rendered, candidate_tokens))
     return out
 
 
-def _stem_word_candidates(text: str, default_tokens: list[ReadingToken]) -> list[str]:
-    """줄에 있는 활용 동사(``_STEM_AMBIGUOUS_WORDS``)마다, 어간 읽기만 바꾼 후보 하나씩.
+def _stem_word_candidates(
+    text: str, default_tokens: list[ReadingToken]
+) -> list[tuple[str, list[ReadingToken]]]:
+    """줄에 있는 활용 동사(``_STEM_AMBIGUOUS_WORDS``)마다, 어간 읽기만 바꾼 (렌더 문자열,
+    토큰 열) 후보 하나씩.
 
     토큰 하나만 바꾼다(``_substitute_reading``에 단일 토큰 구간을 넘긴다) — 활용 어미는
     같은 토큰에 붙어 있는 채로 남으므로 손대지 않는다. 弾く/行く는 활용해도 어미 앞
     토큰 하나에 어간+활용부가 함께 들어오므로(예: 弾いた → 토큰 "弾い" + "た") 이걸로
     충분하다.
     """
-    out: list[str] = []
+    out: list[tuple[str, list[ReadingToken]]] = []
     for kanji, (prefix_a, prefix_b, allow_sokuon) in _STEM_AMBIGUOUS_WORDS.items():
         for token in default_tokens:
             if token.pos != "動詞" or not token.surface.startswith(kanji):
@@ -547,7 +556,50 @@ def _stem_word_candidates(text: str, default_tokens: list[ReadingToken]) -> list
             candidate_tokens = _substitute_reading(default_tokens, [token], alternative)
             rendered = _render_pronunciation(text, candidate_tokens)
             if rendered:
-                out.append(rendered)
+                out.append((rendered, candidate_tokens))
+    return out
+
+
+def _pronunciation_candidates_with_tokens(
+    text: str, *, max_candidates: int = 8
+) -> list[tuple[str, list[ReadingToken]]]:
+    """``pronunciation_candidates``/``candidate_token_sets``의 공유 구현.
+
+    (렌더 문자열, 그 문자열을 만든 토큰 열) 쌍의 목록을 만든다 — 두 공개 함수는 이 중
+    한쪽 요소만 뽑아 반환할 뿐, 순서·중복 제거·개수 상한 로직은 여기 하나뿐이다
+    (다국어화, 2026-07-28: romaji 등 다른 표기가 심판이 고른 읽기의 모라 수를 그대로
+    따르려면 렌더 문자열과 토큰 열이 같은 순서로 짝지어져 있어야 한다).
+    """
+    if not _has_japanese(text) or max_candidates <= 0:
+        return []
+
+    default_tokens = tokenize_reading(text, phonetic=True, adopt_ruby=True)
+    default = _render_pronunciation(text, default_tokens)
+    if not default:
+        # 기본값을 못 만드는 라인은 후보 비교의 기준이 없다 — 심판 대상이 아니다.
+        return []
+
+    out: list[tuple[str, list[ReadingToken]]] = [(default, default_tokens)]
+    rendered_set = {default}
+    for candidate, candidate_tokens in (
+        *_ambiguous_word_candidates(text, default_tokens),
+        *_stem_word_candidates(text, default_tokens),
+    ):
+        if len(out) >= max_candidates:
+            break
+        if candidate not in rendered_set:
+            out.append((candidate, candidate_tokens))
+            rendered_set.add(candidate)
+    # 라틴 느슨(비조밀) 후보 — **음절이 늘어나는 방향** 하나만. 조밀이 실측 기본값이지만
+    # 가수가 접힌 음절을 다 부르는 곡이 있다(사용자 청취 vg6pnvn1u10: 테익이 아니라
+    # 테이크). tighten은 접기/버리기만 하므로 이 후보는 기본값보다 음절이 항상 많거나
+    # 같다 — 예전 심판을 망친 삭제 편향(음절 지운 후보가 평평한 posterior에서 공짜로
+    # 이김)과 무관한 축이라 안전하다. 독음은 기본값과 동일해 유일한 차이가 라틴 표기다.
+    if len(out) < max_candidates and _LATIN_RE.search(text):
+        loose = _render_pronunciation(text, default_tokens, latin_tight=False)
+        if loose and loose not in rendered_set:
+            out.append((loose, default_tokens))
+            rendered_set.add(loose)
     return out
 
 
@@ -571,32 +623,99 @@ def pronunciation_candidates(text: str, *, max_candidates: int = 8) -> list[str]
     → 비용 0. 애매 낱말이 없는 압도적 다수의 줄이 이 경우다. 일본어가 없는 라인은
     빈 목록(``wiki_pronunciation``은 라틴만 있는 줄도 음차를 내지만, 후보의 존재 이유인
     "낱말 독음의 갈림"이 라틴 줄엔 없다).
+
+    실제 순서·중복 제거·개수 상한 로직은 ``_pronunciation_candidates_with_tokens``
+    하나뿐이다 — 이 함수는 그 렌더 문자열만 뽑는다(``candidate_token_sets``는 토큰
+    열까지 병렬로 반환한다). 골든 스냅샷(``tests/test_pron_golden.py``)이 반환값의
+    문자열·순서가 이 리팩터링 전후로 바이트 동일함을 보장한다.
     """
-    if not _has_japanese(text) or max_candidates <= 0:
-        return []
+    return [
+        rendered
+        for rendered, _ in _pronunciation_candidates_with_tokens(text, max_candidates=max_candidates)
+    ]
 
-    default_tokens = tokenize_reading(text, phonetic=True, adopt_ruby=True)
-    default = _render_pronunciation(text, default_tokens)
-    if not default:
-        # 기본값을 못 만드는 라인은 후보 비교의 기준이 없다 — 심판 대상이 아니다.
-        return []
 
-    out = [default]
-    for candidate in (
-        *_ambiguous_word_candidates(text, default_tokens),
-        *_stem_word_candidates(text, default_tokens),
-    ):
-        if len(out) >= max_candidates:
-            break
-        if candidate not in out:
-            out.append(candidate)
-    # 라틴 느슨(비조밀) 후보 — **음절이 늘어나는 방향** 하나만. 조밀이 실측 기본값이지만
-    # 가수가 접힌 음절을 다 부르는 곡이 있다(사용자 청취 vg6pnvn1u10: 테익이 아니라
-    # 테이크). tighten은 접기/버리기만 하므로 이 후보는 기본값보다 음절이 항상 많거나
-    # 같다 — 예전 심판을 망친 삭제 편향(음절 지운 후보가 평평한 posterior에서 공짜로
-    # 이김)과 무관한 축이라 안전하다. 독음은 기본값과 동일해 유일한 차이가 라틴 표기다.
-    if len(out) < max_candidates and _LATIN_RE.search(text):
-        loose = _render_pronunciation(text, default_tokens, latin_tight=False)
-        if loose and loose not in out:
-            out.append(loose)
-    return out
+def candidate_token_sets(text: str) -> tuple[list[str], list[list[ReadingToken]]]:
+    """``pronunciation_candidates``와 같은 순서로 (렌더 문자열 목록, 토큰 열 목록) 병렬 반환.
+
+    ``rendered == pronunciation_candidates(text)``가 항상 성립한다 — 같은 공유 구현
+    (``_pronunciation_candidates_with_tokens``)을 쓰기 때문이다. ``tokens[i]``는
+    ``rendered[i]``를 만든 토큰 열이며, 오디오 심판이 ``chosen`` 인덱스를 고르면
+    ``tokens[chosen]``을 ``reading.text_to_moras(text, tokens=...)``에 넘겨 그 읽기의
+    모라 수를 romaji 등 다른 표기에도 그대로 반영할 수 있다. ``[0]``이 기본값이다.
+    """
+    pairs = _pronunciation_candidates_with_tokens(text)
+    return [rendered for rendered, _ in pairs], [tokens for _, tokens in pairs]
+
+
+# ---------------------------------------------------------------------------
+# romaji 라인 렌더 — 표시=모라 토큰 단일 소스
+# ---------------------------------------------------------------------------
+
+# 이 토큰 뒤에는 romaji 관용 표기에서도 공백을 넣지 않는다 — 활용의 연속이지 새
+# 낱말이 아니다. 조동사(た/ます/ない 등)·접미사는 pos1만으로 충분하고, 접속조사(て)는
+# 동사 활용을 잇는 붙임씨라 pos2까지 봐야 한다(係助詞·格助詞인 は/が/を 등은 로마자
+# 관용 표기에서 독립된 낱말로 띄운다 — 실측: 「アルバイトはネクラモード」→
+# "arubaito wa nekura moodo", は가 독립 단어로 뜬다. pron_style의 _CONJUNCTIVE_PARTICLE_POS2
+# 와 같은 판단축이다).
+_ROMAJI_GLUE_POS1 = frozenset({"助動詞", "接尾辞"})
+_ROMAJI_GLUE_PARTICLE_POS2 = "接続助詞"
+
+
+def _romaji_glues_to_previous(token: ReadingToken) -> bool:
+    """이 토큰이 romaji 표기에서 앞말에 그대로 붙는가(활용의 연속)."""
+    if token.pos in _ROMAJI_GLUE_POS1:
+        return True
+    return token.pos == "助詞" and token.pos2 == _ROMAJI_GLUE_PARTICLE_POS2
+
+
+def _token_owning(tokens: list[ReadingToken], char_pos: int) -> ReadingToken | None:
+    """``char_pos``를 포함하는 토큰 (표면이 원문 전 구간을 이어 붙이므로 항상 찾는다)."""
+    for token in tokens:
+        if token.start <= char_pos < token.end:
+            return token
+    return None
+
+
+def romaji_line(
+    text: str, tokens: list[ReadingToken] | None = None
+) -> tuple[str, list[str], list[bool]] | None:
+    """라인의 romaji 표시 — (표시 문자열, 모라 romaji 토큰 열, 모라 뒤 공백 여부).
+
+    **표시=세그 단일 소스** 불변식을 보장한다:
+    ``display == "".join(tok + (" " if sp else "") for tok, sp in zip(moras, spaces)).strip()``.
+
+    ``tokens``를 주면(오디오 심판이 고른 읽기 — ``candidate_token_sets`` 참조) 그
+    읽기로 모라를 만든다(``reading.text_to_moras``); 생략하면 ``wiki_pronunciation``과
+    같은 기본 읽기(``phonetic=True, adopt_ruby=True``)로 새로 토큰화한다.
+
+    공백 규칙은 위키 한글 표기의 문절(文節) 규칙과 다른 축이다 — romaji는 형태소
+    **토큰** 경계로 판단한다: 다음 모라가 새 토큰에서 왔고 그 토큰이 활용의 연속
+    (조동사·접미사·접속조사, ``_romaji_glues_to_previous``)이 아니면 공백, 원문에서
+    공백·구두점으로 건너뛴 글자 구간이 있어도 공백. 라틴/ASCII 모라는
+    ``moras_to_romaji``의 표 미등록 통과 경로를 타 원형 그대로 나온다.
+    """
+    if not _has_japanese(text) and not _LATIN_RE.search(text):
+        return None
+    if tokens is None:
+        tokens = tokenize_reading(text, phonetic=True, adopt_ruby=True)
+
+    moras = text_to_moras(text, tokens=tokens)
+    if not moras:
+        return None
+
+    romaji_tokens = moras_to_romaji([m.kana for m in moras])
+
+    spaces: list[bool] = []
+    for i in range(len(moras) - 1):
+        cur, nxt = moras[i], moras[i + 1]
+        gap = cur.char_end < nxt.char_start
+        owner_cur = _token_owning(tokens, cur.char_start)
+        owner_nxt = _token_owning(tokens, nxt.char_start)
+        new_token = owner_cur is not owner_nxt
+        grammatical = new_token and owner_nxt is not None and not _romaji_glues_to_previous(owner_nxt)
+        spaces.append(grammatical or gap)
+    spaces.append(False)
+
+    display = "".join(tok + (" " if sp else "") for tok, sp in zip(romaji_tokens, spaces)).strip()
+    return display, romaji_tokens, spaces
