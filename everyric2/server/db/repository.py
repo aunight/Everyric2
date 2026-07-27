@@ -240,6 +240,7 @@ class JobRepository:
         video_id: str,
         lyrics: str,
         language: str | None = None,
+        target_lang: str = "ko",
     ) -> Job:
         lyrics_hash = hash_lyrics(lyrics)
         job = Job(
@@ -247,6 +248,9 @@ class JobRepository:
             lyrics=lyrics,
             lyrics_hash=lyrics_hash,
             language=language,
+            # 요청자의 번역 언어 — 워커가 job_target_lang으로 읽어 레이어 언어와
+            # legacy 슬롯 병기 여부를 정한다 (Job.target_lang 주석 참조)
+            target_lang=(target_lang or "ko").strip() or "ko",
         )
         self.session.add(job)
         await self.session.flush()

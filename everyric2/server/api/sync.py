@@ -268,6 +268,13 @@ class GenerateRequest(BaseModel):
     # 상한을 둔 대기를 한 번 넣는다 — 클라이언트의 번역·독음 시간과 그만큼이 겹친다.
     # line_meta를 본문에 함께 실어 보내면 이 플래그는 무시된다(기다릴 것이 없다).
     line_meta_pending: bool = False
+    # 요청자의 번역 대상 언어 — Job.target_lang으로 저장돼 워커의 레이어 기록·legacy 병기
+    # 판정에 쓰인다. 안 싣는 구버전 확장은 "ko"(기존 동작).
+    target_lang: str = Field(default="ko", max_length=8)
+    # line_meta에 실린 번역의 언어. 새 확장은 항상 target_lang과 같게 보낸다 — 서버는
+    # 현재 target_lang만 소비하지만, 계약을 요청 스키마에 명시해 두면(Extra 필드 무시에
+    # 기대지 않고) 두 값이 갈라지는 미래 클라이언트를 스키마 수준에서 받아들일 수 있다.
+    line_meta_lang: str = Field(default="ko", max_length=8)
 
 
 class GenerateResponse(BaseModel):
@@ -303,6 +310,9 @@ class RegenerateRequest(BaseModel):
     artist: str | None = Field(default=None, max_length=128)
     # GenerateRequest.line_meta_pending과 동일 — 재생성도 번역과 병렬로 돌릴 수 있다
     line_meta_pending: bool = False
+    # GenerateRequest와 동일 계약 — 재생성 요청자의 번역 언어
+    target_lang: str = Field(default="ko", max_length=8)
+    line_meta_lang: str = Field(default="ko", max_length=8)
 
 
 def _merge_meta_into_sync(
@@ -902,6 +912,7 @@ async def generate_sync(
             video_id=request.video_id,
             lyrics=request.lyrics,
             language=request.language,
+            target_lang=request.target_lang,
         )
         job_id = job.id
 
@@ -1441,6 +1452,7 @@ async def regenerate_sync(
             video_id=request.video_id,
             lyrics=request.lyrics,
             language=request.language,
+            target_lang=request.target_lang,
         )
         job_id = job.id
 
