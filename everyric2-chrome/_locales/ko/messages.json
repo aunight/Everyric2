@@ -1,360 +1,1437 @@
 {
-  "pip.solfege.names": { "message": "도,도#,레,레#,미,파,파#,솔,솔#,라,라#,시" },
-  "pip.docTitle": { "message": "Everyric 가사" },
-  "pip.controls.playPause": { "message": "재생/일시정지" },
-  "pip.controls.prevTrack": { "message": "이전 곡" },
-  "pip.controls.nextTrack": { "message": "다음 곡" },
-  "pip.controls.playlist": { "message": "재생목록" },
-  "pip.controls.mute": { "message": "음소거" },
-  "pip.controls.unmute": { "message": "음소거 해제" },
-  "pip.controls.melody": { "message": "멜로디 재생 (노트 신디사이즈)" },
-  "pip.controls.metronome": { "message": "메트로놈" },
-  "pip.controls.metronomeRate": { "message": "메트로놈 배속 (½× → 1× → 2×)" },
-  "pip.controls.metronomeBeat": { "message": "마디 시작 박 선택 (강세·마디선이 함께 이동)" },
-  "pip.controls.windowMinus": { "message": "표시 구간 절반으로 (마디 수 −)" },
-  "pip.controls.windowLabel": { "message": "레인 표시 구간 (한 화면에 보이는 마디 수)" },
-  "pip.controls.windowPlus": { "message": "표시 구간 두 배로 (마디 수 +)" },
-  "pip.controls.modeToggle": { "message": "진행 방식 전환 — 고정 화면(플레이헤드 이동) ↔ 스크롤(플레이헤드 고정)" },
-  "pip.controls.modeFixed": { "message": "고정" },
-  "pip.controls.modeScroll": { "message": "스크롤" },
-  "pip.controls.volume": { "message": "볼륨" },
-  "pip.controls.progressSeek": { "message": "클릭해서 이동" },
-  "pip.controls.karaokeToggle": { "message": "가라오케 음정 바 켜기/끄기" },
-  "pip.controls.videoToggle": { "message": "영상 함께 표시 켜기/끄기" },
-  "pip.controls.panelToggle": { "message": "가사 찾기 패널 열기/닫기" },
-  "pip.controls.laneHeightDrag": { "message": "드래그해서 가라오케 레인 높이 조절" },
-  "pip.controls.videoRatioDrag": { "message": "드래그해서 영상/가사 비율 조절" },
-  "pip.songKeyLabel": { "message": "키 $1$" },
-  "pip.debug.laneOriginal": { "message": "원문" },
-  "pip.debug.laneHeard": { "message": "들림" },
-  "pip.debug.lanePron": { "message": "발음" },
-  "pip.debug.alignPrefix": { "message": "정렬 " },
-  "pip.debug.gradeOk": { "message": "좋음$1$%" },
-  "pip.debug.gradeMid": { "message": " 보통$1$%" },
-  "pip.debug.gradeLow": { "message": " 낮음$1$%" },
-  "pip.debug.alignmentTextPrefix": { "message": " · 전사:$1$" },
-  "pip.debug.scaffoldApplied": { "message": " · 자막골격 $1$줄(고정$2$·보간$3$·유지$4$)" },
-  "pip.debug.scaffoldSkipped": { "message": " · 자막골격 안 씀:$1$" },
-
-  "debugPanel.confLow": { "message": "낮음" },
-  "debugPanel.confMid": { "message": "보통" },
-  "debugPanel.confOk": { "message": "좋음" },
-  "debugPanel.scaffoldApplied": { "message": "자막 스캐폴드 적용됨 — $1$줄 이동 (자막고정 $2$% · 고정$3$·보간$4$·유지$5$)" },
-  "debugPanel.scaffoldSkipped": { "message": "자막 스캐폴드 안 씀 — $1$" },
-  "debugPanel.empty": { "message": "표시할 라인이 없어요" },
-  "debugPanel.heardPrefix": { "message": "들림: $1$" },
-  "debugPanel.seekTitle": { "message": "클릭해서 이 구간으로 이동" },
-
-  "panels.serverLog.loadHint": { "message": "펼치면 불러와요" },
-  "panels.serverLog.title": { "message": "최근 서버 요청 기록" },
-  "panels.serverLog.loading": { "message": "불러오는 중…" },
-  "panels.serverLog.empty": { "message": "기록이 없어요 (확장을 다시 로드하면 초기화돼요)" },
-  "panels.serverBar.permissionNeeded": { "message": "자체 호스팅 서버 접근은 설치 시 권한을 받지 않아요 (기본 서버에는 필요 없어요). 전에 쓰고 있었다면 확장 업데이트로 회수됐을 수 있어요 — 한 번 허용하면 계속 유지돼요." },
-  "panels.serverBar.openPermissions": { "message": "권한 설정 열기" },
-  "panels.serverBar.openPermissionsTitle": { "message": "로컬 서버 접근을 허용하는 페이지를 새 탭에서 엽니다" },
-  "panels.serverBar.recheck": { "message": "다시 확인" },
-  "panels.serverBar.recheckTitle": { "message": "서버에 다시 연결해 봅니다" },
-  "panels.serverBar.openSettings": { "message": "설정 열기" },
-  "panels.serverBar.openSettingsTitle": { "message": "서버 URL과 API 키를 확인할 수 있어요" },
-  "panels.search.titlePlaceholder": { "message": "곡 제목" },
-  "panels.search.artistPlaceholder": { "message": "아티스트 (선택)" },
-  "panels.search.namuwiki": { "message": "나무위키" },
-  "panels.search.google": { "message": "구글" },
-  "panels.search.lyricsWord": { "message": "가사" },
-  "panels.search.externalLinksLabel": { "message": "다른 곳에서 가사 찾아보기" },
-  "panels.search.externalLinkTitle": { "message": "$1$에서 \"$2$\" 검색 (새 탭)" },
-  "panels.paste.placeholder": { "message": "여기에 가사를 붙여넣으면 AI가 타이밍을 맞춰줘요\n[Verse]·1절·후렴 같은 파트 표기와 주석 줄은 자동으로 걸러내요." },
-  "panels.paste.attributionPlaceholder": { "message": "출처 (선택) — 예: 나무위키, Genius" },
-  "panels.paste.attributionTitle": { "message": "가사를 어디서 가져왔는지 적어두면 싱크에 함께 저장돼 출처 배지에 표시돼요. 비워도 됩니다." },
-  "panels.paste.filterNote": { "message": "파트 표기([Verse]·1절·후렴)와 주석·크레딧 줄은 자동으로 제외해요 — 무엇을 제외했는지 알려드려요" },
-  "panels.paste.generateButton": { "message": "붙여넣은 가사로 싱크 생성" },
-  "panels.paste.emptyWarning": { "message": "가사를 먼저 붙여넣어 주세요" },
-  "panels.paste.closeToggle": { "message": "붙여넣기 닫기" },
-  "panels.paste.openToggle": { "message": "가사 직접 붙여넣기" },
-  "panels.serverDown.text": { "message": "서버를 쓸 수 없어요" },
-  "panels.serverDown.note": { "message": "가사 검색은 서버 없이도 되지만 이 곡은 외부 소스에서도 찾지 못했어요. 싱크 생성·재생성·번역은 서버가 있어야 해요." },
-  "panels.serverDown.retry": { "message": "가사 다시 검색" },
-  "panels.serverDown.retryTitlePermission": { "message": "권한을 허용한 뒤 누르면 처음부터 다시 찾아봐요" },
-  "panels.serverDown.retryTitleOther": { "message": "서버를 고친 뒤 누르면 처음부터 다시 찾아봐요" },
-  "panels.empty.searchAgain": { "message": "다시 검색" },
-  "panels.empty.title": { "message": "가사를 찾지 못했어요" },
-  "panels.empty.detailedSearch": { "message": "상세 검색 (후보 선택·싱크 연결)" },
-  "panels.loading.manualSearch": { "message": "기다리지 않고 수동 검색" },
-  "panels.error.retry": { "message": "다시 시도" },
-  "panels.generating.note": { "message": "계속 시청하셔도 돼요. 완료되면 자동으로 표시됩니다." },
-  "panels.searchSheet.searchButton": { "message": "검색" },
-  "panels.searchSheet.searching": { "message": "검색 중…" },
-  "panels.searchSheet.back": { "message": "← 보던 가사로 돌아가기" },
-  "panels.searchSheet.title": { "message": "가사 검색 — 결과에서 직접 선택할 수 있어요" },
-  "panels.searchSheet.sub": { "message": "보카로 위키(발음·번역 포함) + LRCLIB(싱크 가사)를 함께 검색합니다" },
-  "panels.searchSheet.serverBadNote": { "message": "LRCLIB 검색은 그대로 되지만, 보카로 위키 원제 매칭과 싱크 생성은 서버가 필요해요." },
-  "panels.results.empty": { "message": "결과가 없어요 — 제목을 줄이거나 원제(일본어)로 시도해 보세요" },
-  "panels.results.pronTranslationMeta": { "message": "발음·번역" },
-  "panels.results.syncedMeta": { "message": "싱크" },
-  "panels.results.plainMeta": { "message": "일반" },
-  "panels.results.vocaroLabel": { "message": "보카로 위키" },
-  "panels.results.lrclibLabel": { "message": "LRCLIB" },
-
-  "overlay.detecting": { "message": "노래 인식 중…" },
-  "overlay.header.pip": { "message": "PiP 창으로 보기" },
-  "overlay.header.regen": { "message": "싱크 다시 생성 (서버 캐시 무시)" },
-  "overlay.header.regenConfirm": { "message": "서버 싱크를 다시 생성할까요?\n1분 정도 걸리고, 완료될 때까지 기존 가사는 계속 표시됩니다." },
-  "overlay.header.search": { "message": "가사 다시 검색 (다른 결과 선택)" },
-  "overlay.header.settings": { "message": "설정" },
-  "overlay.header.collapse": { "message": "접기" },
-  "overlay.header.expand": { "message": "펼치기" },
-  "overlay.header.close": { "message": "닫기 (툴바 아이콘으로 다시 열기)" },
-  "overlay.genChip.title": { "message": "클릭하면 내 생성 대기열 목록을 펼쳐요" },
-  "overlay.genChip.cancel": { "message": "전사 취소" },
-  "overlay.genChip.cancelConfirm": { "message": "진행 중인 전사를 취소할까요?" },
-  "overlay.resumeChip": { "message": "현재 가사로" },
-  "overlay.footer.syncCaption": { "message": "싱크" },
-  "overlay.footer.pullEarlier": { "message": "가사를 0.1초 당기기" },
-  "overlay.footer.pushLater": { "message": "가사를 0.1초 늦추기" },
-  "overlay.footer.resetLabel": { "message": "리셋" },
-  "overlay.footer.resetTitle": { "message": "오프셋 초기화" },
-  "overlay.debug.waiting": { "message": "debug: 대기 중…" },
-  "overlay.debug.toggleAll": { "message": "전체" },
-  "overlay.debug.toggleAllTitle": { "message": "곡 전체 디버그 패널 — 원문 vs heard 전수 대비, 클릭해서 시크" },
-  "overlay.debug.created": { "message": "생성=$1$" },
-  "overlay.debug.grades": { "message": "정렬 좋음$1$%·보통$2$%·낮음$3$%" },
-  "overlay.debug.alignmentText": { "message": "전사텍스트=$1$" },
-  "overlay.debug.alignmentPronunciation": { "message": "독음(한국어 발음)" },
-  "overlay.debug.alignmentOriginal": { "message": "원문(원어)" },
-  "overlay.loading.default": { "message": "가사 검색 중…" },
-  "overlay.banner.aiKaraoke": { "message": "AI 전사로 가라오케(음정·발음)를 만들 수 있어요" },
-  "overlay.banner.aiTranscribe": { "message": "AI 전사 생성" },
-  "overlay.line.seekTitle": { "message": "클릭해서 이 부분으로 이동" },
-  "overlay.plain.generateSync": { "message": "싱크 생성" },
-  "overlay.plain.noTimesync": { "message": "타임싱크가 없는 가사예요" },
-  "overlay.search.backToAuto": { "message": "자동 검색으로 되돌리기" },
-  "overlay.search.resetSync": { "message": "이 영상 싱크 초기화 (서버 저장 삭제)" },
-  "overlay.search.resetSyncTitle": { "message": "잘못 붙여넣은 가사로 만든 싱크를 완전히 지우고 처음부터 다시 시작합니다" },
-  "overlay.search.resetSyncConfirm": { "message": "이 영상의 서버 싱크(정렬·발음·번역 저장본)를 모두 삭제할까요?\n삭제 후 자동 검색이 다시 실행되고, 가사를 새로 붙여넣을 수 있어요." },
-  "overlay.link.srcPlaceholder": { "message": "원본 영상 URL 또는 ID (전사가 이미 있는 영상)" },
-  "overlay.link.offsetPlaceholder": { "message": "오프셋(초)" },
-  "overlay.link.offsetTitle": { "message": "이 영상이 원본보다 늦게 시작하면 +, 빠르면 -" },
-  "overlay.link.ratePlaceholder": { "message": "배속" },
-  "overlay.link.rateTitle": { "message": "원곡 대비 재생 배속 — nightcore≈1.25, 같은 속도면 1" },
-  "overlay.link.filterPlaceholder": { "message": "저장 싱크 검색 — 가사 첫 줄·영상 ID·출처" },
-  "overlay.link.needVideoId": { "message": "영상 URL 또는 11자리 ID를 입력해 주세요" },
-  "overlay.link.connecting": { "message": "연결 중…" },
-  "overlay.link.sectionTitle": { "message": "다른 영상의 싱크 연결 (inst·커버용)" },
-  "overlay.link.verifiedBadge": { "message": " · 검증됨" },
-  "overlay.link.unverifiedBadge": { "message": " · 검증 없음" },
-  "overlay.link.currentStatus": { "message": "현재 $1$에 연결됨 ($2$)$3$" },
-  "overlay.link.unlink": { "message": "링크 해제" },
-  "overlay.link.connect": { "message": "연결" },
-  "overlay.link.pickFromList": { "message": "서버에 저장된 싱크 목록에서 고르기" },
-  "overlay.link.loadingList": { "message": "목록 불러오는 중…" },
-  "overlay.link.noSavedSyncs": { "message": "서버에 저장된 싱크가 없어요" },
-  "overlay.link.noFilterMatch": { "message": "검색과 일치하는 싱크가 없어요" },
-  "overlay.link.pickHint": { "message": "항목을 클릭하면 원본 칸에 채워져요 — 오프셋 확인 후 '연결'을 누르세요" },
-  "overlay.link.noFirstLine": { "message": "(첫 줄 없음)" },
-  "overlay.link.lineCountMeta": { "message": "$1$줄" },
-  "overlay.link.describeVerified": { "message": "$1$ 싱크를 빌려옴 · 반주 대조로 검증된 자동 연결" },
-  "overlay.link.describeUnverified": { "message": "$1$ 싱크를 빌려옴 · 검증 없는 수동 연결 — 어긋나면 오프셋을 조정하거나 해제하세요" },
-  "overlay.link.describeUnknown": { "message": "$1$ 싱크를 빌려옴 · 검증 여부 알 수 없음(구버전 서버)" },
-  "overlay.generating.default": { "message": "싱크 생성 중… $1$%" },
-  "overlay.pip.placeholder": { "message": "PiP 창에서 가사를 표시하고 있어요" },
-  "overlay.pip.backToPanel": { "message": "패널로 되돌리기" },
-  "overlay.settings.serverStatusTitle": { "message": "서버 연결 상태 — $1$" },
-  "overlay.warn.text": { "message": "전사가 부정확할 수 있어요 (정렬 신뢰도 $1$)" },
-  "overlay.warn.title": { "message": "전사·발음 정렬의 평균 신뢰도가 낮아요. 가사 원문이 정확한지 확인하거나 재생성을 시도해 보세요." },
-  "overlay.warn.close": { "message": "이 경고 닫기 (설정에서 끌 수도 있어요)" },
-  "overlay.genList.currentVideo": { "message": "$1$ (현재 영상)" },
-  "overlay.source.vocaro": { "message": "보카로 가사 위키" },
-  "overlay.source.caption": { "message": "유튜브 자막" },
-  "overlay.source.syncedLyrics": { "message": "싱크 가사" },
-  "overlay.source.plainLyrics": { "message": "일반 가사" },
-  "overlay.source.openPage": { "message": "출처 페이지 열기" },
-  "overlay.settings.fontSize.small": { "message": "작게" },
-  "overlay.settings.fontSize.medium": { "message": "보통" },
-  "overlay.settings.fontSize.large": { "message": "크게" },
-  "overlay.settings.optAuto": { "message": "자동" },
-  "overlay.settings.theme.dark": { "message": "다크" },
-  "overlay.settings.theme.light": { "message": "라이트" },
-  "overlay.settings.pronScript.hangul": { "message": "한글" },
-  "overlay.settings.pronScript.romaji": { "message": "로마자" },
-  "overlay.settings.pronScript.kana": { "message": "가나" },
-  "overlay.settings.sourcePriority.vocaro": { "message": "보카로 위키 우선" },
-  "overlay.settings.sourcePriority.lrclib": { "message": "LRCLIB 우선" },
-  "overlay.settings.pitchWindow.half": { "message": "½마디" },
-  "overlay.settings.pitchWindow.bars": { "message": "$1$마디" },
-  "overlay.settings.pitchMode.page": { "message": "고정 화면·헤드 이동" },
-  "overlay.settings.pitchMode.scroll": { "message": "스크롤·헤드 고정" },
-  "overlay.settings.pitchFont.normal": { "message": "보통" },
-  "overlay.settings.pitchFont.large": { "message": "크게" },
-  "overlay.settings.pitchFont.xlarge": { "message": "아주 크게" },
-  "overlay.settings.pitchFont.small": { "message": "작게" },
-  "overlay.settings.pronPosition.note": { "message": "노트 위" },
-  "overlay.settings.pronPosition.bottom": { "message": "화면 하단" },
-  "overlay.settings.metronomeRate.half": { "message": "½× (2분음표)" },
-  "overlay.settings.metronomeRate.one": { "message": "1× (4분음표)" },
-  "overlay.settings.metronomeRate.two": { "message": "2× (8분음표)" },
-  "overlay.settings.metronomeBeat.n": { "message": "$1$박" },
-  "overlay.settings.micOctave.n": { "message": "$1$옥타브" },
-  "overlay.settings.micOctave.none": { "message": "보정 없음" },
-  "overlay.settings.permBtnTitle": { "message": "자체 호스팅 서버 접근을 허용하는 페이지를 새 탭에서 엽니다" },
-  "overlay.settings.apiKeyPlaceholder": { "message": "(선택) 서버 API 키" },
-  "overlay.settings.row.autoSearch": { "message": "자동 가사 검색 (음악 영상만)" },
-  "overlay.settings.row.autoSearchTitle": { "message": "유튜브 음악 메타·채널·제목으로 음악 영상을 판별해 자동으로 가사창을 엽니다. 꺼도 툴바 아이콘으로 수동으로 열 수 있어요." },
-  "overlay.settings.row.autoSearchShorts": { "message": "쇼츠에서도 자동 검색" },
-  "overlay.settings.row.autoSearchShortsTitle": { "message": "기본은 꺼짐 — 쇼츠에서는 가사창이 자동으로 열리지 않아요. 툴바 아이콘으로 수동으로는 언제든 열 수 있어요." },
-  "overlay.settings.row.fontSize": { "message": "폰트 크기" },
-  "overlay.settings.row.theme": { "message": "테마" },
-  "overlay.settings.row.showTranslation": { "message": "가사 번역 표시" },
-  "overlay.settings.row.translationLanguage": { "message": "번역 언어" },
-  "overlay.settings.row.uiLanguage": { "message": "표시 언어" },
-  "overlay.settings.row.pronScript": { "message": "발음 표기 방식" },
-  "overlay.settings.row.showPronunciation": { "message": "발음 표기 표시 (있을 때)" },
-  "overlay.settings.row.sourcePriority": { "message": "가사 소스 우선순위" },
-  "overlay.settings.row.pipKeepPanel": { "message": "PiP 중에도 패널 가사 유지" },
-  "overlay.settings.row.pipShowVideo": { "message": "PiP에 영상 함께 표시" },
-  "overlay.settings.row.pitchGuide": { "message": "가라오케 음정 바 (BETA · PiP)" },
-  "overlay.settings.row.pitchWindow": { "message": "음정 바 표시 구간" },
-  "overlay.settings.row.pitchMode": { "message": "음정 바 진행 방식" },
-  "overlay.settings.row.pitchFont": { "message": "음정 바 글자 크기" },
-  "overlay.settings.row.pitchCountdown": { "message": "가사 시작 카운트다운" },
-  "overlay.settings.row.pitchF0Curve": { "message": "음정 원본 곡선(f0) 표시" },
-  "overlay.settings.row.pitchF0CurveTitle": { "message": "음정 모델이 추출한 원본 멜로디 곡선을 레인에 파란 선으로 표시합니다. 디버그 모드와 무관하게 켜고 끌 수 있어요." },
-  "overlay.settings.row.pronPosition": { "message": "발음 표기 위치" },
-  "overlay.settings.row.pronPositionTitle": { "message": "음절 타이밍이 있는 곡에서 발음 표기를 어디에 표시할지 고릅니다. 노트 위 = 각 노트 바로 아래 부착, 화면 하단 = 진행률 그라데이션으로 하단 중앙 표시." },
-  "overlay.settings.row.melodyPlayback": { "message": "멜로디 재생 (가라오케 창)" },
-  "overlay.settings.row.melodyPlaybackTitle": { "message": "전사된 노트를 신디사이즈로 재생합니다. 가라오케 창이 열려 있을 때만 소리가 나요." },
-  "overlay.settings.row.metronome": { "message": "메트로놈" },
-  "overlay.settings.row.metronomeTitle": { "message": "서버가 추정한 BPM에 맞춰 박자를 칩니다 (4/4 가정, 4박마다 강세)." },
-  "overlay.settings.row.metronomeRate": { "message": "메트로놈 배속" },
-  "overlay.settings.row.metronomeRateTitle": { "message": "느리게 느껴지는 곡은 2×(8분음표), 너무 빠른 곡은 ½×로. 가라오케 창 안 버튼으로도 바꿀 수 있어요." },
-  "overlay.settings.row.metronomeBeat": { "message": "마디 시작 박" },
-  "overlay.settings.row.metronomeBeatTitle": { "message": "곡의 첫 강세가 안 맞을 때 마디 시작 박을 옮깁니다. 메트로놈 강세와 레인 마디선이 함께 이동해요." },
-  "overlay.settings.row.audioOut": { "message": "가라오케 오디오 출력 기기" },
-  "overlay.settings.row.audioOutTitle": { "message": "멜로디·메트로놈만 이 기기로 나갑니다. 영상 소리는 기존 출력 그대로." },
-  "overlay.settings.row.micPitch": { "message": "마이크 음정 표시 (레인)" },
-  "overlay.settings.row.micPitchTitle": { "message": "마이크로 부른 음정을 가라오케 레인에 청록 궤적으로 표시합니다. 켜면 마이크 권한을 요청해요." },
-  "overlay.settings.row.micDevice": { "message": "마이크 기기" },
-  "overlay.settings.row.micOctave": { "message": "마이크 옥타브 보정" },
-  "overlay.settings.row.micOctaveTitle": { "message": "마이크 궤적이 노트보다 한 옥타브 위/아래로 그려지면 여기서 보정하세요." },
-  "overlay.settings.deviceNote": { "message": "기기 이름은 마이크 권한을 한 번 허용해야 표시돼요" },
-  "overlay.settings.serverUrlLabel": { "message": "싱크 서버 URL " },
-  "overlay.settings.apiKeyLabel": { "message": "API 키" },
-  "overlay.settings.row.lowConfWarning": { "message": "낮은 정렬 신뢰도 경고" },
-  "overlay.settings.row.lowConfWarningTitle": { "message": "전사 신뢰도가 매우 낮은 곡에서 가사창 상단에 경고 바를 띄웁니다." },
-  "overlay.settings.row.notifyOnComplete": { "message": "전사 완료 알림" },
-  "overlay.settings.row.notifyOnCompleteTitle": { "message": "대기열에 넣은 전사가 끝나면 브라우저 알림으로 알려줍니다. 다른 탭에 있어도 확인할 수 있어요." },
-  "overlay.settings.row.debugInfo": { "message": "디버그 정보 표시" },
-  "overlay.settings.serverRequiredNote": { "message": "싱크 생성·번역은 Everyric 서버가 필요해요" },
-  "overlay.settings.closeButton": { "message": "닫기" },
-  "overlay.settings.deviceN": { "message": "기기 $1$" },
-  "overlay.settings.defaultOutput": { "message": "기본 출력" },
-  "overlay.settings.defaultMic": { "message": "기본 마이크" },
-
-  "options.pageTitle": { "message": "Everyric 권한 설정" },
-  "options.subtitle": { "message": "자체 호스팅(로컬) 싱크 서버에 접근할 권한을 여기서 허용하거나 철회합니다." },
-  "options.intro1": { "message": "Everyric은 기본적으로 <code>https://everyric.moref.co</code> 싱크 서버를 씁니다. 그 서버 접근은 설치할 때 이미 허용돼 있어 <strong>여기서 할 일이 없습니다</strong>." },
-  "options.intro2": { "message": "이 페이지는 서버를 <strong>직접 돌려서 쓰는 경우</strong>에만 필요합니다. 그런 로컬 서버 주소는 자체 호스팅하는 소수만 쓰므로, 설치할 때 모두에게 권한을 요구하지 않고 필요한 사람이 직접 허용하도록 <em>선택적 권한</em>으로 두었습니다. 허용하면 확장이 그 주소로 가사·싱크 요청을 보낼 수 있게 되고, 철회하면 즉시 보낼 수 없게 됩니다." },
-  "options.currentServerHeading": { "message": "현재 싱크 서버" },
-  "options.serverUrlLoading": { "message": "불러오는 중…" },
-  "options.serverKindChecking": { "message": "확인 중" },
-  "options.serverNoteDefault": { "message": "서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다 — 이 페이지에서는 권한만 다룹니다." },
-  "options.permHeading": { "message": "로컬 서버 접근 권한" },
-  "options.grantButtonDefault": { "message": "허용" },
-  "options.revokeButtonDefault": { "message": "철회" },
-  "options.recheckButton": { "message": "상태 다시 확인" },
-  "options.tipsHeading": { "message": "알아 두면 좋은 것" },
-  "options.tip1": { "message": "허용은 한 번만 하면 유지됩니다. 확장을 지우면 함께 사라집니다." },
-  "options.tip2": { "message": "확장 업데이트로 이 권한이 회수돼 자체 호스팅 서버가 갑자기 연결되지 않을 수 있습니다. 그때는 여기서 다시 허용하면 됩니다." },
-  "options.tip3": { "message": "<code>chrome://extensions</code>의 Everyric 세부정보에서도 사이트 접근 권한을 확인·변경할 수 있습니다. 거기서 바꾼 내용도 이 페이지에 그대로 나타납니다." },
-  "options.tip4": { "message": "포트가 다른 로컬 서버나 제3의 서버 주소는 확장을 다시 빌드해야 쓸 수 있습니다." },
-  "options.serverKind.remote": { "message": "원격 서버" },
-  "options.serverNote.remote": { "message": "지금 설정은 원격 서버라 이 페이지의 권한이 필요하지 않아요. 서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다." },
-  "options.serverKind.notAllowed": { "message": "허용 불가" },
-  "options.serverNote.notAllowed": { "message": "$1$은 확장이 허용할 수 있는 주소가 아니에요. 허용 가능한 로컬 주소는 $2$ 뿐이고, 다른 포트나 주소를 쓰려면 확장을 다시 빌드해야 해요." },
-  "options.serverKind.grantedLocal": { "message": "로컬 서버 · 허용됨" },
-  "options.serverKind.needsPermLocal": { "message": "로컬 서버 · 권한 필요" },
-  "options.serverNote.granted": { "message": "이 주소로 요청을 보낼 수 있어요." },
-  "options.serverNote.needsPerm": { "message": "아래에서 허용해야 이 주소로 요청을 보낼 수 있어요. (요청은 $1$으로 나가요)" },
-  "options.currentServerMarker": { "message": "지금 설정된 서버" },
-  "options.badgeGranted": { "message": "허용됨" },
-  "options.badgeNotGranted": { "message": "허용되지 않음" },
-  "options.grantButton.preemptive": { "message": "로컬 서버 접근 미리 허용" },
-  "options.grantButton.normal": { "message": "로컬 서버 접근 허용" },
-  "options.revokeButton.all": { "message": "권한 전부 철회" },
-  "options.revokeButton.one": { "message": "권한 철회" },
-  "options.grantResult.success": { "message": "허용됐어요. 열려 있는 유튜브 탭의 가사 패널이 자동으로 다시 확인해요." },
-  "options.grantResult.denied": { "message": "허용되지 않았어요. 자체 호스팅 서버를 쓰려면 이 권한이 필요하고, 기본 서버(everyric.moref.co)를 쓰면 권한 없이 그대로 쓸 수 있어요." },
-  "options.grantResult.error": { "message": "권한을 요청하지 못했어요 — $1$" },
-  "options.revokeResult.success": { "message": "철회했어요. 로컬 서버로는 더 이상 요청을 보내지 않아요 — 가사 패널에는 권한이 필요하다는 안내가 다시 떠요." },
-  "options.revokeResult.failure": { "message": "철회하지 못했어요." },
-  "options.revokeResult.error": { "message": "철회하지 못했어요 — $1$" },
-
-  "content.notice.permPageFailed": { "message": "권한 설정 페이지를 열지 못했어요 — 확장 관리 페이지(chrome://extensions)에서 Everyric의 \"확장 프로그램 옵션\"을 열어 주세요" },
-  "content.notice.candidateLoadFailed": { "message": "선택한 가사를 불러오지 못했어요 — 다른 후보를 골라 보세요" },
-  "content.failure.generateRequest": { "message": "싱크 생성 요청에 실패했어요." },
-  "content.failure.regenerateRequest": { "message": "재생성 요청에 실패했어요." },
-  "content.failure.resetSync": { "message": "싱크 초기화에 실패했어요." },
-  "content.failure.cancelRequest": { "message": "취소 요청에 실패했어요." },
-
-  "content.linkProbe.chip": { "message": "동일 곡 추정 — 자동 연결 확인 중…" },
-  "content.link.cannotSelf": { "message": "자기 자신에게는 연결할 수 없어요" },
-  "content.link.replaceOwnConfirm": { "message": "이 영상에는 자체 전사가 이미 있어요.\n연결하면 자체 전사를 삭제하고 원본 영상의 싱크를 대신 사용합니다. 계속할까요?" },
-  "content.link.cancelledKeepOwn": { "message": "연결 취소됨 — 자체 전사를 유지합니다" },
-  "content.link.ownDeleteFailed": { "message": "자체 전사 삭제에 실패했어요$1$" },
-  "content.link.failedWithNote": { "message": "연결 실패 — $1$" },
-  "content.link.failedNoNote": { "message": "연결 실패 — 원본 영상에 전사(싱크)가 있는지 확인해 주세요" },
-  "content.link.unlinkFailed": { "message": "해제 실패$1$" },
-  "content.link.unlinkFailedCheckServer": { "message": " — 서버 상태를 확인해 주세요" },
-  "content.link.autoConfSuffix": { "message": " (반주 일치 $1$%)" },
-  "content.link.autoLinked": { "message": "자동 연결됨 — 같은 곡의 싱크를 가져왔어요$1$" },
-  "content.debug.zoneAdlib": { "message": "추임새★" },
-  "content.debug.zoneVocal": { "message": "가창" },
-  "content.debug.zoneInstrumental": { "message": "간주·무성" },
-  "content.age.justNow": { "message": "방금" },
-  "content.age.minutesAgo": { "message": "$1$분 전" },
-  "content.age.hoursAgo": { "message": "$1$시간 전" },
-  "content.age.daysAgo": { "message": "$1$일 전" },
-  "content.translation.unavailable": { "message": "번역 불가 — $1$" },
-  "content.translation.generating": { "message": "번역·발음 생성 중…" },
-  "content.translation.failedWithStatus": { "message": "번역 실패 — $1$" },
-  "content.translation.failedNoResult": { "message": "번역 실패 — 서버가 결과를 주지 않았어요" },
-  "content.translation.lineCountMismatch": { "message": "번역을 적용하지 못했어요 — 줄 수가 달라요 (번역 $1$줄 · 가사 $2$줄)" },
-  "content.translation.partialFailure": { "message": "번역 일부 실패 — $1$줄은 서버가 결과를 주지 못했어요" },
-  "content.translation.aiGenerating": { "message": "AI 번역·독음 생성 중…" },
-  "content.error.lyricsLoadFailed": { "message": "가사를 불러오지 못했어요" },
-  "content.error.candidatesLoadFailed": { "message": "후보를 불러오지 못했어요 — $1$" },
-  "content.error.unknown": { "message": "알 수 없는 오류" },
-  "content.error.jobGone": { "message": "서버에서 작업 기록을 찾을 수 없어요 (서버 재시작 등) — 다시 생성해 주세요" },
-  "content.error.syncGenerationFailed": { "message": "싱크 생성에 실패했어요" },
-  "content.loading.selectedCandidate": { "message": "선택한 가사를 불러오는 중…" },
-  "content.generate.blockedAutoCaption": { "message": "자동 생성 자막이라 전사가 부정확해요 — 정확한 가사를 붙여넣으면 싱크를 만들 수 있어요" },
-  "content.generate.tooManyLines": { "message": "가사가 너무 길어요 ($1$줄) — 500줄 이하로 줄여 주세요" },
-  "content.generate.autoCaptionBlocked": { "message": "자동 생성 자막은 전사가 부정확해 싱크를 만들 수 없어요 — 가사를 검색하거나 붙여넣어 주세요" },
-  "content.notify.transcribeComplete": { "message": "전사 완료" },
-  "content.notify.transcribeFailed": { "message": "전사 실패" },
-  "content.notify.otherVideoReady": { "message": "$1$ — 싱크가 만들어졌어요. 영상을 열어 확인해 주세요" },
-  "content.queue.position": { "message": "대기열 $1$번째" },
-  "content.queue.label": { "message": "대기열" },
-  "content.completion.notLoadedMsg": { "message": "$1$ — 싱크를 불러오지 못했어요" },
-  "content.completion.notLoadedWarning": { "message": "싱크를 불러오지 못했어요" },
-  "content.completion.readyMsg": { "message": "$1$ — 가사 싱크가 준비됐어요" },
-  "content.completion.pronWord": { "message": "발음" },
-  "content.completion.partialPron": { "message": "발음 $1$/$2$줄" },
-  "content.completion.trWord": { "message": "번역" },
-  "content.completion.partialTr": { "message": "번역 $1$/$2$줄" },
-  "content.completion.allReadyMsg": { "message": "$1$ — 가사 싱크·발음·번역이 준비됐어요" },
-  "content.completion.partialReadyMsg": { "message": "$1$ — 싱크는 준비됐지만 일부 줄이 비었어요 ($2$)" },
-  "content.completion.partialReadyWarning": { "message": "일부 줄에 $1$만 붙었어요 — 재생성하면 다시 시도해요" },
-  "content.completion.missingMsg": { "message": "$1$ — 싱크는 만들어졌지만 $2$이 없어요$3$" },
-  "content.completion.missingWarning": { "message": "싱크는 만들어졌지만 $1$이 붙지 않았어요$2$ — 재생성하면 다시 시도해요" },
-  "content.genChip.preparing": { "message": "싱크 생성 준비 중 — AI 번역·독음 요청…" },
-  "content.genChip.stageProgress": { "message": "$1$ $2$% · 전체 $3$%" },
-  "content.genChip.percentOnly": { "message": "$1$%" },
-  "content.genChip.transcribing": { "message": "전사 중 $1$$2$" },
-  "content.genChip.othersSuffix": { "message": " · 외 $1$건" },
-  "content.genChip.othersOnly": { "message": "다른 영상 전사 중 $1$건" },
-  "content.genChip.stageOnly": { "message": "$1$ $2$%" },
-
-  "serverError.lyrics_too_long": { "message": "가사가 너무 길어요 — 줄 수를 줄여서 다시 시도해 주세요" },
-  "serverError.video_too_long": { "message": "영상이 너무 길어요 — 이 길이는 아직 지원하지 않아요" },
-  "serverError.captions_no_text": { "message": "이 자막에는 텍스트가 없어요 — 다른 자막을 고르거나 가사를 붙여넣어 주세요" }
+  "pip_solfege_names": {
+    "message": "도,도#,레,레#,미,파,파#,솔,솔#,라,라#,시"
+  },
+  "pip_docTitle": {
+    "message": "Everyric 가사"
+  },
+  "pip_controls_playPause": {
+    "message": "재생/일시정지"
+  },
+  "pip_controls_prevTrack": {
+    "message": "이전 곡"
+  },
+  "pip_controls_nextTrack": {
+    "message": "다음 곡"
+  },
+  "pip_controls_playlist": {
+    "message": "재생목록"
+  },
+  "pip_controls_mute": {
+    "message": "음소거"
+  },
+  "pip_controls_unmute": {
+    "message": "음소거 해제"
+  },
+  "pip_controls_melody": {
+    "message": "멜로디 재생 (노트 신디사이즈)"
+  },
+  "pip_controls_metronome": {
+    "message": "메트로놈"
+  },
+  "pip_controls_metronomeRate": {
+    "message": "메트로놈 배속 (½× → 1× → 2×)"
+  },
+  "pip_controls_metronomeBeat": {
+    "message": "마디 시작 박 선택 (강세·마디선이 함께 이동)"
+  },
+  "pip_controls_windowMinus": {
+    "message": "표시 구간 절반으로 (마디 수 −)"
+  },
+  "pip_controls_windowLabel": {
+    "message": "레인 표시 구간 (한 화면에 보이는 마디 수)"
+  },
+  "pip_controls_windowPlus": {
+    "message": "표시 구간 두 배로 (마디 수 +)"
+  },
+  "pip_controls_modeToggle": {
+    "message": "진행 방식 전환 — 고정 화면(플레이헤드 이동) ↔ 스크롤(플레이헤드 고정)"
+  },
+  "pip_controls_modeFixed": {
+    "message": "고정"
+  },
+  "pip_controls_modeScroll": {
+    "message": "스크롤"
+  },
+  "pip_controls_volume": {
+    "message": "볼륨"
+  },
+  "pip_controls_progressSeek": {
+    "message": "클릭해서 이동"
+  },
+  "pip_controls_karaokeToggle": {
+    "message": "가라오케 음정 바 켜기/끄기"
+  },
+  "pip_controls_videoToggle": {
+    "message": "영상 함께 표시 켜기/끄기"
+  },
+  "pip_controls_panelToggle": {
+    "message": "가사 찾기 패널 열기/닫기"
+  },
+  "pip_controls_laneHeightDrag": {
+    "message": "드래그해서 가라오케 레인 높이 조절"
+  },
+  "pip_controls_videoRatioDrag": {
+    "message": "드래그해서 영상/가사 비율 조절"
+  },
+  "pip_songKeyLabel": {
+    "message": "키 $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_laneOriginal": {
+    "message": "원문"
+  },
+  "pip_debug_laneHeard": {
+    "message": "들림"
+  },
+  "pip_debug_lanePron": {
+    "message": "발음"
+  },
+  "pip_debug_alignPrefix": {
+    "message": "정렬 "
+  },
+  "pip_debug_gradeOk": {
+    "message": "좋음$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_gradeMid": {
+    "message": " 보통$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_gradeLow": {
+    "message": " 낮음$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_alignmentTextPrefix": {
+    "message": " · 전사:$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_scaffoldApplied": {
+    "message": " · 자막골격 $P1$줄(고정$P2$·보간$P3$·유지$P4$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      },
+      "p4": {
+        "content": "$4"
+      }
+    }
+  },
+  "pip_debug_scaffoldSkipped": {
+    "message": " · 자막골격 안 씀:$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_confLow": {
+    "message": "낮음"
+  },
+  "debugPanel_confMid": {
+    "message": "보통"
+  },
+  "debugPanel_confOk": {
+    "message": "좋음"
+  },
+  "debugPanel_scaffoldApplied": {
+    "message": "자막 스캐폴드 적용됨 — $P1$줄 이동 (자막고정 $P2$% · 고정$P3$·보간$P4$·유지$P5$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      },
+      "p4": {
+        "content": "$4"
+      },
+      "p5": {
+        "content": "$5"
+      }
+    }
+  },
+  "debugPanel_scaffoldSkipped": {
+    "message": "자막 스캐폴드 안 씀 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_empty": {
+    "message": "표시할 라인이 없어요"
+  },
+  "debugPanel_heardPrefix": {
+    "message": "들림: $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_seekTitle": {
+    "message": "클릭해서 이 구간으로 이동"
+  },
+  "panels_serverLog_loadHint": {
+    "message": "펼치면 불러와요"
+  },
+  "panels_serverLog_title": {
+    "message": "최근 서버 요청 기록"
+  },
+  "panels_serverLog_loading": {
+    "message": "불러오는 중…"
+  },
+  "panels_serverLog_empty": {
+    "message": "기록이 없어요 (확장을 다시 로드하면 초기화돼요)"
+  },
+  "panels_serverBar_permissionNeeded": {
+    "message": "자체 호스팅 서버 접근은 설치 시 권한을 받지 않아요 (기본 서버에는 필요 없어요). 전에 쓰고 있었다면 확장 업데이트로 회수됐을 수 있어요 — 한 번 허용하면 계속 유지돼요."
+  },
+  "panels_serverBar_openPermissions": {
+    "message": "권한 설정 열기"
+  },
+  "panels_serverBar_openPermissionsTitle": {
+    "message": "로컬 서버 접근을 허용하는 페이지를 새 탭에서 엽니다"
+  },
+  "panels_serverBar_recheck": {
+    "message": "다시 확인"
+  },
+  "panels_serverBar_recheckTitle": {
+    "message": "서버에 다시 연결해 봅니다"
+  },
+  "panels_serverBar_openSettings": {
+    "message": "설정 열기"
+  },
+  "panels_serverBar_openSettingsTitle": {
+    "message": "서버 URL과 API 키를 확인할 수 있어요"
+  },
+  "panels_search_titlePlaceholder": {
+    "message": "곡 제목"
+  },
+  "panels_search_artistPlaceholder": {
+    "message": "아티스트 (선택)"
+  },
+  "panels_search_namuwiki": {
+    "message": "나무위키"
+  },
+  "panels_search_google": {
+    "message": "구글"
+  },
+  "panels_search_lyricsWord": {
+    "message": "가사"
+  },
+  "panels_search_externalLinksLabel": {
+    "message": "다른 곳에서 가사 찾아보기"
+  },
+  "panels_search_externalLinkTitle": {
+    "message": "$P1$에서 \"$P2$\" 검색 (새 탭)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "panels_paste_placeholder": {
+    "message": "여기에 가사를 붙여넣으면 AI가 타이밍을 맞춰줘요\n[Verse]·1절·후렴 같은 파트 표기와 주석 줄은 자동으로 걸러내요."
+  },
+  "panels_paste_attributionPlaceholder": {
+    "message": "출처 (선택) — 예: 나무위키, Genius"
+  },
+  "panels_paste_attributionTitle": {
+    "message": "가사를 어디서 가져왔는지 적어두면 싱크에 함께 저장돼 출처 배지에 표시돼요. 비워도 됩니다."
+  },
+  "panels_paste_filterNote": {
+    "message": "파트 표기([Verse]·1절·후렴)와 주석·크레딧 줄은 자동으로 제외해요 — 무엇을 제외했는지 알려드려요"
+  },
+  "panels_paste_generateButton": {
+    "message": "붙여넣은 가사로 싱크 생성"
+  },
+  "panels_paste_emptyWarning": {
+    "message": "가사를 먼저 붙여넣어 주세요"
+  },
+  "panels_paste_closeToggle": {
+    "message": "붙여넣기 닫기"
+  },
+  "panels_paste_openToggle": {
+    "message": "가사 직접 붙여넣기"
+  },
+  "panels_serverDown_text": {
+    "message": "서버를 쓸 수 없어요"
+  },
+  "panels_serverDown_note": {
+    "message": "가사 검색은 서버 없이도 되지만 이 곡은 외부 소스에서도 찾지 못했어요. 싱크 생성·재생성·번역은 서버가 있어야 해요."
+  },
+  "panels_serverDown_retry": {
+    "message": "가사 다시 검색"
+  },
+  "panels_serverDown_retryTitlePermission": {
+    "message": "권한을 허용한 뒤 누르면 처음부터 다시 찾아봐요"
+  },
+  "panels_serverDown_retryTitleOther": {
+    "message": "서버를 고친 뒤 누르면 처음부터 다시 찾아봐요"
+  },
+  "panels_empty_searchAgain": {
+    "message": "다시 검색"
+  },
+  "panels_empty_title": {
+    "message": "가사를 찾지 못했어요"
+  },
+  "panels_empty_detailedSearch": {
+    "message": "상세 검색 (후보 선택·싱크 연결)"
+  },
+  "panels_loading_manualSearch": {
+    "message": "기다리지 않고 수동 검색"
+  },
+  "panels_error_retry": {
+    "message": "다시 시도"
+  },
+  "panels_generating_note": {
+    "message": "계속 시청하셔도 돼요. 완료되면 자동으로 표시됩니다."
+  },
+  "panels_searchSheet_searchButton": {
+    "message": "검색"
+  },
+  "panels_searchSheet_searching": {
+    "message": "검색 중…"
+  },
+  "panels_searchSheet_back": {
+    "message": "← 보던 가사로 돌아가기"
+  },
+  "panels_searchSheet_title": {
+    "message": "가사 검색 — 결과에서 직접 선택할 수 있어요"
+  },
+  "panels_searchSheet_sub": {
+    "message": "보카로 위키(발음·번역 포함) + LRCLIB(싱크 가사)를 함께 검색합니다"
+  },
+  "panels_searchSheet_serverBadNote": {
+    "message": "LRCLIB 검색은 그대로 되지만, 보카로 위키 원제 매칭과 싱크 생성은 서버가 필요해요."
+  },
+  "panels_results_empty": {
+    "message": "결과가 없어요 — 제목을 줄이거나 원제(일본어)로 시도해 보세요"
+  },
+  "panels_results_pronTranslationMeta": {
+    "message": "발음·번역"
+  },
+  "panels_results_syncedMeta": {
+    "message": "싱크"
+  },
+  "panels_results_plainMeta": {
+    "message": "일반"
+  },
+  "panels_results_vocaroLabel": {
+    "message": "보카로 위키"
+  },
+  "panels_results_lrclibLabel": {
+    "message": "LRCLIB"
+  },
+  "overlay_detecting": {
+    "message": "노래 인식 중…"
+  },
+  "overlay_header_pip": {
+    "message": "PiP 창으로 보기"
+  },
+  "overlay_header_regen": {
+    "message": "싱크 다시 생성 (서버 캐시 무시)"
+  },
+  "overlay_header_regenConfirm": {
+    "message": "서버 싱크를 다시 생성할까요?\n1분 정도 걸리고, 완료될 때까지 기존 가사는 계속 표시됩니다."
+  },
+  "overlay_header_search": {
+    "message": "가사 다시 검색 (다른 결과 선택)"
+  },
+  "overlay_header_settings": {
+    "message": "설정"
+  },
+  "overlay_header_collapse": {
+    "message": "접기"
+  },
+  "overlay_header_expand": {
+    "message": "펼치기"
+  },
+  "overlay_header_close": {
+    "message": "닫기 (툴바 아이콘으로 다시 열기)"
+  },
+  "overlay_genChip_title": {
+    "message": "클릭하면 내 생성 대기열 목록을 펼쳐요"
+  },
+  "overlay_genChip_cancel": {
+    "message": "전사 취소"
+  },
+  "overlay_genChip_cancelConfirm": {
+    "message": "진행 중인 전사를 취소할까요?"
+  },
+  "overlay_resumeChip": {
+    "message": "현재 가사로"
+  },
+  "overlay_footer_syncCaption": {
+    "message": "싱크"
+  },
+  "overlay_footer_pullEarlier": {
+    "message": "가사를 0.1초 당기기"
+  },
+  "overlay_footer_pushLater": {
+    "message": "가사를 0.1초 늦추기"
+  },
+  "overlay_footer_resetLabel": {
+    "message": "리셋"
+  },
+  "overlay_footer_resetTitle": {
+    "message": "오프셋 초기화"
+  },
+  "overlay_debug_waiting": {
+    "message": "debug: 대기 중…"
+  },
+  "overlay_debug_toggleAll": {
+    "message": "전체"
+  },
+  "overlay_debug_toggleAllTitle": {
+    "message": "곡 전체 디버그 패널 — 원문 vs heard 전수 대비, 클릭해서 시크"
+  },
+  "overlay_debug_created": {
+    "message": "생성=$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_debug_grades": {
+    "message": "정렬 좋음$P1$%·보통$P2$%·낮음$P3$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "overlay_debug_alignmentText": {
+    "message": "전사텍스트=$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_debug_alignmentPronunciation": {
+    "message": "독음(한국어 발음)"
+  },
+  "overlay_debug_alignmentOriginal": {
+    "message": "원문(원어)"
+  },
+  "overlay_loading_default": {
+    "message": "가사 검색 중…"
+  },
+  "overlay_banner_aiKaraoke": {
+    "message": "AI 전사로 가라오케(음정·발음)를 만들 수 있어요"
+  },
+  "overlay_banner_aiTranscribe": {
+    "message": "AI 전사 생성"
+  },
+  "overlay_line_seekTitle": {
+    "message": "클릭해서 이 부분으로 이동"
+  },
+  "overlay_plain_generateSync": {
+    "message": "싱크 생성"
+  },
+  "overlay_plain_noTimesync": {
+    "message": "타임싱크가 없는 가사예요"
+  },
+  "overlay_search_backToAuto": {
+    "message": "자동 검색으로 되돌리기"
+  },
+  "overlay_search_resetSync": {
+    "message": "이 영상 싱크 초기화 (서버 저장 삭제)"
+  },
+  "overlay_search_resetSyncTitle": {
+    "message": "잘못 붙여넣은 가사로 만든 싱크를 완전히 지우고 처음부터 다시 시작합니다"
+  },
+  "overlay_search_resetSyncConfirm": {
+    "message": "이 영상의 서버 싱크(정렬·발음·번역 저장본)를 모두 삭제할까요?\n삭제 후 자동 검색이 다시 실행되고, 가사를 새로 붙여넣을 수 있어요."
+  },
+  "overlay_link_srcPlaceholder": {
+    "message": "원본 영상 URL 또는 ID (전사가 이미 있는 영상)"
+  },
+  "overlay_link_offsetPlaceholder": {
+    "message": "오프셋(초)"
+  },
+  "overlay_link_offsetTitle": {
+    "message": "이 영상이 원본보다 늦게 시작하면 +, 빠르면 -"
+  },
+  "overlay_link_ratePlaceholder": {
+    "message": "배속"
+  },
+  "overlay_link_rateTitle": {
+    "message": "원곡 대비 재생 배속 — nightcore≈1.25, 같은 속도면 1"
+  },
+  "overlay_link_filterPlaceholder": {
+    "message": "저장 싱크 검색 — 가사 첫 줄·영상 ID·출처"
+  },
+  "overlay_link_needVideoId": {
+    "message": "영상 URL 또는 11자리 ID를 입력해 주세요"
+  },
+  "overlay_link_connecting": {
+    "message": "연결 중…"
+  },
+  "overlay_link_sectionTitle": {
+    "message": "다른 영상의 싱크 연결 (inst·커버용)"
+  },
+  "overlay_link_verifiedBadge": {
+    "message": " · 검증됨"
+  },
+  "overlay_link_unverifiedBadge": {
+    "message": " · 검증 없음"
+  },
+  "overlay_link_currentStatus": {
+    "message": "현재 $P1$에 연결됨 ($P2$)$P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "overlay_link_unlink": {
+    "message": "링크 해제"
+  },
+  "overlay_link_connect": {
+    "message": "연결"
+  },
+  "overlay_link_pickFromList": {
+    "message": "서버에 저장된 싱크 목록에서 고르기"
+  },
+  "overlay_link_loadingList": {
+    "message": "목록 불러오는 중…"
+  },
+  "overlay_link_noSavedSyncs": {
+    "message": "서버에 저장된 싱크가 없어요"
+  },
+  "overlay_link_noFilterMatch": {
+    "message": "검색과 일치하는 싱크가 없어요"
+  },
+  "overlay_link_pickHint": {
+    "message": "항목을 클릭하면 원본 칸에 채워져요 — 오프셋 확인 후 '연결'을 누르세요"
+  },
+  "overlay_link_noFirstLine": {
+    "message": "(첫 줄 없음)"
+  },
+  "overlay_link_lineCountMeta": {
+    "message": "$P1$줄",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeVerified": {
+    "message": "$P1$ 싱크를 빌려옴 · 반주 대조로 검증된 자동 연결",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeUnverified": {
+    "message": "$P1$ 싱크를 빌려옴 · 검증 없는 수동 연결 — 어긋나면 오프셋을 조정하거나 해제하세요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeUnknown": {
+    "message": "$P1$ 싱크를 빌려옴 · 검증 여부 알 수 없음(구버전 서버)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_generating_default": {
+    "message": "싱크 생성 중… $P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_pip_placeholder": {
+    "message": "PiP 창에서 가사를 표시하고 있어요"
+  },
+  "overlay_pip_backToPanel": {
+    "message": "패널로 되돌리기"
+  },
+  "overlay_settings_serverStatusTitle": {
+    "message": "서버 연결 상태 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_warn_text": {
+    "message": "전사가 부정확할 수 있어요 (정렬 신뢰도 $P1$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_warn_title": {
+    "message": "전사·발음 정렬의 평균 신뢰도가 낮아요. 가사 원문이 정확한지 확인하거나 재생성을 시도해 보세요."
+  },
+  "overlay_warn_close": {
+    "message": "이 경고 닫기 (설정에서 끌 수도 있어요)"
+  },
+  "overlay_genList_currentVideo": {
+    "message": "$P1$ (현재 영상)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_source_vocaro": {
+    "message": "보카로 가사 위키"
+  },
+  "overlay_source_caption": {
+    "message": "유튜브 자막"
+  },
+  "overlay_source_syncedLyrics": {
+    "message": "싱크 가사"
+  },
+  "overlay_source_plainLyrics": {
+    "message": "일반 가사"
+  },
+  "overlay_source_openPage": {
+    "message": "출처 페이지 열기"
+  },
+  "overlay_settings_fontSize_small": {
+    "message": "작게"
+  },
+  "overlay_settings_fontSize_medium": {
+    "message": "보통"
+  },
+  "overlay_settings_fontSize_large": {
+    "message": "크게"
+  },
+  "overlay_settings_optAuto": {
+    "message": "자동"
+  },
+  "overlay_settings_theme_dark": {
+    "message": "다크"
+  },
+  "overlay_settings_theme_light": {
+    "message": "라이트"
+  },
+  "overlay_settings_pronScript_hangul": {
+    "message": "한글"
+  },
+  "overlay_settings_pronScript_romaji": {
+    "message": "로마자"
+  },
+  "overlay_settings_pronScript_kana": {
+    "message": "가나"
+  },
+  "overlay_settings_sourcePriority_vocaro": {
+    "message": "보카로 위키 우선"
+  },
+  "overlay_settings_sourcePriority_lrclib": {
+    "message": "LRCLIB 우선"
+  },
+  "overlay_settings_pitchWindow_half": {
+    "message": "½마디"
+  },
+  "overlay_settings_pitchWindow_bars": {
+    "message": "$P1$마디",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_pitchMode_page": {
+    "message": "고정 화면·헤드 이동"
+  },
+  "overlay_settings_pitchMode_scroll": {
+    "message": "스크롤·헤드 고정"
+  },
+  "overlay_settings_pitchFont_normal": {
+    "message": "보통"
+  },
+  "overlay_settings_pitchFont_large": {
+    "message": "크게"
+  },
+  "overlay_settings_pitchFont_xlarge": {
+    "message": "아주 크게"
+  },
+  "overlay_settings_pitchFont_small": {
+    "message": "작게"
+  },
+  "overlay_settings_pronPosition_note": {
+    "message": "노트 위"
+  },
+  "overlay_settings_pronPosition_bottom": {
+    "message": "화면 하단"
+  },
+  "overlay_settings_metronomeRate_half": {
+    "message": "½× (2분음표)"
+  },
+  "overlay_settings_metronomeRate_one": {
+    "message": "1× (4분음표)"
+  },
+  "overlay_settings_metronomeRate_two": {
+    "message": "2× (8분음표)"
+  },
+  "overlay_settings_metronomeBeat_n": {
+    "message": "$P1$박",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_micOctave_n": {
+    "message": "$P1$옥타브",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_micOctave_none": {
+    "message": "보정 없음"
+  },
+  "overlay_settings_permBtnTitle": {
+    "message": "자체 호스팅 서버 접근을 허용하는 페이지를 새 탭에서 엽니다"
+  },
+  "overlay_settings_apiKeyPlaceholder": {
+    "message": "(선택) 서버 API 키"
+  },
+  "overlay_settings_row_autoSearch": {
+    "message": "자동 가사 검색 (음악 영상만)"
+  },
+  "overlay_settings_row_autoSearchTitle": {
+    "message": "유튜브 음악 메타·채널·제목으로 음악 영상을 판별해 자동으로 가사창을 엽니다. 꺼도 툴바 아이콘으로 수동으로 열 수 있어요."
+  },
+  "overlay_settings_row_autoSearchShorts": {
+    "message": "쇼츠에서도 자동 검색"
+  },
+  "overlay_settings_row_autoSearchShortsTitle": {
+    "message": "기본은 꺼짐 — 쇼츠에서는 가사창이 자동으로 열리지 않아요. 툴바 아이콘으로 수동으로는 언제든 열 수 있어요."
+  },
+  "overlay_settings_row_fontSize": {
+    "message": "폰트 크기"
+  },
+  "overlay_settings_row_theme": {
+    "message": "테마"
+  },
+  "overlay_settings_row_showTranslation": {
+    "message": "가사 번역 표시"
+  },
+  "overlay_settings_row_translationLanguage": {
+    "message": "번역 언어"
+  },
+  "overlay_settings_row_uiLanguage": {
+    "message": "표시 언어"
+  },
+  "overlay_settings_row_pronScript": {
+    "message": "발음 표기 방식"
+  },
+  "overlay_settings_row_showPronunciation": {
+    "message": "발음 표기 표시 (있을 때)"
+  },
+  "overlay_settings_row_sourcePriority": {
+    "message": "가사 소스 우선순위"
+  },
+  "overlay_settings_row_pipKeepPanel": {
+    "message": "PiP 중에도 패널 가사 유지"
+  },
+  "overlay_settings_row_pipShowVideo": {
+    "message": "PiP에 영상 함께 표시"
+  },
+  "overlay_settings_row_pitchGuide": {
+    "message": "가라오케 음정 바 (BETA · PiP)"
+  },
+  "overlay_settings_row_pitchWindow": {
+    "message": "음정 바 표시 구간"
+  },
+  "overlay_settings_row_pitchMode": {
+    "message": "음정 바 진행 방식"
+  },
+  "overlay_settings_row_pitchFont": {
+    "message": "음정 바 글자 크기"
+  },
+  "overlay_settings_row_pitchCountdown": {
+    "message": "가사 시작 카운트다운"
+  },
+  "overlay_settings_row_pitchF0Curve": {
+    "message": "음정 원본 곡선(f0) 표시"
+  },
+  "overlay_settings_row_pitchF0CurveTitle": {
+    "message": "음정 모델이 추출한 원본 멜로디 곡선을 레인에 파란 선으로 표시합니다. 디버그 모드와 무관하게 켜고 끌 수 있어요."
+  },
+  "overlay_settings_row_pronPosition": {
+    "message": "발음 표기 위치"
+  },
+  "overlay_settings_row_pronPositionTitle": {
+    "message": "음절 타이밍이 있는 곡에서 발음 표기를 어디에 표시할지 고릅니다. 노트 위 = 각 노트 바로 아래 부착, 화면 하단 = 진행률 그라데이션으로 하단 중앙 표시."
+  },
+  "overlay_settings_row_melodyPlayback": {
+    "message": "멜로디 재생 (가라오케 창)"
+  },
+  "overlay_settings_row_melodyPlaybackTitle": {
+    "message": "전사된 노트를 신디사이즈로 재생합니다. 가라오케 창이 열려 있을 때만 소리가 나요."
+  },
+  "overlay_settings_row_metronome": {
+    "message": "메트로놈"
+  },
+  "overlay_settings_row_metronomeTitle": {
+    "message": "서버가 추정한 BPM에 맞춰 박자를 칩니다 (4/4 가정, 4박마다 강세)."
+  },
+  "overlay_settings_row_metronomeRate": {
+    "message": "메트로놈 배속"
+  },
+  "overlay_settings_row_metronomeRateTitle": {
+    "message": "느리게 느껴지는 곡은 2×(8분음표), 너무 빠른 곡은 ½×로. 가라오케 창 안 버튼으로도 바꿀 수 있어요."
+  },
+  "overlay_settings_row_metronomeBeat": {
+    "message": "마디 시작 박"
+  },
+  "overlay_settings_row_metronomeBeatTitle": {
+    "message": "곡의 첫 강세가 안 맞을 때 마디 시작 박을 옮깁니다. 메트로놈 강세와 레인 마디선이 함께 이동해요."
+  },
+  "overlay_settings_row_audioOut": {
+    "message": "가라오케 오디오 출력 기기"
+  },
+  "overlay_settings_row_audioOutTitle": {
+    "message": "멜로디·메트로놈만 이 기기로 나갑니다. 영상 소리는 기존 출력 그대로."
+  },
+  "overlay_settings_row_micPitch": {
+    "message": "마이크 음정 표시 (레인)"
+  },
+  "overlay_settings_row_micPitchTitle": {
+    "message": "마이크로 부른 음정을 가라오케 레인에 청록 궤적으로 표시합니다. 켜면 마이크 권한을 요청해요."
+  },
+  "overlay_settings_row_micDevice": {
+    "message": "마이크 기기"
+  },
+  "overlay_settings_row_micOctave": {
+    "message": "마이크 옥타브 보정"
+  },
+  "overlay_settings_row_micOctaveTitle": {
+    "message": "마이크 궤적이 노트보다 한 옥타브 위/아래로 그려지면 여기서 보정하세요."
+  },
+  "overlay_settings_deviceNote": {
+    "message": "기기 이름은 마이크 권한을 한 번 허용해야 표시돼요"
+  },
+  "overlay_settings_serverUrlLabel": {
+    "message": "싱크 서버 URL "
+  },
+  "overlay_settings_apiKeyLabel": {
+    "message": "API 키"
+  },
+  "overlay_settings_row_lowConfWarning": {
+    "message": "낮은 정렬 신뢰도 경고"
+  },
+  "overlay_settings_row_lowConfWarningTitle": {
+    "message": "전사 신뢰도가 매우 낮은 곡에서 가사창 상단에 경고 바를 띄웁니다."
+  },
+  "overlay_settings_row_notifyOnComplete": {
+    "message": "전사 완료 알림"
+  },
+  "overlay_settings_row_notifyOnCompleteTitle": {
+    "message": "대기열에 넣은 전사가 끝나면 브라우저 알림으로 알려줍니다. 다른 탭에 있어도 확인할 수 있어요."
+  },
+  "overlay_settings_row_debugInfo": {
+    "message": "디버그 정보 표시"
+  },
+  "overlay_settings_serverRequiredNote": {
+    "message": "싱크 생성·번역은 Everyric 서버가 필요해요"
+  },
+  "overlay_settings_closeButton": {
+    "message": "닫기"
+  },
+  "overlay_settings_deviceN": {
+    "message": "기기 $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_defaultOutput": {
+    "message": "기본 출력"
+  },
+  "overlay_settings_defaultMic": {
+    "message": "기본 마이크"
+  },
+  "options_pageTitle": {
+    "message": "Everyric 권한 설정"
+  },
+  "options_subtitle": {
+    "message": "자체 호스팅(로컬) 싱크 서버에 접근할 권한을 여기서 허용하거나 철회합니다."
+  },
+  "options_intro1": {
+    "message": "Everyric은 기본적으로 <code>https://everyric.moref.co</code> 싱크 서버를 씁니다. 그 서버 접근은 설치할 때 이미 허용돼 있어 <strong>여기서 할 일이 없습니다</strong>."
+  },
+  "options_intro2": {
+    "message": "이 페이지는 서버를 <strong>직접 돌려서 쓰는 경우</strong>에만 필요합니다. 그런 로컬 서버 주소는 자체 호스팅하는 소수만 쓰므로, 설치할 때 모두에게 권한을 요구하지 않고 필요한 사람이 직접 허용하도록 <em>선택적 권한</em>으로 두었습니다. 허용하면 확장이 그 주소로 가사·싱크 요청을 보낼 수 있게 되고, 철회하면 즉시 보낼 수 없게 됩니다."
+  },
+  "options_currentServerHeading": {
+    "message": "현재 싱크 서버"
+  },
+  "options_serverUrlLoading": {
+    "message": "불러오는 중…"
+  },
+  "options_serverKindChecking": {
+    "message": "확인 중"
+  },
+  "options_serverNoteDefault": {
+    "message": "서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다 — 이 페이지에서는 권한만 다룹니다."
+  },
+  "options_permHeading": {
+    "message": "로컬 서버 접근 권한"
+  },
+  "options_grantButtonDefault": {
+    "message": "허용"
+  },
+  "options_revokeButtonDefault": {
+    "message": "철회"
+  },
+  "options_recheckButton": {
+    "message": "상태 다시 확인"
+  },
+  "options_tipsHeading": {
+    "message": "알아 두면 좋은 것"
+  },
+  "options_tip1": {
+    "message": "허용은 한 번만 하면 유지됩니다. 확장을 지우면 함께 사라집니다."
+  },
+  "options_tip2": {
+    "message": "확장 업데이트로 이 권한이 회수돼 자체 호스팅 서버가 갑자기 연결되지 않을 수 있습니다. 그때는 여기서 다시 허용하면 됩니다."
+  },
+  "options_tip3": {
+    "message": "<code>chrome://extensions</code>의 Everyric 세부정보에서도 사이트 접근 권한을 확인·변경할 수 있습니다. 거기서 바꾼 내용도 이 페이지에 그대로 나타납니다."
+  },
+  "options_tip4": {
+    "message": "포트가 다른 로컬 서버나 제3의 서버 주소는 확장을 다시 빌드해야 쓸 수 있습니다."
+  },
+  "options_serverKind_remote": {
+    "message": "원격 서버"
+  },
+  "options_serverNote_remote": {
+    "message": "지금 설정은 원격 서버라 이 페이지의 권한이 필요하지 않아요. 서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다."
+  },
+  "options_serverKind_notAllowed": {
+    "message": "허용 불가"
+  },
+  "options_serverNote_notAllowed": {
+    "message": "$P1$은 확장이 허용할 수 있는 주소가 아니에요. 허용 가능한 로컬 주소는 $P2$ 뿐이고, 다른 포트나 주소를 쓰려면 확장을 다시 빌드해야 해요.",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "options_serverKind_grantedLocal": {
+    "message": "로컬 서버 · 허용됨"
+  },
+  "options_serverKind_needsPermLocal": {
+    "message": "로컬 서버 · 권한 필요"
+  },
+  "options_serverNote_granted": {
+    "message": "이 주소로 요청을 보낼 수 있어요."
+  },
+  "options_serverNote_needsPerm": {
+    "message": "아래에서 허용해야 이 주소로 요청을 보낼 수 있어요. (요청은 $P1$으로 나가요)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "options_currentServerMarker": {
+    "message": "지금 설정된 서버"
+  },
+  "options_badgeGranted": {
+    "message": "허용됨"
+  },
+  "options_badgeNotGranted": {
+    "message": "허용되지 않음"
+  },
+  "options_grantButton_preemptive": {
+    "message": "로컬 서버 접근 미리 허용"
+  },
+  "options_grantButton_normal": {
+    "message": "로컬 서버 접근 허용"
+  },
+  "options_revokeButton_all": {
+    "message": "권한 전부 철회"
+  },
+  "options_revokeButton_one": {
+    "message": "권한 철회"
+  },
+  "options_grantResult_success": {
+    "message": "허용됐어요. 열려 있는 유튜브 탭의 가사 패널이 자동으로 다시 확인해요."
+  },
+  "options_grantResult_denied": {
+    "message": "허용되지 않았어요. 자체 호스팅 서버를 쓰려면 이 권한이 필요하고, 기본 서버(everyric.moref.co)를 쓰면 권한 없이 그대로 쓸 수 있어요."
+  },
+  "options_grantResult_error": {
+    "message": "권한을 요청하지 못했어요 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "options_revokeResult_success": {
+    "message": "철회했어요. 로컬 서버로는 더 이상 요청을 보내지 않아요 — 가사 패널에는 권한이 필요하다는 안내가 다시 떠요."
+  },
+  "options_revokeResult_failure": {
+    "message": "철회하지 못했어요."
+  },
+  "options_revokeResult_error": {
+    "message": "철회하지 못했어요 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_notice_permPageFailed": {
+    "message": "권한 설정 페이지를 열지 못했어요 — 확장 관리 페이지(chrome://extensions)에서 Everyric의 \"확장 프로그램 옵션\"을 열어 주세요"
+  },
+  "content_notice_candidateLoadFailed": {
+    "message": "선택한 가사를 불러오지 못했어요 — 다른 후보를 골라 보세요"
+  },
+  "content_failure_generateRequest": {
+    "message": "싱크 생성 요청에 실패했어요."
+  },
+  "content_failure_regenerateRequest": {
+    "message": "재생성 요청에 실패했어요."
+  },
+  "content_failure_resetSync": {
+    "message": "싱크 초기화에 실패했어요."
+  },
+  "content_failure_cancelRequest": {
+    "message": "취소 요청에 실패했어요."
+  },
+  "content_linkProbe_chip": {
+    "message": "동일 곡 추정 — 자동 연결 확인 중…"
+  },
+  "content_link_cannotSelf": {
+    "message": "자기 자신에게는 연결할 수 없어요"
+  },
+  "content_link_replaceOwnConfirm": {
+    "message": "이 영상에는 자체 전사가 이미 있어요.\n연결하면 자체 전사를 삭제하고 원본 영상의 싱크를 대신 사용합니다. 계속할까요?"
+  },
+  "content_link_cancelledKeepOwn": {
+    "message": "연결 취소됨 — 자체 전사를 유지합니다"
+  },
+  "content_link_ownDeleteFailed": {
+    "message": "자체 전사 삭제에 실패했어요$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_failedWithNote": {
+    "message": "연결 실패 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_failedNoNote": {
+    "message": "연결 실패 — 원본 영상에 전사(싱크)가 있는지 확인해 주세요"
+  },
+  "content_link_unlinkFailed": {
+    "message": "해제 실패$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_unlinkFailedCheckServer": {
+    "message": " — 서버 상태를 확인해 주세요"
+  },
+  "content_link_autoConfSuffix": {
+    "message": " (반주 일치 $P1$%)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_autoLinked": {
+    "message": "자동 연결됨 — 같은 곡의 싱크를 가져왔어요$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_debug_zoneAdlib": {
+    "message": "추임새★"
+  },
+  "content_debug_zoneVocal": {
+    "message": "가창"
+  },
+  "content_debug_zoneInstrumental": {
+    "message": "간주·무성"
+  },
+  "content_age_justNow": {
+    "message": "방금"
+  },
+  "content_age_minutesAgo": {
+    "message": "$P1$분 전",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_age_hoursAgo": {
+    "message": "$P1$시간 전",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_age_daysAgo": {
+    "message": "$P1$일 전",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_unavailable": {
+    "message": "번역 불가 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_generating": {
+    "message": "번역·발음 생성 중…"
+  },
+  "content_translation_failedWithStatus": {
+    "message": "번역 실패 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_failedNoResult": {
+    "message": "번역 실패 — 서버가 결과를 주지 않았어요"
+  },
+  "content_translation_lineCountMismatch": {
+    "message": "번역을 적용하지 못했어요 — 줄 수가 달라요 (번역 $P1$줄 · 가사 $P2$줄)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_translation_partialFailure": {
+    "message": "번역 일부 실패 — $P1$줄은 서버가 결과를 주지 못했어요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_aiGenerating": {
+    "message": "AI 번역·독음 생성 중…"
+  },
+  "content_error_lyricsLoadFailed": {
+    "message": "가사를 불러오지 못했어요"
+  },
+  "content_error_candidatesLoadFailed": {
+    "message": "후보를 불러오지 못했어요 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_error_unknown": {
+    "message": "알 수 없는 오류"
+  },
+  "content_error_jobGone": {
+    "message": "서버에서 작업 기록을 찾을 수 없어요 (서버 재시작 등) — 다시 생성해 주세요"
+  },
+  "content_error_syncGenerationFailed": {
+    "message": "싱크 생성에 실패했어요"
+  },
+  "content_loading_selectedCandidate": {
+    "message": "선택한 가사를 불러오는 중…"
+  },
+  "content_generate_blockedAutoCaption": {
+    "message": "자동 생성 자막이라 전사가 부정확해요 — 정확한 가사를 붙여넣으면 싱크를 만들 수 있어요"
+  },
+  "content_generate_tooManyLines": {
+    "message": "가사가 너무 길어요 ($P1$줄) — 500줄 이하로 줄여 주세요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_generate_autoCaptionBlocked": {
+    "message": "자동 생성 자막은 전사가 부정확해 싱크를 만들 수 없어요 — 가사를 검색하거나 붙여넣어 주세요"
+  },
+  "content_notify_transcribeComplete": {
+    "message": "전사 완료"
+  },
+  "content_notify_transcribeFailed": {
+    "message": "전사 실패"
+  },
+  "content_notify_otherVideoReady": {
+    "message": "$P1$ — 싱크가 만들어졌어요. 영상을 열어 확인해 주세요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_queue_position": {
+    "message": "대기열 $P1$번째",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_queue_label": {
+    "message": "대기열"
+  },
+  "content_completion_notLoadedMsg": {
+    "message": "$P1$ — 싱크를 불러오지 못했어요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_notLoadedWarning": {
+    "message": "싱크를 불러오지 못했어요"
+  },
+  "content_completion_readyMsg": {
+    "message": "$P1$ — 가사 싱크가 준비됐어요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_pronWord": {
+    "message": "발음"
+  },
+  "content_completion_partialPron": {
+    "message": "발음 $P1$/$P2$줄",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_trWord": {
+    "message": "번역"
+  },
+  "content_completion_partialTr": {
+    "message": "번역 $P1$/$P2$줄",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_allReadyMsg": {
+    "message": "$P1$ — 가사 싱크·발음·번역이 준비됐어요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_partialReadyMsg": {
+    "message": "$P1$ — 싱크는 준비됐지만 일부 줄이 비었어요 ($P2$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_partialReadyWarning": {
+    "message": "일부 줄에 $P1$만 붙었어요 — 재생성하면 다시 시도해요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_missingMsg": {
+    "message": "$P1$ — 싱크는 만들어졌지만 $P2$이 없어요$P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "content_completion_missingWarning": {
+    "message": "싱크는 만들어졌지만 $P1$이 붙지 않았어요$P2$ — 재생성하면 다시 시도해요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_genChip_preparing": {
+    "message": "싱크 생성 준비 중 — AI 번역·독음 요청…"
+  },
+  "content_genChip_stageProgress": {
+    "message": "$P1$ $P2$% · 전체 $P3$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "content_genChip_percentOnly": {
+    "message": "$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_transcribing": {
+    "message": "전사 중 $P1$$P2$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_genChip_othersSuffix": {
+    "message": " · 외 $P1$건",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_othersOnly": {
+    "message": "다른 영상 전사 중 $P1$건",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_stageOnly": {
+    "message": "$P1$ $P2$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "serverError_lyrics_too_long": {
+    "message": "가사가 너무 길어요 — 줄 수를 줄여서 다시 시도해 주세요"
+  },
+  "serverError_video_too_long": {
+    "message": "영상이 너무 길어요 — 이 길이는 아직 지원하지 않아요"
+  },
+  "serverError_captions_no_text": {
+    "message": "이 자막에는 텍스트가 없어요 — 다른 자막을 고르거나 가사를 붙여넣어 주세요"
+  }
 }

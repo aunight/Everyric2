@@ -1,360 +1,1437 @@
 {
-  "pip.solfege.names": { "message": "ド,ド#,レ,レ#,ミ,ファ,ファ#,ソ,ソ#,ラ,ラ#,シ" },
-  "pip.docTitle": { "message": "Everyric 歌詞" },
-  "pip.controls.playPause": { "message": "再生/一時停止" },
-  "pip.controls.prevTrack": { "message": "前の曲" },
-  "pip.controls.nextTrack": { "message": "次の曲" },
-  "pip.controls.playlist": { "message": "再生リスト" },
-  "pip.controls.mute": { "message": "ミュート" },
-  "pip.controls.unmute": { "message": "ミュート解除" },
-  "pip.controls.melody": { "message": "メロディ再生(ノートをシンセ音で)" },
-  "pip.controls.metronome": { "message": "メトロノーム" },
-  "pip.controls.metronomeRate": { "message": "メトロノーム速度 (½× → 1× → 2×)" },
-  "pip.controls.metronomeBeat": { "message": "小節頭の拍を選択(アクセントと小節線が一緒に動きます)" },
-  "pip.controls.windowMinus": { "message": "表示範囲を半分に(小節数 −)" },
-  "pip.controls.windowLabel": { "message": "レーン表示範囲(画面に表示する小節数)" },
-  "pip.controls.windowPlus": { "message": "表示範囲を2倍に(小節数 +)" },
-  "pip.controls.modeToggle": { "message": "進行モード切替 — 固定画面(再生位置が移動)↔ スクロール(再生位置固定)" },
-  "pip.controls.modeFixed": { "message": "固定" },
-  "pip.controls.modeScroll": { "message": "スクロール" },
-  "pip.controls.volume": { "message": "音量" },
-  "pip.controls.progressSeek": { "message": "クリックで移動" },
-  "pip.controls.karaokeToggle": { "message": "カラオケ音程レーンのオン/オフ" },
-  "pip.controls.videoToggle": { "message": "映像表示のオン/オフ" },
-  "pip.controls.panelToggle": { "message": "歌詞検索パネルの開閉" },
-  "pip.controls.laneHeightDrag": { "message": "ドラッグでカラオケレインの高さを調整" },
-  "pip.controls.videoRatioDrag": { "message": "ドラッグで映像/歌詞の比率を調整" },
-  "pip.songKeyLabel": { "message": "キー $1$" },
-  "pip.debug.laneOriginal": { "message": "原文" },
-  "pip.debug.laneHeard": { "message": "認識" },
-  "pip.debug.lanePron": { "message": "発音" },
-  "pip.debug.alignPrefix": { "message": "整列 " },
-  "pip.debug.gradeOk": { "message": "良好$1$%" },
-  "pip.debug.gradeMid": { "message": " 普通$1$%" },
-  "pip.debug.gradeLow": { "message": " 低$1$%" },
-  "pip.debug.alignmentTextPrefix": { "message": " · 転写:$1$" },
-  "pip.debug.scaffoldApplied": { "message": " · 字幕スキャフォールド $1$行(固定$2$·補間$3$·維持$4$)" },
-  "pip.debug.scaffoldSkipped": { "message": " · 字幕スキャフォールド未使用:$1$" },
-
-  "debugPanel.confLow": { "message": "低" },
-  "debugPanel.confMid": { "message": "普通" },
-  "debugPanel.confOk": { "message": "良好" },
-  "debugPanel.scaffoldApplied": { "message": "字幕スキャフォールド適用済み — $1$行移動(字幕固定 $2$% · 固定$3$·補間$4$·維持$5$)" },
-  "debugPanel.scaffoldSkipped": { "message": "字幕スキャフォールド未使用 — $1$" },
-  "debugPanel.empty": { "message": "表示する行がありません" },
-  "debugPanel.heardPrefix": { "message": "認識: $1$" },
-  "debugPanel.seekTitle": { "message": "クリックでこの区間に移動" },
-
-  "panels.serverLog.loadHint": { "message": "展開すると読み込みます" },
-  "panels.serverLog.title": { "message": "最近のサーバーリクエスト" },
-  "panels.serverLog.loading": { "message": "読み込み中…" },
-  "panels.serverLog.empty": { "message": "記録がありません(拡張機能を再読み込みするとリセットされます)" },
-  "panels.serverBar.permissionNeeded": { "message": "セルフホストサーバーへのアクセスはインストール時には許可されません(デフォルトサーバーには不要です)。以前使っていた場合、拡張機能の更新で権限が取り消されたのかもしれません — 一度許可すれば維持されます。" },
-  "panels.serverBar.openPermissions": { "message": "権限設定を開く" },
-  "panels.serverBar.openPermissionsTitle": { "message": "ローカルサーバーへのアクセスを許可するページを新しいタブで開きます" },
-  "panels.serverBar.recheck": { "message": "再確認" },
-  "panels.serverBar.recheckTitle": { "message": "サーバーへの再接続を試みます" },
-  "panels.serverBar.openSettings": { "message": "設定を開く" },
-  "panels.serverBar.openSettingsTitle": { "message": "サーバーURLとAPIキーを確認できます" },
-  "panels.search.titlePlaceholder": { "message": "曲名" },
-  "panels.search.artistPlaceholder": { "message": "アーティスト(任意)" },
-  "panels.search.namuwiki": { "message": "ナムウィキ" },
-  "panels.search.google": { "message": "Google" },
-  "panels.search.lyricsWord": { "message": "歌詞" },
-  "panels.search.externalLinksLabel": { "message": "他のサイトで歌詞を探す" },
-  "panels.search.externalLinkTitle": { "message": "$1$で「$2$」を検索(新しいタブ)" },
-  "panels.paste.placeholder": { "message": "歌詞をここに貼り付けるとAIがタイミングを合わせます\n[Verse]・1番・サビなどのパート表記やコメント行は自動で除外されます。" },
-  "panels.paste.attributionPlaceholder": { "message": "出典(任意) — 例: ナムウィキ, Genius" },
-  "panels.paste.attributionTitle": { "message": "歌詞の入手元を記入すると同期データと一緒に保存され、出典バッジに表示されます。空欄でも構いません。" },
-  "panels.paste.filterNote": { "message": "パート表記([Verse]・1番・サビ)やコメント・クレジット行は自動で除外されます — 何が除外されたかお知らせします" },
-  "panels.paste.generateButton": { "message": "貼り付けた歌詞で同期を生成" },
-  "panels.paste.emptyWarning": { "message": "先に歌詞を貼り付けてください" },
-  "panels.paste.closeToggle": { "message": "貼り付け欄を閉じる" },
-  "panels.paste.openToggle": { "message": "歌詞を直接貼り付け" },
-  "panels.serverDown.text": { "message": "サーバーが利用できません" },
-  "panels.serverDown.note": { "message": "歌詞検索自体はサーバーなしでも動きますが、この曲は外部ソースでも見つかりませんでした。同期の生成・再生成・翻訳にはサーバーが必要です。" },
-  "panels.serverDown.retry": { "message": "歌詞を再検索" },
-  "panels.serverDown.retryTitlePermission": { "message": "権限を許可してからクリックすると最初から検索し直します" },
-  "panels.serverDown.retryTitleOther": { "message": "サーバーを直してからクリックすると最初から検索し直します" },
-  "panels.empty.searchAgain": { "message": "再検索" },
-  "panels.empty.title": { "message": "歌詞が見つかりませんでした" },
-  "panels.empty.detailedSearch": { "message": "詳細検索(候補選択・同期リンク)" },
-  "panels.loading.manualSearch": { "message": "待たずに手動検索" },
-  "panels.error.retry": { "message": "再試行" },
-  "panels.generating.note": { "message": "そのまま視聴を続けて大丈夫です。完了すると自動的に表示されます。" },
-  "panels.searchSheet.searchButton": { "message": "検索" },
-  "panels.searchSheet.searching": { "message": "検索中…" },
-  "panels.searchSheet.back": { "message": "← 元の歌詞に戻る" },
-  "panels.searchSheet.title": { "message": "歌詞検索 — 結果から直接選べます" },
-  "panels.searchSheet.sub": { "message": "ボカロ歌詞wiki(発音・翻訳あり)とLRCLIB(同期歌詞)を同時に検索します" },
-  "panels.searchSheet.serverBadNote": { "message": "LRCLIB検索はそのまま使えますが、ボカロ歌詞wikiの原題マッチングと同期生成にはサーバーが必要です。" },
-  "panels.results.empty": { "message": "結果がありません — タイトルを短くするか、原題(日本語)で試してください" },
-  "panels.results.pronTranslationMeta": { "message": "発音・翻訳" },
-  "panels.results.syncedMeta": { "message": "同期" },
-  "panels.results.plainMeta": { "message": "一般" },
-  "panels.results.vocaroLabel": { "message": "ボカロ歌詞wiki" },
-  "panels.results.lrclibLabel": { "message": "LRCLIB" },
-
-  "overlay.detecting": { "message": "曲を認識中…" },
-  "overlay.header.pip": { "message": "ピクチャーインピクチャーで表示" },
-  "overlay.header.regen": { "message": "同期を再生成(サーバーキャッシュを無視)" },
-  "overlay.header.regenConfirm": { "message": "サーバーの同期データを再生成しますか?\n1分ほどかかりますが、完了するまで今の歌詞はそのまま表示されます。" },
-  "overlay.header.search": { "message": "歌詞を再検索(別の結果を選ぶ)" },
-  "overlay.header.settings": { "message": "設定" },
-  "overlay.header.collapse": { "message": "折りたたむ" },
-  "overlay.header.expand": { "message": "開く" },
-  "overlay.header.close": { "message": "閉じる(ツールバーアイコンから再度開けます)" },
-  "overlay.genChip.title": { "message": "クリックすると生成キューの一覧が開きます" },
-  "overlay.genChip.cancel": { "message": "転写をキャンセル" },
-  "overlay.genChip.cancelConfirm": { "message": "実行中の転写をキャンセルしますか?" },
-  "overlay.resumeChip": { "message": "現在の歌詞に戻る" },
-  "overlay.footer.syncCaption": { "message": "同期" },
-  "overlay.footer.pullEarlier": { "message": "歌詞を0.1秒早める" },
-  "overlay.footer.pushLater": { "message": "歌詞を0.1秒遅らせる" },
-  "overlay.footer.resetLabel": { "message": "リセット" },
-  "overlay.footer.resetTitle": { "message": "オフセットをリセット" },
-  "overlay.debug.waiting": { "message": "debug: 待機中…" },
-  "overlay.debug.toggleAll": { "message": "全体" },
-  "overlay.debug.toggleAllTitle": { "message": "曲全体のデバッグパネル — 原文とheardを全行比較、クリックでシーク" },
-  "overlay.debug.created": { "message": "生成=$1$" },
-  "overlay.debug.grades": { "message": "整列 良好$1$%・普通$2$%・低$3$%" },
-  "overlay.debug.alignmentText": { "message": "転写テキスト=$1$" },
-  "overlay.debug.alignmentPronunciation": { "message": "読み(韓国語発音)" },
-  "overlay.debug.alignmentOriginal": { "message": "原文(原語)" },
-  "overlay.loading.default": { "message": "歌詞を検索中…" },
-  "overlay.banner.aiKaraoke": { "message": "AI転写でカラオケ(音程・発音)を作成できます" },
-  "overlay.banner.aiTranscribe": { "message": "AI転写を実行" },
-  "overlay.line.seekTitle": { "message": "クリックでこの部分に移動" },
-  "overlay.plain.generateSync": { "message": "同期を生成" },
-  "overlay.plain.noTimesync": { "message": "この歌詞にはタイムシンクがありません" },
-  "overlay.search.backToAuto": { "message": "自動検索に戻す" },
-  "overlay.search.resetSync": { "message": "この動画の同期をリセット(サーバー保存分を削除)" },
-  "overlay.search.resetSyncTitle": { "message": "誤って貼り付けた歌詞で作った同期データを完全に消去し、最初からやり直します" },
-  "overlay.search.resetSyncConfirm": { "message": "この動画のサーバー同期データ(タイミング・発音・翻訳)をすべて削除しますか?\n削除後は自動検索が再実行され、新しい歌詞を貼り付けられます。" },
-  "overlay.link.srcPlaceholder": { "message": "元動画のURLまたはID(すでに転写がある動画)" },
-  "overlay.link.offsetPlaceholder": { "message": "オフセット(秒)" },
-  "overlay.link.offsetTitle": { "message": "この動画が元動画より遅く始まるなら+、早いなら-" },
-  "overlay.link.ratePlaceholder": { "message": "再生速度" },
-  "overlay.link.rateTitle": { "message": "原曲に対する再生速度 — nightcore≈1.25、同じ速度なら1" },
-  "overlay.link.filterPlaceholder": { "message": "保存済み同期を検索 — 歌詞の最初の行・動画ID・出典" },
-  "overlay.link.needVideoId": { "message": "動画URLまたは11文字のIDを入力してください" },
-  "overlay.link.connecting": { "message": "接続中…" },
-  "overlay.link.sectionTitle": { "message": "別の動画の同期をリンク(インスト・カバー用)" },
-  "overlay.link.verifiedBadge": { "message": " · 検証済み" },
-  "overlay.link.unverifiedBadge": { "message": " · 未検証" },
-  "overlay.link.currentStatus": { "message": "現在 $1$ にリンク中 ($2$)$3$" },
-  "overlay.link.unlink": { "message": "リンク解除" },
-  "overlay.link.connect": { "message": "リンク" },
-  "overlay.link.pickFromList": { "message": "サーバーの保存済み同期一覧から選ぶ" },
-  "overlay.link.loadingList": { "message": "一覧を読み込み中…" },
-  "overlay.link.noSavedSyncs": { "message": "サーバーに保存された同期がありません" },
-  "overlay.link.noFilterMatch": { "message": "検索に一致する同期がありません" },
-  "overlay.link.pickHint": { "message": "項目をクリックすると元動画欄に入力されます — オフセットを確認してから「リンク」を押してください" },
-  "overlay.link.noFirstLine": { "message": "(最初の行なし)" },
-  "overlay.link.lineCountMeta": { "message": "$1$行" },
-  "overlay.link.describeVerified": { "message": "$1$ から同期を借用 · 伴奏の相関で検証済みの自動リンク" },
-  "overlay.link.describeUnverified": { "message": "$1$ から同期を借用 · 未検証の手動リンク — ずれる場合はオフセットを調整するか解除してください" },
-  "overlay.link.describeUnknown": { "message": "$1$ から同期を借用 · 検証状況不明(旧バージョンのサーバー)" },
-  "overlay.generating.default": { "message": "同期を生成中… $1$%" },
-  "overlay.pip.placeholder": { "message": "ピクチャーインピクチャー画面に歌詞を表示しています" },
-  "overlay.pip.backToPanel": { "message": "パネルに戻る" },
-  "overlay.settings.serverStatusTitle": { "message": "サーバー接続状態 — $1$" },
-  "overlay.warn.text": { "message": "転写が不正確な可能性があります(整列信頼度 $1$)" },
-  "overlay.warn.title": { "message": "転写・発音整列の平均信頼度が低いです。原文の歌詞が正しいか確認するか、再生成を試してください。" },
-  "overlay.warn.close": { "message": "この警告を閉じる(設定でオフにもできます)" },
-  "overlay.genList.currentVideo": { "message": "$1$(現在の動画)" },
-  "overlay.source.vocaro": { "message": "ボカロ歌詞wiki" },
-  "overlay.source.caption": { "message": "YouTube字幕" },
-  "overlay.source.syncedLyrics": { "message": "同期歌詞" },
-  "overlay.source.plainLyrics": { "message": "一般歌詞" },
-  "overlay.source.openPage": { "message": "出典ページを開く" },
-  "overlay.settings.fontSize.small": { "message": "小" },
-  "overlay.settings.fontSize.medium": { "message": "中" },
-  "overlay.settings.fontSize.large": { "message": "大" },
-  "overlay.settings.optAuto": { "message": "自動" },
-  "overlay.settings.theme.dark": { "message": "ダーク" },
-  "overlay.settings.theme.light": { "message": "ライト" },
-  "overlay.settings.pronScript.hangul": { "message": "ハングル" },
-  "overlay.settings.pronScript.romaji": { "message": "ローマ字" },
-  "overlay.settings.pronScript.kana": { "message": "かな" },
-  "overlay.settings.sourcePriority.vocaro": { "message": "ボカロ歌詞wiki優先" },
-  "overlay.settings.sourcePriority.lrclib": { "message": "LRCLIB優先" },
-  "overlay.settings.pitchWindow.half": { "message": "½小節" },
-  "overlay.settings.pitchWindow.bars": { "message": "$1$小節" },
-  "overlay.settings.pitchMode.page": { "message": "固定画面・再生位置移動" },
-  "overlay.settings.pitchMode.scroll": { "message": "スクロール・再生位置固定" },
-  "overlay.settings.pitchFont.normal": { "message": "中" },
-  "overlay.settings.pitchFont.large": { "message": "大" },
-  "overlay.settings.pitchFont.xlarge": { "message": "特大" },
-  "overlay.settings.pitchFont.small": { "message": "小" },
-  "overlay.settings.pronPosition.note": { "message": "ノートの上" },
-  "overlay.settings.pronPosition.bottom": { "message": "画面下部" },
-  "overlay.settings.metronomeRate.half": { "message": "½×(2分音符)" },
-  "overlay.settings.metronomeRate.one": { "message": "1×(4分音符)" },
-  "overlay.settings.metronomeRate.two": { "message": "2×(8分音符)" },
-  "overlay.settings.metronomeBeat.n": { "message": "$1$拍目" },
-  "overlay.settings.micOctave.n": { "message": "$1$オクターブ" },
-  "overlay.settings.micOctave.none": { "message": "補正なし" },
-  "overlay.settings.permBtnTitle": { "message": "セルフホストサーバーへのアクセスを許可するページを新しいタブで開きます" },
-  "overlay.settings.apiKeyPlaceholder": { "message": "(任意)サーバーAPIキー" },
-  "overlay.settings.row.autoSearch": { "message": "歌詞の自動検索(音楽動画のみ)" },
-  "overlay.settings.row.autoSearchTitle": { "message": "YouTube Musicのメタデータ・チャンネル・タイトルから音楽動画を判定し、自動で歌詞パネルを開きます。オフにしてもツールバーアイコンから手動で開けます。" },
-  "overlay.settings.row.autoSearchShorts": { "message": "ショート動画でも自動検索" },
-  "overlay.settings.row.autoSearchShortsTitle": { "message": "デフォルトはオフ — ショート動画では歌詞パネルが自動で開きません。ツールバーアイコンからいつでも手動で開けます。" },
-  "overlay.settings.row.fontSize": { "message": "フォントサイズ" },
-  "overlay.settings.row.theme": { "message": "テーマ" },
-  "overlay.settings.row.showTranslation": { "message": "歌詞の翻訳を表示" },
-  "overlay.settings.row.translationLanguage": { "message": "翻訳言語" },
-  "overlay.settings.row.uiLanguage": { "message": "表示言語" },
-  "overlay.settings.row.pronScript": { "message": "発音表記方式" },
-  "overlay.settings.row.showPronunciation": { "message": "発音表記を表示(ある場合)" },
-  "overlay.settings.row.sourcePriority": { "message": "歌詞ソースの優先順位" },
-  "overlay.settings.row.pipKeepPanel": { "message": "PiP中もパネルの歌詞を維持" },
-  "overlay.settings.row.pipShowVideo": { "message": "PiPに映像も一緒に表示" },
-  "overlay.settings.row.pitchGuide": { "message": "カラオケ音程レーン(BETA・PiP)" },
-  "overlay.settings.row.pitchWindow": { "message": "音程レーンの表示範囲" },
-  "overlay.settings.row.pitchMode": { "message": "音程レーンの進行方式" },
-  "overlay.settings.row.pitchFont": { "message": "音程レーンの文字サイズ" },
-  "overlay.settings.row.pitchCountdown": { "message": "歌詞開始前のカウントダウン" },
-  "overlay.settings.row.pitchF0Curve": { "message": "元の音程曲線(f0)を表示" },
-  "overlay.settings.row.pitchF0CurveTitle": { "message": "音程モデルが抽出した元のメロディ曲線を、レーンに青い線で表示します。デバッグモードと関係なくオン/オフできます。" },
-  "overlay.settings.row.pronPosition": { "message": "発音表記の位置" },
-  "overlay.settings.row.pronPositionTitle": { "message": "音節タイミングがある曲で発音表記をどこに表示するか選びます。ノートの上 = 各ノートのすぐ下に付ける、画面下部 = 進行度グラデーションで下部中央に表示。" },
-  "overlay.settings.row.melodyPlayback": { "message": "メロディ再生(カラオケウィンドウ)" },
-  "overlay.settings.row.melodyPlaybackTitle": { "message": "転写されたノートをシンセ音で再生します。カラオケウィンドウが開いているときだけ鳴ります。" },
-  "overlay.settings.row.metronome": { "message": "メトロノーム" },
-  "overlay.settings.row.metronomeTitle": { "message": "サーバーが推定したBPMに合わせて拍を刻みます(4/4拍子と仮定、4拍ごとにアクセント)。" },
-  "overlay.settings.row.metronomeRate": { "message": "メトロノーム速度" },
-  "overlay.settings.row.metronomeRateTitle": { "message": "遅く感じる曲は2×(8分音符)、速すぎる曲は½×に。カラオケウィンドウ内のボタンからも変更できます。" },
-  "overlay.settings.row.metronomeBeat": { "message": "小節頭の拍" },
-  "overlay.settings.row.metronomeBeatTitle": { "message": "曲の最初のアクセントが合わないとき、小節頭の拍を移動します。メトロノームのアクセントとレーンの小節線が一緒に動きます。" },
-  "overlay.settings.row.audioOut": { "message": "カラオケ音声の出力デバイス" },
-  "overlay.settings.row.audioOutTitle": { "message": "メロディとメトロノームだけがこのデバイスから出力されます。動画の音声は通常の出力のままです。" },
-  "overlay.settings.row.micPitch": { "message": "マイク音程を表示(レーン)" },
-  "overlay.settings.row.micPitchTitle": { "message": "マイクで歌った音程をカラオケレーンに青緑色の軌跡で表示します。オンにするとマイク権限を要求します。" },
-  "overlay.settings.row.micDevice": { "message": "マイクデバイス" },
-  "overlay.settings.row.micOctave": { "message": "マイクのオクターブ補正" },
-  "overlay.settings.row.micOctaveTitle": { "message": "マイクの軌跡がノートより1オクターブ上下にずれる場合、ここで補正してください。" },
-  "overlay.settings.deviceNote": { "message": "デバイス名はマイク権限を一度許可すると表示されます" },
-  "overlay.settings.serverUrlLabel": { "message": "同期サーバーURL " },
-  "overlay.settings.apiKeyLabel": { "message": "APIキー" },
-  "overlay.settings.row.lowConfWarning": { "message": "低整列信頼度の警告" },
-  "overlay.settings.row.lowConfWarningTitle": { "message": "転写信頼度が非常に低い曲で、歌詞パネル上部に警告バーを表示します。" },
-  "overlay.settings.row.notifyOnComplete": { "message": "転写完了通知" },
-  "overlay.settings.row.notifyOnCompleteTitle": { "message": "キューに入れた転写が終わるとブラウザ通知でお知らせします。別のタブにいても確認できます。" },
-  "overlay.settings.row.debugInfo": { "message": "デバッグ情報を表示" },
-  "overlay.settings.serverRequiredNote": { "message": "同期の生成・翻訳にはEveryricサーバーが必要です" },
-  "overlay.settings.closeButton": { "message": "閉じる" },
-  "overlay.settings.deviceN": { "message": "デバイス $1$" },
-  "overlay.settings.defaultOutput": { "message": "デフォルト出力" },
-  "overlay.settings.defaultMic": { "message": "デフォルトマイク" },
-
-  "options.pageTitle": { "message": "Everyric 権限設定" },
-  "options.subtitle": { "message": "セルフホスト(ローカル)同期サーバーへのアクセス権限をここで許可・取り消しします。" },
-  "options.intro1": { "message": "Everyricはデフォルトで<code>https://everyric.moref.co</code>同期サーバーを使用します。このサーバーへのアクセスはインストール時にすでに許可されているため、<strong>ここで行うことはありません</strong>。" },
-  "options.intro2": { "message": "このページは<strong>サーバーを自分で運用する場合</strong>にのみ必要です。ローカルサーバーのアドレスはセルフホストする一部のユーザーしか使わないため、インストール時に全員へ権限を要求せず、必要な人が自分で許可する<em>任意権限</em>としています。許可すると拡張機能がそのアドレスへ歌詞・同期リクエストを送れるようになり、取り消すとすぐに送れなくなります。" },
-  "options.currentServerHeading": { "message": "現在の同期サーバー" },
-  "options.serverUrlLoading": { "message": "読み込み中…" },
-  "options.serverKindChecking": { "message": "確認中" },
-  "options.serverNoteDefault": { "message": "サーバーアドレスはYouTube歌詞パネルの設定(⚙)で変更します — このページでは権限のみを扱います。" },
-  "options.permHeading": { "message": "ローカルサーバーアクセス権限" },
-  "options.grantButtonDefault": { "message": "許可" },
-  "options.revokeButtonDefault": { "message": "取り消し" },
-  "options.recheckButton": { "message": "状態を再確認" },
-  "options.tipsHeading": { "message": "知っておくと便利なこと" },
-  "options.tip1": { "message": "許可は一度行えば維持されます。拡張機能を削除すると一緒に消えます。" },
-  "options.tip2": { "message": "拡張機能の更新でこの権限が取り消され、セルフホストサーバーが突然つながらなくなることがあります。そのときはここで再度許可してください。" },
-  "options.tip3": { "message": "<code>chrome://extensions</code>のEveryricの詳細からもサイトへのアクセス権限を確認・変更できます。そこで変更した内容もこのページにそのまま反映されます。" },
-  "options.tip4": { "message": "ポートが異なるローカルサーバーや第三者のサーバーアドレスを使うには、拡張機能を再ビルドする必要があります。" },
-  "options.serverKind.remote": { "message": "リモートサーバー" },
-  "options.serverNote.remote": { "message": "現在の設定はリモートサーバーのため、このページの権限は不要です。サーバーアドレスはYouTube歌詞パネルの設定(⚙)で変更します。" },
-  "options.serverKind.notAllowed": { "message": "許可できません" },
-  "options.serverNote.notAllowed": { "message": "$1$ は拡張機能が許可できるアドレスではありません。許可できるローカルアドレスは $2$ のみで、別のポートやアドレスを使うには拡張機能を再ビルドする必要があります。" },
-  "options.serverKind.grantedLocal": { "message": "ローカルサーバー · 許可済み" },
-  "options.serverKind.needsPermLocal": { "message": "ローカルサーバー · 権限が必要" },
-  "options.serverNote.granted": { "message": "このアドレスへリクエストを送れます。" },
-  "options.serverNote.needsPerm": { "message": "このアドレスへリクエストを送るには下で許可が必要です。(リクエストは $1$ 宛です)" },
-  "options.currentServerMarker": { "message": "現在設定されているサーバー" },
-  "options.badgeGranted": { "message": "許可済み" },
-  "options.badgeNotGranted": { "message": "未許可" },
-  "options.grantButton.preemptive": { "message": "ローカルサーバーアクセスを事前に許可" },
-  "options.grantButton.normal": { "message": "ローカルサーバーアクセスを許可" },
-  "options.revokeButton.all": { "message": "権限をすべて取り消し" },
-  "options.revokeButton.one": { "message": "権限を取り消し" },
-  "options.grantResult.success": { "message": "許可されました。開いているYouTubeタブの歌詞パネルが自動的に再確認します。" },
-  "options.grantResult.denied": { "message": "許可されませんでした。セルフホストサーバーを使うにはこの権限が必要です。デフォルトサーバー(everyric.moref.co)なら権限なしでそのまま使えます。" },
-  "options.grantResult.error": { "message": "権限をリクエストできませんでした — $1$" },
-  "options.revokeResult.success": { "message": "取り消しました。ローカルサーバーへはこれ以上リクエストを送りません — 歌詞パネルには権限が必要という案内が再び表示されます。" },
-  "options.revokeResult.failure": { "message": "取り消せませんでした。" },
-  "options.revokeResult.error": { "message": "取り消せませんでした — $1$" },
-
-  "content.notice.permPageFailed": { "message": "権限設定ページを開けませんでした — 拡張機能管理ページ(chrome://extensions)からEveryricの「拡張機能のオプション」を開いてください" },
-  "content.notice.candidateLoadFailed": { "message": "選択した歌詞を読み込めませんでした — 別の候補を選んでみてください" },
-  "content.failure.generateRequest": { "message": "同期生成のリクエストに失敗しました。" },
-  "content.failure.regenerateRequest": { "message": "再生成のリクエストに失敗しました。" },
-  "content.failure.resetSync": { "message": "同期のリセットに失敗しました。" },
-  "content.failure.cancelRequest": { "message": "キャンセルのリクエストに失敗しました。" },
-
-  "content.linkProbe.chip": { "message": "同一曲と推定 — 自動リンクを確認中…" },
-  "content.link.cannotSelf": { "message": "自分自身にはリンクできません" },
-  "content.link.replaceOwnConfirm": { "message": "この動画にはすでに自分の転写があります。\nリンクすると自分の転写を削除し、代わりに元動画の同期を使用します。続けますか?" },
-  "content.link.cancelledKeepOwn": { "message": "リンクをキャンセルしました — 自分の転写を維持します" },
-  "content.link.ownDeleteFailed": { "message": "自分の転写の削除に失敗しました$1$" },
-  "content.link.failedWithNote": { "message": "リンクに失敗しました — $1$" },
-  "content.link.failedNoNote": { "message": "リンクに失敗しました — 元動画に転写(同期)があるか確認してください" },
-  "content.link.unlinkFailed": { "message": "解除に失敗しました$1$" },
-  "content.link.unlinkFailedCheckServer": { "message": " — サーバーの状態を確認してください" },
-  "content.link.autoConfSuffix": { "message": "(伴奏一致 $1$%)" },
-  "content.link.autoLinked": { "message": "自動リンクされました — 同じ曲の同期を取得しました$1$" },
-  "content.debug.zoneAdlib": { "message": "掛け声★" },
-  "content.debug.zoneVocal": { "message": "歌唱" },
-  "content.debug.zoneInstrumental": { "message": "間奏・無音" },
-  "content.age.justNow": { "message": "たった今" },
-  "content.age.minutesAgo": { "message": "$1$分前" },
-  "content.age.hoursAgo": { "message": "$1$時間前" },
-  "content.age.daysAgo": { "message": "$1$日前" },
-  "content.translation.unavailable": { "message": "翻訳できません — $1$" },
-  "content.translation.generating": { "message": "翻訳・読み方を生成中…" },
-  "content.translation.failedWithStatus": { "message": "翻訳に失敗しました — $1$" },
-  "content.translation.failedNoResult": { "message": "翻訳に失敗しました — サーバーが結果を返しませんでした" },
-  "content.translation.lineCountMismatch": { "message": "翻訳を適用できませんでした — 行数が一致しません(翻訳 $1$行 · 歌詞 $2$行)" },
-  "content.translation.partialFailure": { "message": "翻訳の一部が失敗しました — $1$行はサーバーが結果を返せませんでした" },
-  "content.translation.aiGenerating": { "message": "AI翻訳・読み方を生成中…" },
-  "content.error.lyricsLoadFailed": { "message": "歌詞を読み込めませんでした" },
-  "content.error.candidatesLoadFailed": { "message": "候補を読み込めませんでした — $1$" },
-  "content.error.unknown": { "message": "不明なエラー" },
-  "content.error.jobGone": { "message": "サーバーに作業記録が見つかりません(サーバー再起動など) — もう一度生成してください" },
-  "content.error.syncGenerationFailed": { "message": "同期の生成に失敗しました" },
-  "content.loading.selectedCandidate": { "message": "選択した歌詞を読み込み中…" },
-  "content.generate.blockedAutoCaption": { "message": "自動生成字幕のため転写が不正確です — 正確な歌詞を貼り付ければ同期を作成できます" },
-  "content.generate.tooManyLines": { "message": "歌詞が長すぎます($1$行) — 500行以下に減らしてください" },
-  "content.generate.autoCaptionBlocked": { "message": "自動生成字幕は転写が不正確なため同期を作成できません — 歌詞を検索するか貼り付けてください" },
-  "content.notify.transcribeComplete": { "message": "転写完了" },
-  "content.notify.transcribeFailed": { "message": "転写失敗" },
-  "content.notify.otherVideoReady": { "message": "$1$ — 同期が作成されました。動画を開いて確認してください" },
-  "content.queue.position": { "message": "キュー $1$番目" },
-  "content.queue.label": { "message": "キュー待ち" },
-  "content.completion.notLoadedMsg": { "message": "$1$ — 同期を読み込めませんでした" },
-  "content.completion.notLoadedWarning": { "message": "同期を読み込めませんでした" },
-  "content.completion.readyMsg": { "message": "$1$ — 歌詞の同期の準備ができました" },
-  "content.completion.pronWord": { "message": "発音" },
-  "content.completion.partialPron": { "message": "発音 $1$/$2$行" },
-  "content.completion.trWord": { "message": "翻訳" },
-  "content.completion.partialTr": { "message": "翻訳 $1$/$2$行" },
-  "content.completion.allReadyMsg": { "message": "$1$ — 歌詞の同期・発音・翻訳の準備ができました" },
-  "content.completion.partialReadyMsg": { "message": "$1$ — 同期の準備はできましたが、一部の行が空です($2$)" },
-  "content.completion.partialReadyWarning": { "message": "一部の行に$1$しか付きませんでした — 再生成すると再試行します" },
-  "content.completion.missingMsg": { "message": "$1$ — 同期はできましたが$2$がありません$3$" },
-  "content.completion.missingWarning": { "message": "同期はできましたが$1$が付きませんでした$2$ — 再生成すると再試行します" },
-  "content.genChip.preparing": { "message": "同期生成の準備中 — AI翻訳・読み方をリクエスト中…" },
-  "content.genChip.stageProgress": { "message": "$1$ $2$% · 全体 $3$%" },
-  "content.genChip.percentOnly": { "message": "$1$%" },
-  "content.genChip.transcribing": { "message": "転写中 $1$$2$" },
-  "content.genChip.othersSuffix": { "message": " · 他$1$件" },
-  "content.genChip.othersOnly": { "message": "他の動画を転写中 $1$件" },
-  "content.genChip.stageOnly": { "message": "$1$ $2$%" },
-
-  "serverError.lyrics_too_long": { "message": "歌詞が長すぎます — 行数を減らして再度お試しください" },
-  "serverError.video_too_long": { "message": "動画が長すぎます — この長さにはまだ対応していません" },
-  "serverError.captions_no_text": { "message": "この字幕にはテキストがありません — 別の字幕を選ぶか歌詞を貼り付けてください" }
+  "pip_solfege_names": {
+    "message": "ド,ド#,レ,レ#,ミ,ファ,ファ#,ソ,ソ#,ラ,ラ#,シ"
+  },
+  "pip_docTitle": {
+    "message": "Everyric 歌詞"
+  },
+  "pip_controls_playPause": {
+    "message": "再生/一時停止"
+  },
+  "pip_controls_prevTrack": {
+    "message": "前の曲"
+  },
+  "pip_controls_nextTrack": {
+    "message": "次の曲"
+  },
+  "pip_controls_playlist": {
+    "message": "再生リスト"
+  },
+  "pip_controls_mute": {
+    "message": "ミュート"
+  },
+  "pip_controls_unmute": {
+    "message": "ミュート解除"
+  },
+  "pip_controls_melody": {
+    "message": "メロディ再生(ノートをシンセ音で)"
+  },
+  "pip_controls_metronome": {
+    "message": "メトロノーム"
+  },
+  "pip_controls_metronomeRate": {
+    "message": "メトロノーム速度 (½× → 1× → 2×)"
+  },
+  "pip_controls_metronomeBeat": {
+    "message": "小節頭の拍を選択(アクセントと小節線が一緒に動きます)"
+  },
+  "pip_controls_windowMinus": {
+    "message": "表示範囲を半分に(小節数 −)"
+  },
+  "pip_controls_windowLabel": {
+    "message": "レーン表示範囲(画面に表示する小節数)"
+  },
+  "pip_controls_windowPlus": {
+    "message": "表示範囲を2倍に(小節数 +)"
+  },
+  "pip_controls_modeToggle": {
+    "message": "進行モード切替 — 固定画面(再生位置が移動)↔ スクロール(再生位置固定)"
+  },
+  "pip_controls_modeFixed": {
+    "message": "固定"
+  },
+  "pip_controls_modeScroll": {
+    "message": "スクロール"
+  },
+  "pip_controls_volume": {
+    "message": "音量"
+  },
+  "pip_controls_progressSeek": {
+    "message": "クリックで移動"
+  },
+  "pip_controls_karaokeToggle": {
+    "message": "カラオケ音程レーンのオン/オフ"
+  },
+  "pip_controls_videoToggle": {
+    "message": "映像表示のオン/オフ"
+  },
+  "pip_controls_panelToggle": {
+    "message": "歌詞検索パネルの開閉"
+  },
+  "pip_controls_laneHeightDrag": {
+    "message": "ドラッグでカラオケレインの高さを調整"
+  },
+  "pip_controls_videoRatioDrag": {
+    "message": "ドラッグで映像/歌詞の比率を調整"
+  },
+  "pip_songKeyLabel": {
+    "message": "キー $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_laneOriginal": {
+    "message": "原文"
+  },
+  "pip_debug_laneHeard": {
+    "message": "認識"
+  },
+  "pip_debug_lanePron": {
+    "message": "発音"
+  },
+  "pip_debug_alignPrefix": {
+    "message": "整列 "
+  },
+  "pip_debug_gradeOk": {
+    "message": "良好$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_gradeMid": {
+    "message": " 普通$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_gradeLow": {
+    "message": " 低$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_alignmentTextPrefix": {
+    "message": " · 転写:$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_scaffoldApplied": {
+    "message": " · 字幕スキャフォールド $P1$行(固定$P2$·補間$P3$·維持$P4$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      },
+      "p4": {
+        "content": "$4"
+      }
+    }
+  },
+  "pip_debug_scaffoldSkipped": {
+    "message": " · 字幕スキャフォールド未使用:$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_confLow": {
+    "message": "低"
+  },
+  "debugPanel_confMid": {
+    "message": "普通"
+  },
+  "debugPanel_confOk": {
+    "message": "良好"
+  },
+  "debugPanel_scaffoldApplied": {
+    "message": "字幕スキャフォールド適用済み — $P1$行移動(字幕固定 $P2$% · 固定$P3$·補間$P4$·維持$P5$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      },
+      "p4": {
+        "content": "$4"
+      },
+      "p5": {
+        "content": "$5"
+      }
+    }
+  },
+  "debugPanel_scaffoldSkipped": {
+    "message": "字幕スキャフォールド未使用 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_empty": {
+    "message": "表示する行がありません"
+  },
+  "debugPanel_heardPrefix": {
+    "message": "認識: $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_seekTitle": {
+    "message": "クリックでこの区間に移動"
+  },
+  "panels_serverLog_loadHint": {
+    "message": "展開すると読み込みます"
+  },
+  "panels_serverLog_title": {
+    "message": "最近のサーバーリクエスト"
+  },
+  "panels_serverLog_loading": {
+    "message": "読み込み中…"
+  },
+  "panels_serverLog_empty": {
+    "message": "記録がありません(拡張機能を再読み込みするとリセットされます)"
+  },
+  "panels_serverBar_permissionNeeded": {
+    "message": "セルフホストサーバーへのアクセスはインストール時には許可されません(デフォルトサーバーには不要です)。以前使っていた場合、拡張機能の更新で権限が取り消されたのかもしれません — 一度許可すれば維持されます。"
+  },
+  "panels_serverBar_openPermissions": {
+    "message": "権限設定を開く"
+  },
+  "panels_serverBar_openPermissionsTitle": {
+    "message": "ローカルサーバーへのアクセスを許可するページを新しいタブで開きます"
+  },
+  "panels_serverBar_recheck": {
+    "message": "再確認"
+  },
+  "panels_serverBar_recheckTitle": {
+    "message": "サーバーへの再接続を試みます"
+  },
+  "panels_serverBar_openSettings": {
+    "message": "設定を開く"
+  },
+  "panels_serverBar_openSettingsTitle": {
+    "message": "サーバーURLとAPIキーを確認できます"
+  },
+  "panels_search_titlePlaceholder": {
+    "message": "曲名"
+  },
+  "panels_search_artistPlaceholder": {
+    "message": "アーティスト(任意)"
+  },
+  "panels_search_namuwiki": {
+    "message": "ナムウィキ"
+  },
+  "panels_search_google": {
+    "message": "Google"
+  },
+  "panels_search_lyricsWord": {
+    "message": "歌詞"
+  },
+  "panels_search_externalLinksLabel": {
+    "message": "他のサイトで歌詞を探す"
+  },
+  "panels_search_externalLinkTitle": {
+    "message": "$P1$で「$P2$」を検索(新しいタブ)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "panels_paste_placeholder": {
+    "message": "歌詞をここに貼り付けるとAIがタイミングを合わせます\n[Verse]・1番・サビなどのパート表記やコメント行は自動で除外されます。"
+  },
+  "panels_paste_attributionPlaceholder": {
+    "message": "出典(任意) — 例: ナムウィキ, Genius"
+  },
+  "panels_paste_attributionTitle": {
+    "message": "歌詞の入手元を記入すると同期データと一緒に保存され、出典バッジに表示されます。空欄でも構いません。"
+  },
+  "panels_paste_filterNote": {
+    "message": "パート表記([Verse]・1番・サビ)やコメント・クレジット行は自動で除外されます — 何が除外されたかお知らせします"
+  },
+  "panels_paste_generateButton": {
+    "message": "貼り付けた歌詞で同期を生成"
+  },
+  "panels_paste_emptyWarning": {
+    "message": "先に歌詞を貼り付けてください"
+  },
+  "panels_paste_closeToggle": {
+    "message": "貼り付け欄を閉じる"
+  },
+  "panels_paste_openToggle": {
+    "message": "歌詞を直接貼り付け"
+  },
+  "panels_serverDown_text": {
+    "message": "サーバーが利用できません"
+  },
+  "panels_serverDown_note": {
+    "message": "歌詞検索自体はサーバーなしでも動きますが、この曲は外部ソースでも見つかりませんでした。同期の生成・再生成・翻訳にはサーバーが必要です。"
+  },
+  "panels_serverDown_retry": {
+    "message": "歌詞を再検索"
+  },
+  "panels_serverDown_retryTitlePermission": {
+    "message": "権限を許可してからクリックすると最初から検索し直します"
+  },
+  "panels_serverDown_retryTitleOther": {
+    "message": "サーバーを直してからクリックすると最初から検索し直します"
+  },
+  "panels_empty_searchAgain": {
+    "message": "再検索"
+  },
+  "panels_empty_title": {
+    "message": "歌詞が見つかりませんでした"
+  },
+  "panels_empty_detailedSearch": {
+    "message": "詳細検索(候補選択・同期リンク)"
+  },
+  "panels_loading_manualSearch": {
+    "message": "待たずに手動検索"
+  },
+  "panels_error_retry": {
+    "message": "再試行"
+  },
+  "panels_generating_note": {
+    "message": "そのまま視聴を続けて大丈夫です。完了すると自動的に表示されます。"
+  },
+  "panels_searchSheet_searchButton": {
+    "message": "検索"
+  },
+  "panels_searchSheet_searching": {
+    "message": "検索中…"
+  },
+  "panels_searchSheet_back": {
+    "message": "← 元の歌詞に戻る"
+  },
+  "panels_searchSheet_title": {
+    "message": "歌詞検索 — 結果から直接選べます"
+  },
+  "panels_searchSheet_sub": {
+    "message": "ボカロ歌詞wiki(発音・翻訳あり)とLRCLIB(同期歌詞)を同時に検索します"
+  },
+  "panels_searchSheet_serverBadNote": {
+    "message": "LRCLIB検索はそのまま使えますが、ボカロ歌詞wikiの原題マッチングと同期生成にはサーバーが必要です。"
+  },
+  "panels_results_empty": {
+    "message": "結果がありません — タイトルを短くするか、原題(日本語)で試してください"
+  },
+  "panels_results_pronTranslationMeta": {
+    "message": "発音・翻訳"
+  },
+  "panels_results_syncedMeta": {
+    "message": "同期"
+  },
+  "panels_results_plainMeta": {
+    "message": "一般"
+  },
+  "panels_results_vocaroLabel": {
+    "message": "ボカロ歌詞wiki"
+  },
+  "panels_results_lrclibLabel": {
+    "message": "LRCLIB"
+  },
+  "overlay_detecting": {
+    "message": "曲を認識中…"
+  },
+  "overlay_header_pip": {
+    "message": "ピクチャーインピクチャーで表示"
+  },
+  "overlay_header_regen": {
+    "message": "同期を再生成(サーバーキャッシュを無視)"
+  },
+  "overlay_header_regenConfirm": {
+    "message": "サーバーの同期データを再生成しますか?\n1分ほどかかりますが、完了するまで今の歌詞はそのまま表示されます。"
+  },
+  "overlay_header_search": {
+    "message": "歌詞を再検索(別の結果を選ぶ)"
+  },
+  "overlay_header_settings": {
+    "message": "設定"
+  },
+  "overlay_header_collapse": {
+    "message": "折りたたむ"
+  },
+  "overlay_header_expand": {
+    "message": "開く"
+  },
+  "overlay_header_close": {
+    "message": "閉じる(ツールバーアイコンから再度開けます)"
+  },
+  "overlay_genChip_title": {
+    "message": "クリックすると生成キューの一覧が開きます"
+  },
+  "overlay_genChip_cancel": {
+    "message": "転写をキャンセル"
+  },
+  "overlay_genChip_cancelConfirm": {
+    "message": "実行中の転写をキャンセルしますか?"
+  },
+  "overlay_resumeChip": {
+    "message": "現在の歌詞に戻る"
+  },
+  "overlay_footer_syncCaption": {
+    "message": "同期"
+  },
+  "overlay_footer_pullEarlier": {
+    "message": "歌詞を0.1秒早める"
+  },
+  "overlay_footer_pushLater": {
+    "message": "歌詞を0.1秒遅らせる"
+  },
+  "overlay_footer_resetLabel": {
+    "message": "リセット"
+  },
+  "overlay_footer_resetTitle": {
+    "message": "オフセットをリセット"
+  },
+  "overlay_debug_waiting": {
+    "message": "debug: 待機中…"
+  },
+  "overlay_debug_toggleAll": {
+    "message": "全体"
+  },
+  "overlay_debug_toggleAllTitle": {
+    "message": "曲全体のデバッグパネル — 原文とheardを全行比較、クリックでシーク"
+  },
+  "overlay_debug_created": {
+    "message": "生成=$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_debug_grades": {
+    "message": "整列 良好$P1$%・普通$P2$%・低$P3$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "overlay_debug_alignmentText": {
+    "message": "転写テキスト=$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_debug_alignmentPronunciation": {
+    "message": "読み(韓国語発音)"
+  },
+  "overlay_debug_alignmentOriginal": {
+    "message": "原文(原語)"
+  },
+  "overlay_loading_default": {
+    "message": "歌詞を検索中…"
+  },
+  "overlay_banner_aiKaraoke": {
+    "message": "AI転写でカラオケ(音程・発音)を作成できます"
+  },
+  "overlay_banner_aiTranscribe": {
+    "message": "AI転写を実行"
+  },
+  "overlay_line_seekTitle": {
+    "message": "クリックでこの部分に移動"
+  },
+  "overlay_plain_generateSync": {
+    "message": "同期を生成"
+  },
+  "overlay_plain_noTimesync": {
+    "message": "この歌詞にはタイムシンクがありません"
+  },
+  "overlay_search_backToAuto": {
+    "message": "自動検索に戻す"
+  },
+  "overlay_search_resetSync": {
+    "message": "この動画の同期をリセット(サーバー保存分を削除)"
+  },
+  "overlay_search_resetSyncTitle": {
+    "message": "誤って貼り付けた歌詞で作った同期データを完全に消去し、最初からやり直します"
+  },
+  "overlay_search_resetSyncConfirm": {
+    "message": "この動画のサーバー同期データ(タイミング・発音・翻訳)をすべて削除しますか?\n削除後は自動検索が再実行され、新しい歌詞を貼り付けられます。"
+  },
+  "overlay_link_srcPlaceholder": {
+    "message": "元動画のURLまたはID(すでに転写がある動画)"
+  },
+  "overlay_link_offsetPlaceholder": {
+    "message": "オフセット(秒)"
+  },
+  "overlay_link_offsetTitle": {
+    "message": "この動画が元動画より遅く始まるなら+、早いなら-"
+  },
+  "overlay_link_ratePlaceholder": {
+    "message": "再生速度"
+  },
+  "overlay_link_rateTitle": {
+    "message": "原曲に対する再生速度 — nightcore≈1.25、同じ速度なら1"
+  },
+  "overlay_link_filterPlaceholder": {
+    "message": "保存済み同期を検索 — 歌詞の最初の行・動画ID・出典"
+  },
+  "overlay_link_needVideoId": {
+    "message": "動画URLまたは11文字のIDを入力してください"
+  },
+  "overlay_link_connecting": {
+    "message": "接続中…"
+  },
+  "overlay_link_sectionTitle": {
+    "message": "別の動画の同期をリンク(インスト・カバー用)"
+  },
+  "overlay_link_verifiedBadge": {
+    "message": " · 検証済み"
+  },
+  "overlay_link_unverifiedBadge": {
+    "message": " · 未検証"
+  },
+  "overlay_link_currentStatus": {
+    "message": "現在 $P1$ にリンク中 ($P2$)$P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "overlay_link_unlink": {
+    "message": "リンク解除"
+  },
+  "overlay_link_connect": {
+    "message": "リンク"
+  },
+  "overlay_link_pickFromList": {
+    "message": "サーバーの保存済み同期一覧から選ぶ"
+  },
+  "overlay_link_loadingList": {
+    "message": "一覧を読み込み中…"
+  },
+  "overlay_link_noSavedSyncs": {
+    "message": "サーバーに保存された同期がありません"
+  },
+  "overlay_link_noFilterMatch": {
+    "message": "検索に一致する同期がありません"
+  },
+  "overlay_link_pickHint": {
+    "message": "項目をクリックすると元動画欄に入力されます — オフセットを確認してから「リンク」を押してください"
+  },
+  "overlay_link_noFirstLine": {
+    "message": "(最初の行なし)"
+  },
+  "overlay_link_lineCountMeta": {
+    "message": "$P1$行",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeVerified": {
+    "message": "$P1$ から同期を借用 · 伴奏の相関で検証済みの自動リンク",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeUnverified": {
+    "message": "$P1$ から同期を借用 · 未検証の手動リンク — ずれる場合はオフセットを調整するか解除してください",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeUnknown": {
+    "message": "$P1$ から同期を借用 · 検証状況不明(旧バージョンのサーバー)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_generating_default": {
+    "message": "同期を生成中… $P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_pip_placeholder": {
+    "message": "ピクチャーインピクチャー画面に歌詞を表示しています"
+  },
+  "overlay_pip_backToPanel": {
+    "message": "パネルに戻る"
+  },
+  "overlay_settings_serverStatusTitle": {
+    "message": "サーバー接続状態 — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_warn_text": {
+    "message": "転写が不正確な可能性があります(整列信頼度 $P1$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_warn_title": {
+    "message": "転写・発音整列の平均信頼度が低いです。原文の歌詞が正しいか確認するか、再生成を試してください。"
+  },
+  "overlay_warn_close": {
+    "message": "この警告を閉じる(設定でオフにもできます)"
+  },
+  "overlay_genList_currentVideo": {
+    "message": "$P1$(現在の動画)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_source_vocaro": {
+    "message": "ボカロ歌詞wiki"
+  },
+  "overlay_source_caption": {
+    "message": "YouTube字幕"
+  },
+  "overlay_source_syncedLyrics": {
+    "message": "同期歌詞"
+  },
+  "overlay_source_plainLyrics": {
+    "message": "一般歌詞"
+  },
+  "overlay_source_openPage": {
+    "message": "出典ページを開く"
+  },
+  "overlay_settings_fontSize_small": {
+    "message": "小"
+  },
+  "overlay_settings_fontSize_medium": {
+    "message": "中"
+  },
+  "overlay_settings_fontSize_large": {
+    "message": "大"
+  },
+  "overlay_settings_optAuto": {
+    "message": "自動"
+  },
+  "overlay_settings_theme_dark": {
+    "message": "ダーク"
+  },
+  "overlay_settings_theme_light": {
+    "message": "ライト"
+  },
+  "overlay_settings_pronScript_hangul": {
+    "message": "ハングル"
+  },
+  "overlay_settings_pronScript_romaji": {
+    "message": "ローマ字"
+  },
+  "overlay_settings_pronScript_kana": {
+    "message": "かな"
+  },
+  "overlay_settings_sourcePriority_vocaro": {
+    "message": "ボカロ歌詞wiki優先"
+  },
+  "overlay_settings_sourcePriority_lrclib": {
+    "message": "LRCLIB優先"
+  },
+  "overlay_settings_pitchWindow_half": {
+    "message": "½小節"
+  },
+  "overlay_settings_pitchWindow_bars": {
+    "message": "$P1$小節",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_pitchMode_page": {
+    "message": "固定画面・再生位置移動"
+  },
+  "overlay_settings_pitchMode_scroll": {
+    "message": "スクロール・再生位置固定"
+  },
+  "overlay_settings_pitchFont_normal": {
+    "message": "中"
+  },
+  "overlay_settings_pitchFont_large": {
+    "message": "大"
+  },
+  "overlay_settings_pitchFont_xlarge": {
+    "message": "特大"
+  },
+  "overlay_settings_pitchFont_small": {
+    "message": "小"
+  },
+  "overlay_settings_pronPosition_note": {
+    "message": "ノートの上"
+  },
+  "overlay_settings_pronPosition_bottom": {
+    "message": "画面下部"
+  },
+  "overlay_settings_metronomeRate_half": {
+    "message": "½×(2分音符)"
+  },
+  "overlay_settings_metronomeRate_one": {
+    "message": "1×(4分音符)"
+  },
+  "overlay_settings_metronomeRate_two": {
+    "message": "2×(8分音符)"
+  },
+  "overlay_settings_metronomeBeat_n": {
+    "message": "$P1$拍目",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_micOctave_n": {
+    "message": "$P1$オクターブ",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_micOctave_none": {
+    "message": "補正なし"
+  },
+  "overlay_settings_permBtnTitle": {
+    "message": "セルフホストサーバーへのアクセスを許可するページを新しいタブで開きます"
+  },
+  "overlay_settings_apiKeyPlaceholder": {
+    "message": "(任意)サーバーAPIキー"
+  },
+  "overlay_settings_row_autoSearch": {
+    "message": "歌詞の自動検索(音楽動画のみ)"
+  },
+  "overlay_settings_row_autoSearchTitle": {
+    "message": "YouTube Musicのメタデータ・チャンネル・タイトルから音楽動画を判定し、自動で歌詞パネルを開きます。オフにしてもツールバーアイコンから手動で開けます。"
+  },
+  "overlay_settings_row_autoSearchShorts": {
+    "message": "ショート動画でも自動検索"
+  },
+  "overlay_settings_row_autoSearchShortsTitle": {
+    "message": "デフォルトはオフ — ショート動画では歌詞パネルが自動で開きません。ツールバーアイコンからいつでも手動で開けます。"
+  },
+  "overlay_settings_row_fontSize": {
+    "message": "フォントサイズ"
+  },
+  "overlay_settings_row_theme": {
+    "message": "テーマ"
+  },
+  "overlay_settings_row_showTranslation": {
+    "message": "歌詞の翻訳を表示"
+  },
+  "overlay_settings_row_translationLanguage": {
+    "message": "翻訳言語"
+  },
+  "overlay_settings_row_uiLanguage": {
+    "message": "表示言語"
+  },
+  "overlay_settings_row_pronScript": {
+    "message": "発音表記方式"
+  },
+  "overlay_settings_row_showPronunciation": {
+    "message": "発音表記を表示(ある場合)"
+  },
+  "overlay_settings_row_sourcePriority": {
+    "message": "歌詞ソースの優先順位"
+  },
+  "overlay_settings_row_pipKeepPanel": {
+    "message": "PiP中もパネルの歌詞を維持"
+  },
+  "overlay_settings_row_pipShowVideo": {
+    "message": "PiPに映像も一緒に表示"
+  },
+  "overlay_settings_row_pitchGuide": {
+    "message": "カラオケ音程レーン(BETA・PiP)"
+  },
+  "overlay_settings_row_pitchWindow": {
+    "message": "音程レーンの表示範囲"
+  },
+  "overlay_settings_row_pitchMode": {
+    "message": "音程レーンの進行方式"
+  },
+  "overlay_settings_row_pitchFont": {
+    "message": "音程レーンの文字サイズ"
+  },
+  "overlay_settings_row_pitchCountdown": {
+    "message": "歌詞開始前のカウントダウン"
+  },
+  "overlay_settings_row_pitchF0Curve": {
+    "message": "元の音程曲線(f0)を表示"
+  },
+  "overlay_settings_row_pitchF0CurveTitle": {
+    "message": "音程モデルが抽出した元のメロディ曲線を、レーンに青い線で表示します。デバッグモードと関係なくオン/オフできます。"
+  },
+  "overlay_settings_row_pronPosition": {
+    "message": "発音表記の位置"
+  },
+  "overlay_settings_row_pronPositionTitle": {
+    "message": "音節タイミングがある曲で発音表記をどこに表示するか選びます。ノートの上 = 各ノートのすぐ下に付ける、画面下部 = 進行度グラデーションで下部中央に表示。"
+  },
+  "overlay_settings_row_melodyPlayback": {
+    "message": "メロディ再生(カラオケウィンドウ)"
+  },
+  "overlay_settings_row_melodyPlaybackTitle": {
+    "message": "転写されたノートをシンセ音で再生します。カラオケウィンドウが開いているときだけ鳴ります。"
+  },
+  "overlay_settings_row_metronome": {
+    "message": "メトロノーム"
+  },
+  "overlay_settings_row_metronomeTitle": {
+    "message": "サーバーが推定したBPMに合わせて拍を刻みます(4/4拍子と仮定、4拍ごとにアクセント)。"
+  },
+  "overlay_settings_row_metronomeRate": {
+    "message": "メトロノーム速度"
+  },
+  "overlay_settings_row_metronomeRateTitle": {
+    "message": "遅く感じる曲は2×(8分音符)、速すぎる曲は½×に。カラオケウィンドウ内のボタンからも変更できます。"
+  },
+  "overlay_settings_row_metronomeBeat": {
+    "message": "小節頭の拍"
+  },
+  "overlay_settings_row_metronomeBeatTitle": {
+    "message": "曲の最初のアクセントが合わないとき、小節頭の拍を移動します。メトロノームのアクセントとレーンの小節線が一緒に動きます。"
+  },
+  "overlay_settings_row_audioOut": {
+    "message": "カラオケ音声の出力デバイス"
+  },
+  "overlay_settings_row_audioOutTitle": {
+    "message": "メロディとメトロノームだけがこのデバイスから出力されます。動画の音声は通常の出力のままです。"
+  },
+  "overlay_settings_row_micPitch": {
+    "message": "マイク音程を表示(レーン)"
+  },
+  "overlay_settings_row_micPitchTitle": {
+    "message": "マイクで歌った音程をカラオケレーンに青緑色の軌跡で表示します。オンにするとマイク権限を要求します。"
+  },
+  "overlay_settings_row_micDevice": {
+    "message": "マイクデバイス"
+  },
+  "overlay_settings_row_micOctave": {
+    "message": "マイクのオクターブ補正"
+  },
+  "overlay_settings_row_micOctaveTitle": {
+    "message": "マイクの軌跡がノートより1オクターブ上下にずれる場合、ここで補正してください。"
+  },
+  "overlay_settings_deviceNote": {
+    "message": "デバイス名はマイク権限を一度許可すると表示されます"
+  },
+  "overlay_settings_serverUrlLabel": {
+    "message": "同期サーバーURL "
+  },
+  "overlay_settings_apiKeyLabel": {
+    "message": "APIキー"
+  },
+  "overlay_settings_row_lowConfWarning": {
+    "message": "低整列信頼度の警告"
+  },
+  "overlay_settings_row_lowConfWarningTitle": {
+    "message": "転写信頼度が非常に低い曲で、歌詞パネル上部に警告バーを表示します。"
+  },
+  "overlay_settings_row_notifyOnComplete": {
+    "message": "転写完了通知"
+  },
+  "overlay_settings_row_notifyOnCompleteTitle": {
+    "message": "キューに入れた転写が終わるとブラウザ通知でお知らせします。別のタブにいても確認できます。"
+  },
+  "overlay_settings_row_debugInfo": {
+    "message": "デバッグ情報を表示"
+  },
+  "overlay_settings_serverRequiredNote": {
+    "message": "同期の生成・翻訳にはEveryricサーバーが必要です"
+  },
+  "overlay_settings_closeButton": {
+    "message": "閉じる"
+  },
+  "overlay_settings_deviceN": {
+    "message": "デバイス $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_defaultOutput": {
+    "message": "デフォルト出力"
+  },
+  "overlay_settings_defaultMic": {
+    "message": "デフォルトマイク"
+  },
+  "options_pageTitle": {
+    "message": "Everyric 権限設定"
+  },
+  "options_subtitle": {
+    "message": "セルフホスト(ローカル)同期サーバーへのアクセス権限をここで許可・取り消しします。"
+  },
+  "options_intro1": {
+    "message": "Everyricはデフォルトで<code>https://everyric.moref.co</code>同期サーバーを使用します。このサーバーへのアクセスはインストール時にすでに許可されているため、<strong>ここで行うことはありません</strong>。"
+  },
+  "options_intro2": {
+    "message": "このページは<strong>サーバーを自分で運用する場合</strong>にのみ必要です。ローカルサーバーのアドレスはセルフホストする一部のユーザーしか使わないため、インストール時に全員へ権限を要求せず、必要な人が自分で許可する<em>任意権限</em>としています。許可すると拡張機能がそのアドレスへ歌詞・同期リクエストを送れるようになり、取り消すとすぐに送れなくなります。"
+  },
+  "options_currentServerHeading": {
+    "message": "現在の同期サーバー"
+  },
+  "options_serverUrlLoading": {
+    "message": "読み込み中…"
+  },
+  "options_serverKindChecking": {
+    "message": "確認中"
+  },
+  "options_serverNoteDefault": {
+    "message": "サーバーアドレスはYouTube歌詞パネルの設定(⚙)で変更します — このページでは権限のみを扱います。"
+  },
+  "options_permHeading": {
+    "message": "ローカルサーバーアクセス権限"
+  },
+  "options_grantButtonDefault": {
+    "message": "許可"
+  },
+  "options_revokeButtonDefault": {
+    "message": "取り消し"
+  },
+  "options_recheckButton": {
+    "message": "状態を再確認"
+  },
+  "options_tipsHeading": {
+    "message": "知っておくと便利なこと"
+  },
+  "options_tip1": {
+    "message": "許可は一度行えば維持されます。拡張機能を削除すると一緒に消えます。"
+  },
+  "options_tip2": {
+    "message": "拡張機能の更新でこの権限が取り消され、セルフホストサーバーが突然つながらなくなることがあります。そのときはここで再度許可してください。"
+  },
+  "options_tip3": {
+    "message": "<code>chrome://extensions</code>のEveryricの詳細からもサイトへのアクセス権限を確認・変更できます。そこで変更した内容もこのページにそのまま反映されます。"
+  },
+  "options_tip4": {
+    "message": "ポートが異なるローカルサーバーや第三者のサーバーアドレスを使うには、拡張機能を再ビルドする必要があります。"
+  },
+  "options_serverKind_remote": {
+    "message": "リモートサーバー"
+  },
+  "options_serverNote_remote": {
+    "message": "現在の設定はリモートサーバーのため、このページの権限は不要です。サーバーアドレスはYouTube歌詞パネルの設定(⚙)で変更します。"
+  },
+  "options_serverKind_notAllowed": {
+    "message": "許可できません"
+  },
+  "options_serverNote_notAllowed": {
+    "message": "$P1$ は拡張機能が許可できるアドレスではありません。許可できるローカルアドレスは $P2$ のみで、別のポートやアドレスを使うには拡張機能を再ビルドする必要があります。",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "options_serverKind_grantedLocal": {
+    "message": "ローカルサーバー · 許可済み"
+  },
+  "options_serverKind_needsPermLocal": {
+    "message": "ローカルサーバー · 権限が必要"
+  },
+  "options_serverNote_granted": {
+    "message": "このアドレスへリクエストを送れます。"
+  },
+  "options_serverNote_needsPerm": {
+    "message": "このアドレスへリクエストを送るには下で許可が必要です。(リクエストは $P1$ 宛です)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "options_currentServerMarker": {
+    "message": "現在設定されているサーバー"
+  },
+  "options_badgeGranted": {
+    "message": "許可済み"
+  },
+  "options_badgeNotGranted": {
+    "message": "未許可"
+  },
+  "options_grantButton_preemptive": {
+    "message": "ローカルサーバーアクセスを事前に許可"
+  },
+  "options_grantButton_normal": {
+    "message": "ローカルサーバーアクセスを許可"
+  },
+  "options_revokeButton_all": {
+    "message": "権限をすべて取り消し"
+  },
+  "options_revokeButton_one": {
+    "message": "権限を取り消し"
+  },
+  "options_grantResult_success": {
+    "message": "許可されました。開いているYouTubeタブの歌詞パネルが自動的に再確認します。"
+  },
+  "options_grantResult_denied": {
+    "message": "許可されませんでした。セルフホストサーバーを使うにはこの権限が必要です。デフォルトサーバー(everyric.moref.co)なら権限なしでそのまま使えます。"
+  },
+  "options_grantResult_error": {
+    "message": "権限をリクエストできませんでした — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "options_revokeResult_success": {
+    "message": "取り消しました。ローカルサーバーへはこれ以上リクエストを送りません — 歌詞パネルには権限が必要という案内が再び表示されます。"
+  },
+  "options_revokeResult_failure": {
+    "message": "取り消せませんでした。"
+  },
+  "options_revokeResult_error": {
+    "message": "取り消せませんでした — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_notice_permPageFailed": {
+    "message": "権限設定ページを開けませんでした — 拡張機能管理ページ(chrome://extensions)からEveryricの「拡張機能のオプション」を開いてください"
+  },
+  "content_notice_candidateLoadFailed": {
+    "message": "選択した歌詞を読み込めませんでした — 別の候補を選んでみてください"
+  },
+  "content_failure_generateRequest": {
+    "message": "同期生成のリクエストに失敗しました。"
+  },
+  "content_failure_regenerateRequest": {
+    "message": "再生成のリクエストに失敗しました。"
+  },
+  "content_failure_resetSync": {
+    "message": "同期のリセットに失敗しました。"
+  },
+  "content_failure_cancelRequest": {
+    "message": "キャンセルのリクエストに失敗しました。"
+  },
+  "content_linkProbe_chip": {
+    "message": "同一曲と推定 — 自動リンクを確認中…"
+  },
+  "content_link_cannotSelf": {
+    "message": "自分自身にはリンクできません"
+  },
+  "content_link_replaceOwnConfirm": {
+    "message": "この動画にはすでに自分の転写があります。\nリンクすると自分の転写を削除し、代わりに元動画の同期を使用します。続けますか?"
+  },
+  "content_link_cancelledKeepOwn": {
+    "message": "リンクをキャンセルしました — 自分の転写を維持します"
+  },
+  "content_link_ownDeleteFailed": {
+    "message": "自分の転写の削除に失敗しました$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_failedWithNote": {
+    "message": "リンクに失敗しました — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_failedNoNote": {
+    "message": "リンクに失敗しました — 元動画に転写(同期)があるか確認してください"
+  },
+  "content_link_unlinkFailed": {
+    "message": "解除に失敗しました$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_unlinkFailedCheckServer": {
+    "message": " — サーバーの状態を確認してください"
+  },
+  "content_link_autoConfSuffix": {
+    "message": "(伴奏一致 $P1$%)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_autoLinked": {
+    "message": "自動リンクされました — 同じ曲の同期を取得しました$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_debug_zoneAdlib": {
+    "message": "掛け声★"
+  },
+  "content_debug_zoneVocal": {
+    "message": "歌唱"
+  },
+  "content_debug_zoneInstrumental": {
+    "message": "間奏・無音"
+  },
+  "content_age_justNow": {
+    "message": "たった今"
+  },
+  "content_age_minutesAgo": {
+    "message": "$P1$分前",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_age_hoursAgo": {
+    "message": "$P1$時間前",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_age_daysAgo": {
+    "message": "$P1$日前",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_unavailable": {
+    "message": "翻訳できません — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_generating": {
+    "message": "翻訳・読み方を生成中…"
+  },
+  "content_translation_failedWithStatus": {
+    "message": "翻訳に失敗しました — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_failedNoResult": {
+    "message": "翻訳に失敗しました — サーバーが結果を返しませんでした"
+  },
+  "content_translation_lineCountMismatch": {
+    "message": "翻訳を適用できませんでした — 行数が一致しません(翻訳 $P1$行 · 歌詞 $P2$行)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_translation_partialFailure": {
+    "message": "翻訳の一部が失敗しました — $P1$行はサーバーが結果を返せませんでした",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_aiGenerating": {
+    "message": "AI翻訳・読み方を生成中…"
+  },
+  "content_error_lyricsLoadFailed": {
+    "message": "歌詞を読み込めませんでした"
+  },
+  "content_error_candidatesLoadFailed": {
+    "message": "候補を読み込めませんでした — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_error_unknown": {
+    "message": "不明なエラー"
+  },
+  "content_error_jobGone": {
+    "message": "サーバーに作業記録が見つかりません(サーバー再起動など) — もう一度生成してください"
+  },
+  "content_error_syncGenerationFailed": {
+    "message": "同期の生成に失敗しました"
+  },
+  "content_loading_selectedCandidate": {
+    "message": "選択した歌詞を読み込み中…"
+  },
+  "content_generate_blockedAutoCaption": {
+    "message": "自動生成字幕のため転写が不正確です — 正確な歌詞を貼り付ければ同期を作成できます"
+  },
+  "content_generate_tooManyLines": {
+    "message": "歌詞が長すぎます($P1$行) — 500行以下に減らしてください",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_generate_autoCaptionBlocked": {
+    "message": "自動生成字幕は転写が不正確なため同期を作成できません — 歌詞を検索するか貼り付けてください"
+  },
+  "content_notify_transcribeComplete": {
+    "message": "転写完了"
+  },
+  "content_notify_transcribeFailed": {
+    "message": "転写失敗"
+  },
+  "content_notify_otherVideoReady": {
+    "message": "$P1$ — 同期が作成されました。動画を開いて確認してください",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_queue_position": {
+    "message": "キュー $P1$番目",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_queue_label": {
+    "message": "キュー待ち"
+  },
+  "content_completion_notLoadedMsg": {
+    "message": "$P1$ — 同期を読み込めませんでした",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_notLoadedWarning": {
+    "message": "同期を読み込めませんでした"
+  },
+  "content_completion_readyMsg": {
+    "message": "$P1$ — 歌詞の同期の準備ができました",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_pronWord": {
+    "message": "発音"
+  },
+  "content_completion_partialPron": {
+    "message": "発音 $P1$/$P2$行",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_trWord": {
+    "message": "翻訳"
+  },
+  "content_completion_partialTr": {
+    "message": "翻訳 $P1$/$P2$行",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_allReadyMsg": {
+    "message": "$P1$ — 歌詞の同期・発音・翻訳の準備ができました",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_partialReadyMsg": {
+    "message": "$P1$ — 同期の準備はできましたが、一部の行が空です($P2$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_partialReadyWarning": {
+    "message": "一部の行に$P1$しか付きませんでした — 再生成すると再試行します",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_missingMsg": {
+    "message": "$P1$ — 同期はできましたが$P2$がありません$P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "content_completion_missingWarning": {
+    "message": "同期はできましたが$P1$が付きませんでした$P2$ — 再生成すると再試行します",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_genChip_preparing": {
+    "message": "同期生成の準備中 — AI翻訳・読み方をリクエスト中…"
+  },
+  "content_genChip_stageProgress": {
+    "message": "$P1$ $P2$% · 全体 $P3$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "content_genChip_percentOnly": {
+    "message": "$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_transcribing": {
+    "message": "転写中 $P1$$P2$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_genChip_othersSuffix": {
+    "message": " · 他$P1$件",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_othersOnly": {
+    "message": "他の動画を転写中 $P1$件",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_stageOnly": {
+    "message": "$P1$ $P2$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "serverError_lyrics_too_long": {
+    "message": "歌詞が長すぎます — 行数を減らして再度お試しください"
+  },
+  "serverError_video_too_long": {
+    "message": "動画が長すぎます — この長さにはまだ対応していません"
+  },
+  "serverError_captions_no_text": {
+    "message": "この字幕にはテキストがありません — 別の字幕を選ぶか歌詞を貼り付けてください"
+  }
 }

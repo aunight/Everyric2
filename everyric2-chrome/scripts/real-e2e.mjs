@@ -6,6 +6,8 @@
 //
 // 사전 조건: 실서버가 :8000에 떠 있어야 한다 (mock-server 아님!).
 //   .venv\Scripts\python.exe -m uvicorn everyric2.server.main:app --port 8000
+// 주소는 반드시 127.0.0.1 — 이 개발 머신은 localhost가 IPv6 폴백 스톨로 요청당 2초를
+// 먹는다. 확장 기본 serverUrl이 프로드로 바뀐 뒤로는 설정에 로컬 주소를 명시해야 한다.
 // 실행: node scripts/real-e2e.mjs [videoUrl] [koreanTitle]
 //   기본: 로키 공식 MV (Xg-qfsKN2_E) + "로키" — LRCLIB 미수록이라 전체 폴백 체인이 재현됨
 import { chromium } from 'playwright';
@@ -30,7 +32,7 @@ function check(ok, label, detail) {
 
 // 0) 실서버 확인 — mock이 아니라 실제 FastAPI인지 /health 응답 형태로 구분
 try {
-  const health = await (await fetch('http://localhost:8000/health', { signal: AbortSignal.timeout(3000) })).json();
+  const health = await (await fetch('http://127.0.0.1:8000/health', { signal: AbortSignal.timeout(3000) })).json();
   if (!check(health.status === 'healthy' && 'gpu_available' in health, 'real server /health', health)) process.exit(1);
 } catch (e) {
   console.log('FAIL: server not reachable on :8000 —', String(e).slice(0, 120));
@@ -38,9 +40,15 @@ try {
 }
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'everyric-e2e-'));
-const channel = process.env.EVERYRIC_E2E_CHANNEL ?? 'msedge'; // Chrome 137+는 --load-extension 무시
+// Chrome 137+는 --load-extension 무시. msedge는 사용자의 실사용 Edge가 떠 있으면 기동이
+// 179초+ 행에 걸린다(2026-07-28 실측) — 기본은 번들 Chromium(오픈 빌드라 확장 로드 지원).
+// 특정 채널을 원하면 EVERYRIC_E2E_CHANNEL=msedge 처럼 지정한다.
+const channel = process.env.EVERYRIC_E2E_CHANNEL ?? '';
 const ctx = await chromium.launchPersistentContext(userDataDir, {
-  channel,
+  // Playwright 신버전은 --disable-extensions-except를 줘도 기본 --disable-extensions를
+  // 빼주지 않는다(구버전 특례 삭제) — 이게 남으면 --load-extension이 조용히 무시된다.
+  ignoreDefaultArgs: ['--disable-extensions'],
+  ...(channel ? { channel } : {}),
   headless: false,
   viewport: { width: 1440, height: 900 },
   args: [
@@ -58,7 +66,11 @@ const SR = `document.getElementById('everyric-root')?.shadowRoot`;
 try {
   const sw = ctx.serviceWorkers()[0] ?? await ctx.waitForEvent('serviceworker', { timeout: 15000 });
   console.log('extension loaded:', sw.url());
-  await sw.evaluate(s => chrome.storage.local.set({ settings: s }), { debugInfo: true });
+  await sw.evaluate(s => chrome.storage.local.set({ settings: s }), {
+    debugInfo: true,
+    serverUrl: 'http://127.0.0.1:8000',
+    ...(process.env.EVERYRIC_E2E_SETTINGS ? JSON.parse(process.env.EVERYRIC_E2E_SETTINGS) : {}),
+  });
 
   const page = ctx.pages()[0] ?? await ctx.newPage();
   page.on('console', msg => {

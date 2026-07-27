@@ -1,360 +1,1437 @@
 {
-  "pip.solfege.names": { "message": "Do,Do#,Re,Re#,Mi,Fa,Fa#,Sol,Sol#,La,La#,Ti" },
-  "pip.docTitle": { "message": "Everyric Lyrics" },
-  "pip.controls.playPause": { "message": "Play/Pause" },
-  "pip.controls.prevTrack": { "message": "Previous track" },
-  "pip.controls.nextTrack": { "message": "Next track" },
-  "pip.controls.playlist": { "message": "Playlist" },
-  "pip.controls.mute": { "message": "Mute" },
-  "pip.controls.unmute": { "message": "Unmute" },
-  "pip.controls.melody": { "message": "Play melody (synthesized notes)" },
-  "pip.controls.metronome": { "message": "Metronome" },
-  "pip.controls.metronomeRate": { "message": "Metronome speed (½× → 1× → 2×)" },
-  "pip.controls.metronomeBeat": { "message": "Set downbeat (accent and bar lines move together)" },
-  "pip.controls.windowMinus": { "message": "Halve visible range (fewer bars)" },
-  "pip.controls.windowLabel": { "message": "Visible range (bars shown on screen)" },
-  "pip.controls.windowPlus": { "message": "Double visible range (more bars)" },
-  "pip.controls.modeToggle": { "message": "Switch mode — fixed screen (playhead moves) ↔ scroll (playhead fixed)" },
-  "pip.controls.modeFixed": { "message": "Fixed" },
-  "pip.controls.modeScroll": { "message": "Scroll" },
-  "pip.controls.volume": { "message": "Volume" },
-  "pip.controls.progressSeek": { "message": "Click to seek" },
-  "pip.controls.karaokeToggle": { "message": "Toggle karaoke pitch lane" },
-  "pip.controls.videoToggle": { "message": "Toggle video display" },
-  "pip.controls.panelToggle": { "message": "Open/close lyrics search panel" },
-  "pip.controls.laneHeightDrag": { "message": "Drag to resize the karaoke lane" },
-  "pip.controls.videoRatioDrag": { "message": "Drag to resize video/lyrics ratio" },
-  "pip.songKeyLabel": { "message": "Key $1$" },
-  "pip.debug.laneOriginal": { "message": "Original" },
-  "pip.debug.laneHeard": { "message": "Heard" },
-  "pip.debug.lanePron": { "message": "Pron." },
-  "pip.debug.alignPrefix": { "message": "Align " },
-  "pip.debug.gradeOk": { "message": "good$1$%" },
-  "pip.debug.gradeMid": { "message": " mid$1$%" },
-  "pip.debug.gradeLow": { "message": " low$1$%" },
-  "pip.debug.alignmentTextPrefix": { "message": " · transcribed:$1$" },
-  "pip.debug.scaffoldApplied": { "message": " · caption scaffold $1$ lines(pinned$2$·interp$3$·kept$4$)" },
-  "pip.debug.scaffoldSkipped": { "message": " · caption scaffold unused:$1$" },
-
-  "debugPanel.confLow": { "message": "Low" },
-  "debugPanel.confMid": { "message": "Mid" },
-  "debugPanel.confOk": { "message": "Good" },
-  "debugPanel.scaffoldApplied": { "message": "Caption scaffold applied — $1$ lines moved (caption-pinned $2$% · pinned $3$·interp $4$·kept $5$)" },
-  "debugPanel.scaffoldSkipped": { "message": "Caption scaffold not used — $1$" },
-  "debugPanel.empty": { "message": "No lines to show" },
-  "debugPanel.heardPrefix": { "message": "Heard: $1$" },
-  "debugPanel.seekTitle": { "message": "Click to seek to this segment" },
-
-  "panels.serverLog.loadHint": { "message": "Expand to load" },
-  "panels.serverLog.title": { "message": "Recent server requests" },
-  "panels.serverLog.loading": { "message": "Loading…" },
-  "panels.serverLog.empty": { "message": "No requests yet (resets when the extension reloads)" },
-  "panels.serverBar.permissionNeeded": { "message": "Self-hosted server access isn't granted on install (the default server doesn't need it). If you used to have it, an extension update may have revoked it — granting it once keeps it enabled." },
-  "panels.serverBar.openPermissions": { "message": "Open permission settings" },
-  "panels.serverBar.openPermissionsTitle": { "message": "Opens a new tab to grant access to local server addresses" },
-  "panels.serverBar.recheck": { "message": "Check again" },
-  "panels.serverBar.recheckTitle": { "message": "Try reconnecting to the server" },
-  "panels.serverBar.openSettings": { "message": "Open settings" },
-  "panels.serverBar.openSettingsTitle": { "message": "Check the server URL and API key" },
-  "panels.search.titlePlaceholder": { "message": "Song title" },
-  "panels.search.artistPlaceholder": { "message": "Artist (optional)" },
-  "panels.search.namuwiki": { "message": "Namu Wiki" },
-  "panels.search.google": { "message": "Google" },
-  "panels.search.lyricsWord": { "message": "lyrics" },
-  "panels.search.externalLinksLabel": { "message": "Look for lyrics elsewhere" },
-  "panels.search.externalLinkTitle": { "message": "Search \"$2$\" on $1$ (new tab)" },
-  "panels.paste.placeholder": { "message": "Paste lyrics here and AI will time them for you\nPart labels ([Verse], Chorus, etc.) and comment lines are filtered out automatically." },
-  "panels.paste.attributionPlaceholder": { "message": "Source (optional) — e.g. Namu Wiki, Genius" },
-  "panels.paste.attributionTitle": { "message": "Note where these lyrics came from and it's saved with the sync and shown in the source badge. You can leave this blank." },
-  "panels.paste.filterNote": { "message": "Part labels ([Verse], Chorus) and comment/credit lines are removed automatically — we'll tell you what was removed" },
-  "panels.paste.generateButton": { "message": "Generate sync from pasted lyrics" },
-  "panels.paste.emptyWarning": { "message": "Paste lyrics first" },
-  "panels.paste.closeToggle": { "message": "Close paste box" },
-  "panels.paste.openToggle": { "message": "Paste lyrics manually" },
-  "panels.serverDown.text": { "message": "Server unavailable" },
-  "panels.serverDown.note": { "message": "Lyrics search still works without the server, but this song wasn't found on external sources either. Generating, regenerating, and translating sync requires the server." },
-  "panels.serverDown.retry": { "message": "Search lyrics again" },
-  "panels.serverDown.retryTitlePermission": { "message": "Grant the permission, then click to search again from scratch" },
-  "panels.serverDown.retryTitleOther": { "message": "Fix the server, then click to search again from scratch" },
-  "panels.empty.searchAgain": { "message": "Search again" },
-  "panels.empty.title": { "message": "No lyrics found" },
-  "panels.empty.detailedSearch": { "message": "Detailed search (pick a result, link a sync)" },
-  "panels.loading.manualSearch": { "message": "Search manually instead of waiting" },
-  "panels.error.retry": { "message": "Retry" },
-  "panels.generating.note": { "message": "Feel free to keep watching. This updates automatically when done." },
-  "panels.searchSheet.searchButton": { "message": "Search" },
-  "panels.searchSheet.searching": { "message": "Searching…" },
-  "panels.searchSheet.back": { "message": "← Back to lyrics" },
-  "panels.searchSheet.title": { "message": "Search lyrics — pick a result directly" },
-  "panels.searchSheet.sub": { "message": "Searches Vocaloid Lyrics Wiki (pronunciation & translation) + LRCLIB (synced lyrics) together" },
-  "panels.searchSheet.serverBadNote": { "message": "LRCLIB search still works, but matching original titles on Vocaloid Lyrics Wiki and generating sync needs the server." },
-  "panels.results.empty": { "message": "No results — try a shorter title or the original-language (Japanese) title" },
-  "panels.results.pronTranslationMeta": { "message": "Pron. & translation" },
-  "panels.results.syncedMeta": { "message": "Synced" },
-  "panels.results.plainMeta": { "message": "Plain" },
-  "panels.results.vocaroLabel": { "message": "Vocaloid Lyrics Wiki" },
-  "panels.results.lrclibLabel": { "message": "LRCLIB" },
-
-  "overlay.detecting": { "message": "Detecting song…" },
-  "overlay.header.pip": { "message": "View in Picture-in-Picture" },
-  "overlay.header.regen": { "message": "Regenerate sync (ignore server cache)" },
-  "overlay.header.regenConfirm": { "message": "Regenerate the server sync?\nThis takes about a minute; the current lyrics stay visible until it's done." },
-  "overlay.header.search": { "message": "Search lyrics again (pick another result)" },
-  "overlay.header.settings": { "message": "Settings" },
-  "overlay.header.collapse": { "message": "Collapse" },
-  "overlay.header.expand": { "message": "Expand" },
-  "overlay.header.close": { "message": "Close (reopen from the toolbar icon)" },
-  "overlay.genChip.title": { "message": "Click to expand my generation queue" },
-  "overlay.genChip.cancel": { "message": "Cancel transcription" },
-  "overlay.genChip.cancelConfirm": { "message": "Cancel the transcription in progress?" },
-  "overlay.resumeChip": { "message": "Back to current lyrics" },
-  "overlay.footer.syncCaption": { "message": "Sync" },
-  "overlay.footer.pullEarlier": { "message": "Shift lyrics 0.1s earlier" },
-  "overlay.footer.pushLater": { "message": "Shift lyrics 0.1s later" },
-  "overlay.footer.resetLabel": { "message": "Reset" },
-  "overlay.footer.resetTitle": { "message": "Reset offset" },
-  "overlay.debug.waiting": { "message": "debug: waiting…" },
-  "overlay.debug.toggleAll": { "message": "All" },
-  "overlay.debug.toggleAllTitle": { "message": "Whole-song debug panel — original vs. heard, side by side. Click a row to seek." },
-  "overlay.debug.created": { "message": "created=$1$" },
-  "overlay.debug.grades": { "message": "align good$1$%·mid$2$%·low$3$%" },
-  "overlay.debug.alignmentText": { "message": "alignedText=$1$" },
-  "overlay.debug.alignmentPronunciation": { "message": "pronunciation (Korean reading)" },
-  "overlay.debug.alignmentOriginal": { "message": "original text" },
-  "overlay.loading.default": { "message": "Searching for lyrics…" },
-  "overlay.banner.aiKaraoke": { "message": "AI transcription can add karaoke (pitch & pronunciation)" },
-  "overlay.banner.aiTranscribe": { "message": "Run AI transcription" },
-  "overlay.line.seekTitle": { "message": "Click to jump to this line" },
-  "overlay.plain.generateSync": { "message": "Generate sync" },
-  "overlay.plain.noTimesync": { "message": "These lyrics have no timesync" },
-  "overlay.search.backToAuto": { "message": "Back to automatic search" },
-  "overlay.search.resetSync": { "message": "Reset this video's sync (delete from server)" },
-  "overlay.search.resetSyncTitle": { "message": "Completely erases a sync made from mispasted lyrics so you can start over" },
-  "overlay.search.resetSyncConfirm": { "message": "Delete all server sync data for this video (timing, pronunciation, translation)?\nAutomatic search runs again afterward, and you can paste new lyrics." },
-  "overlay.link.srcPlaceholder": { "message": "Original video URL or ID (must already have a transcription)" },
-  "overlay.link.offsetPlaceholder": { "message": "Offset (sec)" },
-  "overlay.link.offsetTitle": { "message": "Positive if this video starts later than the original, negative if earlier" },
-  "overlay.link.ratePlaceholder": { "message": "Rate" },
-  "overlay.link.rateTitle": { "message": "Playback rate vs. the original — nightcore≈1.25, use 1 for the same speed" },
-  "overlay.link.filterPlaceholder": { "message": "Search saved syncs — first line, video ID, or source" },
-  "overlay.link.needVideoId": { "message": "Enter a video URL or 11-character ID" },
-  "overlay.link.connecting": { "message": "Connecting…" },
-  "overlay.link.sectionTitle": { "message": "Link another video's sync (for instrumentals/covers)" },
-  "overlay.link.verifiedBadge": { "message": " · verified" },
-  "overlay.link.unverifiedBadge": { "message": " · unverified" },
-  "overlay.link.currentStatus": { "message": "Linked to $1$ ($2$)$3$" },
-  "overlay.link.unlink": { "message": "Unlink" },
-  "overlay.link.connect": { "message": "Link" },
-  "overlay.link.pickFromList": { "message": "Pick from server's saved syncs" },
-  "overlay.link.loadingList": { "message": "Loading list…" },
-  "overlay.link.noSavedSyncs": { "message": "No syncs saved on the server" },
-  "overlay.link.noFilterMatch": { "message": "No syncs match your search" },
-  "overlay.link.pickHint": { "message": "Clicking an item fills the source field — check the offset, then click 'Link'" },
-  "overlay.link.noFirstLine": { "message": "(no first line)" },
-  "overlay.link.lineCountMeta": { "message": "$1$ lines" },
-  "overlay.link.describeVerified": { "message": "Borrowed sync from $1$ · auto-linked, verified by audio correlation" },
-  "overlay.link.describeUnverified": { "message": "Borrowed sync from $1$ · manually linked, unverified — adjust the offset or unlink if it drifts" },
-  "overlay.link.describeUnknown": { "message": "Borrowed sync from $1$ · verification unknown (older server)" },
-  "overlay.generating.default": { "message": "Generating sync… $1$%" },
-  "overlay.pip.placeholder": { "message": "Lyrics are showing in the Picture-in-Picture window" },
-  "overlay.pip.backToPanel": { "message": "Back to panel" },
-  "overlay.settings.serverStatusTitle": { "message": "Server status — $1$" },
-  "overlay.warn.text": { "message": "The transcription may be inaccurate (alignment confidence $1$)" },
-  "overlay.warn.title": { "message": "The average alignment confidence for transcription/pronunciation is low. Check that the original lyrics are correct, or try regenerating." },
-  "overlay.warn.close": { "message": "Dismiss this warning (you can also turn it off in settings)" },
-  "overlay.genList.currentVideo": { "message": "$1$ (current video)" },
-  "overlay.source.vocaro": { "message": "Vocaloid Lyrics Wiki" },
-  "overlay.source.caption": { "message": "YouTube captions" },
-  "overlay.source.syncedLyrics": { "message": "Synced lyrics" },
-  "overlay.source.plainLyrics": { "message": "Plain lyrics" },
-  "overlay.source.openPage": { "message": "Open source page" },
-  "overlay.settings.fontSize.small": { "message": "Small" },
-  "overlay.settings.fontSize.medium": { "message": "Medium" },
-  "overlay.settings.fontSize.large": { "message": "Large" },
-  "overlay.settings.optAuto": { "message": "Auto" },
-  "overlay.settings.theme.dark": { "message": "Dark" },
-  "overlay.settings.theme.light": { "message": "Light" },
-  "overlay.settings.pronScript.hangul": { "message": "Hangul" },
-  "overlay.settings.pronScript.romaji": { "message": "Romaji" },
-  "overlay.settings.pronScript.kana": { "message": "Kana" },
-  "overlay.settings.sourcePriority.vocaro": { "message": "Vocaloid Lyrics Wiki first" },
-  "overlay.settings.sourcePriority.lrclib": { "message": "LRCLIB first" },
-  "overlay.settings.pitchWindow.half": { "message": "½ bar" },
-  "overlay.settings.pitchWindow.bars": { "message": "$1$ bar(s)" },
-  "overlay.settings.pitchMode.page": { "message": "Fixed screen · playhead moves" },
-  "overlay.settings.pitchMode.scroll": { "message": "Scroll · playhead fixed" },
-  "overlay.settings.pitchFont.normal": { "message": "Medium" },
-  "overlay.settings.pitchFont.large": { "message": "Large" },
-  "overlay.settings.pitchFont.xlarge": { "message": "Extra large" },
-  "overlay.settings.pitchFont.small": { "message": "Small" },
-  "overlay.settings.pronPosition.note": { "message": "Above notes" },
-  "overlay.settings.pronPosition.bottom": { "message": "Bottom of screen" },
-  "overlay.settings.metronomeRate.half": { "message": "½× (half notes)" },
-  "overlay.settings.metronomeRate.one": { "message": "1× (quarter notes)" },
-  "overlay.settings.metronomeRate.two": { "message": "2× (eighth notes)" },
-  "overlay.settings.metronomeBeat.n": { "message": "beat $1$" },
-  "overlay.settings.micOctave.n": { "message": "$1$ octave" },
-  "overlay.settings.micOctave.none": { "message": "No correction" },
-  "overlay.settings.permBtnTitle": { "message": "Opens a new tab to grant access to your self-hosted server" },
-  "overlay.settings.apiKeyPlaceholder": { "message": "(optional) server API key" },
-  "overlay.settings.row.autoSearch": { "message": "Auto-search lyrics (music videos only)" },
-  "overlay.settings.row.autoSearchTitle": { "message": "Detects music videos from YouTube Music metadata, channel, and title, then opens the lyrics panel automatically. You can still open it manually from the toolbar icon when this is off." },
-  "overlay.settings.row.autoSearchShorts": { "message": "Auto-search on Shorts too" },
-  "overlay.settings.row.autoSearchShortsTitle": { "message": "Off by default — the lyrics panel doesn't open automatically on Shorts. You can still open it manually from the toolbar icon at any time." },
-  "overlay.settings.row.fontSize": { "message": "Font size" },
-  "overlay.settings.row.theme": { "message": "Theme" },
-  "overlay.settings.row.showTranslation": { "message": "Show translation" },
-  "overlay.settings.row.translationLanguage": { "message": "Translation language" },
-  "overlay.settings.row.uiLanguage": { "message": "Display language" },
-  "overlay.settings.row.pronScript": { "message": "Pronunciation script" },
-  "overlay.settings.row.showPronunciation": { "message": "Show pronunciation (when available)" },
-  "overlay.settings.row.sourcePriority": { "message": "Lyrics source priority" },
-  "overlay.settings.row.pipKeepPanel": { "message": "Keep panel lyrics during PiP" },
-  "overlay.settings.row.pipShowVideo": { "message": "Show video together in PiP" },
-  "overlay.settings.row.pitchGuide": { "message": "Karaoke pitch lane (BETA · PiP)" },
-  "overlay.settings.row.pitchWindow": { "message": "Pitch lane visible range" },
-  "overlay.settings.row.pitchMode": { "message": "Pitch lane scroll mode" },
-  "overlay.settings.row.pitchFont": { "message": "Pitch lane text size" },
-  "overlay.settings.row.pitchCountdown": { "message": "Countdown before lyrics start" },
-  "overlay.settings.row.pitchF0Curve": { "message": "Show raw pitch curve (f0)" },
-  "overlay.settings.row.pitchF0CurveTitle": { "message": "Shows the raw melody curve extracted by the pitch model as a blue line on the lane. Can be toggled independently of debug mode." },
-  "overlay.settings.row.pronPosition": { "message": "Pronunciation position" },
-  "overlay.settings.row.pronPositionTitle": { "message": "Where to show pronunciation for songs with syllable timing. Above notes = attached right below each note; bottom = centered at the bottom with a progress gradient." },
-  "overlay.settings.row.melodyPlayback": { "message": "Play melody (karaoke window)" },
-  "overlay.settings.row.melodyPlaybackTitle": { "message": "Plays the transcribed notes as a synthesizer. Only sounds while the karaoke window is open." },
-  "overlay.settings.row.metronome": { "message": "Metronome" },
-  "overlay.settings.row.metronomeTitle": { "message": "Ticks to the server-estimated BPM (assumes 4/4, accented every 4th beat)." },
-  "overlay.settings.row.metronomeRate": { "message": "Metronome speed" },
-  "overlay.settings.row.metronomeRateTitle": { "message": "Use 2× (eighth notes) for songs that feel slow, ½× for very fast ones. You can also change this from a button inside the karaoke window." },
-  "overlay.settings.row.metronomeBeat": { "message": "Downbeat" },
-  "overlay.settings.row.metronomeBeatTitle": { "message": "Shifts the downbeat when a song's first accent doesn't line up. The metronome accent and lane bar lines move together." },
-  "overlay.settings.row.audioOut": { "message": "Karaoke audio output device" },
-  "overlay.settings.row.audioOutTitle": { "message": "Only the melody and metronome play through this device. Video audio uses your regular output." },
-  "overlay.settings.row.micPitch": { "message": "Show mic pitch (lane)" },
-  "overlay.settings.row.micPitchTitle": { "message": "Shows your sung pitch as a teal trail on the karaoke lane. Turning this on requests microphone access." },
-  "overlay.settings.row.micDevice": { "message": "Microphone device" },
-  "overlay.settings.row.micOctave": { "message": "Mic octave correction" },
-  "overlay.settings.row.micOctaveTitle": { "message": "If your mic trail draws an octave above or below the notes, correct it here." },
-  "overlay.settings.deviceNote": { "message": "Device names only appear after you grant microphone access once" },
-  "overlay.settings.serverUrlLabel": { "message": "Sync server URL " },
-  "overlay.settings.apiKeyLabel": { "message": "API key" },
-  "overlay.settings.row.lowConfWarning": { "message": "Low alignment confidence warning" },
-  "overlay.settings.row.lowConfWarningTitle": { "message": "Shows a warning bar at the top of the lyrics panel for songs with very low transcription confidence." },
-  "overlay.settings.row.notifyOnComplete": { "message": "Notify when transcription completes" },
-  "overlay.settings.row.notifyOnCompleteTitle": { "message": "Sends a browser notification when a queued transcription finishes, even in another tab." },
-  "overlay.settings.row.debugInfo": { "message": "Show debug info" },
-  "overlay.settings.serverRequiredNote": { "message": "Generating sync and translating requires the Everyric server" },
-  "overlay.settings.closeButton": { "message": "Close" },
-  "overlay.settings.deviceN": { "message": "Device $1$" },
-  "overlay.settings.defaultOutput": { "message": "Default output" },
-  "overlay.settings.defaultMic": { "message": "Default microphone" },
-
-  "options.pageTitle": { "message": "Everyric Permission Settings" },
-  "options.subtitle": { "message": "Grant or revoke access to your self-hosted (local) sync server here." },
-  "options.intro1": { "message": "Everyric uses the <code>https://everyric.moref.co</code> sync server by default. Access to it is already granted on install, so <strong>there's nothing to do here</strong>." },
-  "options.intro2": { "message": "This page is only needed if you <strong>run your own server</strong>. Local server addresses are only used by a few self-hosters, so instead of requiring this permission for everyone on install, it's an <em>optional permission</em> granted only by those who need it. Granting it lets the extension send lyrics/sync requests to that address; revoking it stops that immediately." },
-  "options.currentServerHeading": { "message": "Current sync server" },
-  "options.serverUrlLoading": { "message": "Loading…" },
-  "options.serverKindChecking": { "message": "Checking" },
-  "options.serverNoteDefault": { "message": "Change the server address from the settings (⚙) in the YouTube lyrics panel — this page only handles permissions." },
-  "options.permHeading": { "message": "Local server access permission" },
-  "options.grantButtonDefault": { "message": "Grant" },
-  "options.revokeButtonDefault": { "message": "Revoke" },
-  "options.recheckButton": { "message": "Check status again" },
-  "options.tipsHeading": { "message": "Good to know" },
-  "options.tip1": { "message": "Granting persists until you remove the extension — it's a one-time action." },
-  "options.tip2": { "message": "An extension update can revoke this permission, suddenly disconnecting your self-hosted server. If that happens, just grant it again here." },
-  "options.tip3": { "message": "You can also check and change site access from Everyric's details on <code>chrome://extensions</code>. Changes made there show up here too." },
-  "options.tip4": { "message": "A local server on a different port, or a third-party server address, requires rebuilding the extension to use." },
-  "options.serverKind.remote": { "message": "Remote server" },
-  "options.serverNote.remote": { "message": "Your current setting is a remote server, so this page's permission isn't needed. Change the server address from the settings (⚙) in the YouTube lyrics panel." },
-  "options.serverKind.notAllowed": { "message": "Can't be granted" },
-  "options.serverNote.notAllowed": { "message": "$1$ isn't an address the extension can grant access to. The local addresses it can grant are only $2$ — a different port or address requires rebuilding the extension." },
-  "options.serverKind.grantedLocal": { "message": "Local server · granted" },
-  "options.serverKind.needsPermLocal": { "message": "Local server · needs permission" },
-  "options.serverNote.granted": { "message": "Requests can be sent to this address." },
-  "options.serverNote.needsPerm": { "message": "Grant access below to send requests to this address. (Requests go to $1$)" },
-  "options.currentServerMarker": { "message": "Currently configured server" },
-  "options.badgeGranted": { "message": "Granted" },
-  "options.badgeNotGranted": { "message": "Not granted" },
-  "options.grantButton.preemptive": { "message": "Pre-grant local server access" },
-  "options.grantButton.normal": { "message": "Grant local server access" },
-  "options.revokeButton.all": { "message": "Revoke all permissions" },
-  "options.revokeButton.one": { "message": "Revoke permission" },
-  "options.grantResult.success": { "message": "Granted. Any open YouTube tabs' lyrics panels will recheck automatically." },
-  "options.grantResult.denied": { "message": "Not granted. This permission is required to use a self-hosted server; the default server (everyric.moref.co) works without it." },
-  "options.grantResult.error": { "message": "Couldn't request the permission — $1$" },
-  "options.revokeResult.success": { "message": "Revoked. Requests will no longer go to your local server — the lyrics panel will show a permission-needed notice again." },
-  "options.revokeResult.failure": { "message": "Couldn't revoke it." },
-  "options.revokeResult.error": { "message": "Couldn't revoke it — $1$" },
-
-  "content.notice.permPageFailed": { "message": "Couldn't open the permission settings page — open Everyric's \"Extension options\" from the extensions management page (chrome://extensions) instead" },
-  "content.notice.candidateLoadFailed": { "message": "Couldn't load the selected lyrics — try another result" },
-  "content.failure.generateRequest": { "message": "The sync generation request failed." },
-  "content.failure.regenerateRequest": { "message": "The regeneration request failed." },
-  "content.failure.resetSync": { "message": "Resetting the sync failed." },
-  "content.failure.cancelRequest": { "message": "The cancel request failed." },
-
-  "content.linkProbe.chip": { "message": "Same song suspected — checking auto-link…" },
-  "content.link.cannotSelf": { "message": "Can't link a video to itself" },
-  "content.link.replaceOwnConfirm": { "message": "This video already has its own transcription.\nLinking will delete it and use the original video's sync instead. Continue?" },
-  "content.link.cancelledKeepOwn": { "message": "Linking cancelled — keeping your own transcription" },
-  "content.link.ownDeleteFailed": { "message": "Couldn't delete the existing transcription$1$" },
-  "content.link.failedWithNote": { "message": "Linking failed — $1$" },
-  "content.link.failedNoNote": { "message": "Linking failed — check that the original video has a transcription (sync)" },
-  "content.link.unlinkFailed": { "message": "Unlinking failed$1$" },
-  "content.link.unlinkFailedCheckServer": { "message": " — check the server status" },
-  "content.link.autoConfSuffix": { "message": " (audio match $1$%)" },
-  "content.link.autoLinked": { "message": "Auto-linked — pulled in this song's sync$1$" },
-  "content.debug.zoneAdlib": { "message": "ad-lib★" },
-  "content.debug.zoneVocal": { "message": "vocal" },
-  "content.debug.zoneInstrumental": { "message": "instrumental/silent" },
-  "content.age.justNow": { "message": "just now" },
-  "content.age.minutesAgo": { "message": "$1$ min ago" },
-  "content.age.hoursAgo": { "message": "$1$ hr ago" },
-  "content.age.daysAgo": { "message": "$1$ day(s) ago" },
-  "content.translation.unavailable": { "message": "Translation unavailable — $1$" },
-  "content.translation.generating": { "message": "Generating translation & pronunciation…" },
-  "content.translation.failedWithStatus": { "message": "Translation failed — $1$" },
-  "content.translation.failedNoResult": { "message": "Translation failed — the server didn't return a result" },
-  "content.translation.lineCountMismatch": { "message": "Couldn't apply the translation — line counts don't match (translation: $1$ lines · lyrics: $2$ lines)" },
-  "content.translation.partialFailure": { "message": "Translation partially failed — $1$ line(s) didn't get a result from the server" },
-  "content.translation.aiGenerating": { "message": "Generating AI translation & pronunciation…" },
-  "content.error.lyricsLoadFailed": { "message": "Couldn't load lyrics" },
-  "content.error.candidatesLoadFailed": { "message": "Couldn't load candidates — $1$" },
-  "content.error.unknown": { "message": "unknown error" },
-  "content.error.jobGone": { "message": "Couldn't find that job on the server (it may have restarted) — try generating again" },
-  "content.error.syncGenerationFailed": { "message": "Sync generation failed" },
-  "content.loading.selectedCandidate": { "message": "Loading the selected lyrics…" },
-  "content.generate.blockedAutoCaption": { "message": "These are auto-generated captions, so transcription may be inaccurate — paste accurate lyrics to generate a sync" },
-  "content.generate.tooManyLines": { "message": "The lyrics are too long ($1$ lines) — shorten them to 500 lines or fewer" },
-  "content.generate.autoCaptionBlocked": { "message": "Auto-generated captions aren't accurate enough to build a sync from — search for lyrics or paste them instead" },
-  "content.notify.transcribeComplete": { "message": "Transcription complete" },
-  "content.notify.transcribeFailed": { "message": "Transcription failed" },
-  "content.notify.otherVideoReady": { "message": "$1$ — sync is ready. Open the video to check it out" },
-  "content.queue.position": { "message": "queue position $1$" },
-  "content.queue.label": { "message": "queued" },
-  "content.completion.notLoadedMsg": { "message": "$1$ — couldn't load the sync" },
-  "content.completion.notLoadedWarning": { "message": "Couldn't load the sync" },
-  "content.completion.readyMsg": { "message": "$1$ — lyrics sync is ready" },
-  "content.completion.pronWord": { "message": "pronunciation" },
-  "content.completion.partialPron": { "message": "pronunciation $1$/$2$ lines" },
-  "content.completion.trWord": { "message": "translation" },
-  "content.completion.partialTr": { "message": "translation $1$/$2$ lines" },
-  "content.completion.allReadyMsg": { "message": "$1$ — lyrics sync, pronunciation, and translation are all ready" },
-  "content.completion.partialReadyMsg": { "message": "$1$ — sync is ready, but some lines are empty ($2$)" },
-  "content.completion.partialReadyWarning": { "message": "Only $1$ was added to some lines — try regenerating" },
-  "content.completion.missingMsg": { "message": "$1$ — sync was made, but $2$ is missing$3$" },
-  "content.completion.missingWarning": { "message": "Sync was made, but $1$ wasn't added$2$ — try regenerating" },
-  "content.genChip.preparing": { "message": "Preparing to generate sync — requesting AI translation & pronunciation…" },
-  "content.genChip.stageProgress": { "message": "$1$ $2$% · overall $3$%" },
-  "content.genChip.percentOnly": { "message": "$1$%" },
-  "content.genChip.transcribing": { "message": "Transcribing $1$$2$" },
-  "content.genChip.othersSuffix": { "message": " · $1$ more" },
-  "content.genChip.othersOnly": { "message": "Transcribing $1$ other video(s)" },
-  "content.genChip.stageOnly": { "message": "$1$ $2$%" },
-
-  "serverError.lyrics_too_long": { "message": "The lyrics are too long — shorten them and try again" },
-  "serverError.video_too_long": { "message": "This video is too long — that length isn't supported yet" },
-  "serverError.captions_no_text": { "message": "This caption track has no text — pick a different track or paste the lyrics" }
+  "pip_solfege_names": {
+    "message": "Do,Do#,Re,Re#,Mi,Fa,Fa#,Sol,Sol#,La,La#,Ti"
+  },
+  "pip_docTitle": {
+    "message": "Everyric Lyrics"
+  },
+  "pip_controls_playPause": {
+    "message": "Play/Pause"
+  },
+  "pip_controls_prevTrack": {
+    "message": "Previous track"
+  },
+  "pip_controls_nextTrack": {
+    "message": "Next track"
+  },
+  "pip_controls_playlist": {
+    "message": "Playlist"
+  },
+  "pip_controls_mute": {
+    "message": "Mute"
+  },
+  "pip_controls_unmute": {
+    "message": "Unmute"
+  },
+  "pip_controls_melody": {
+    "message": "Play melody (synthesized notes)"
+  },
+  "pip_controls_metronome": {
+    "message": "Metronome"
+  },
+  "pip_controls_metronomeRate": {
+    "message": "Metronome speed (½× → 1× → 2×)"
+  },
+  "pip_controls_metronomeBeat": {
+    "message": "Set downbeat (accent and bar lines move together)"
+  },
+  "pip_controls_windowMinus": {
+    "message": "Halve visible range (fewer bars)"
+  },
+  "pip_controls_windowLabel": {
+    "message": "Visible range (bars shown on screen)"
+  },
+  "pip_controls_windowPlus": {
+    "message": "Double visible range (more bars)"
+  },
+  "pip_controls_modeToggle": {
+    "message": "Switch mode — fixed screen (playhead moves) ↔ scroll (playhead fixed)"
+  },
+  "pip_controls_modeFixed": {
+    "message": "Fixed"
+  },
+  "pip_controls_modeScroll": {
+    "message": "Scroll"
+  },
+  "pip_controls_volume": {
+    "message": "Volume"
+  },
+  "pip_controls_progressSeek": {
+    "message": "Click to seek"
+  },
+  "pip_controls_karaokeToggle": {
+    "message": "Toggle karaoke pitch lane"
+  },
+  "pip_controls_videoToggle": {
+    "message": "Toggle video display"
+  },
+  "pip_controls_panelToggle": {
+    "message": "Open/close lyrics search panel"
+  },
+  "pip_controls_laneHeightDrag": {
+    "message": "Drag to resize the karaoke lane"
+  },
+  "pip_controls_videoRatioDrag": {
+    "message": "Drag to resize video/lyrics ratio"
+  },
+  "pip_songKeyLabel": {
+    "message": "Key $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_laneOriginal": {
+    "message": "Original"
+  },
+  "pip_debug_laneHeard": {
+    "message": "Heard"
+  },
+  "pip_debug_lanePron": {
+    "message": "Pron."
+  },
+  "pip_debug_alignPrefix": {
+    "message": "Align "
+  },
+  "pip_debug_gradeOk": {
+    "message": "good$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_gradeMid": {
+    "message": " mid$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_gradeLow": {
+    "message": " low$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_alignmentTextPrefix": {
+    "message": " · transcribed:$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "pip_debug_scaffoldApplied": {
+    "message": " · caption scaffold $P1$ lines(pinned$P2$·interp$P3$·kept$P4$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      },
+      "p4": {
+        "content": "$4"
+      }
+    }
+  },
+  "pip_debug_scaffoldSkipped": {
+    "message": " · caption scaffold unused:$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_confLow": {
+    "message": "Low"
+  },
+  "debugPanel_confMid": {
+    "message": "Mid"
+  },
+  "debugPanel_confOk": {
+    "message": "Good"
+  },
+  "debugPanel_scaffoldApplied": {
+    "message": "Caption scaffold applied — $P1$ lines moved (caption-pinned $P2$% · pinned $P3$·interp $P4$·kept $P5$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      },
+      "p4": {
+        "content": "$4"
+      },
+      "p5": {
+        "content": "$5"
+      }
+    }
+  },
+  "debugPanel_scaffoldSkipped": {
+    "message": "Caption scaffold not used — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_empty": {
+    "message": "No lines to show"
+  },
+  "debugPanel_heardPrefix": {
+    "message": "Heard: $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugPanel_seekTitle": {
+    "message": "Click to seek to this segment"
+  },
+  "panels_serverLog_loadHint": {
+    "message": "Expand to load"
+  },
+  "panels_serverLog_title": {
+    "message": "Recent server requests"
+  },
+  "panels_serverLog_loading": {
+    "message": "Loading…"
+  },
+  "panels_serverLog_empty": {
+    "message": "No requests yet (resets when the extension reloads)"
+  },
+  "panels_serverBar_permissionNeeded": {
+    "message": "Self-hosted server access isn't granted on install (the default server doesn't need it). If you used to have it, an extension update may have revoked it — granting it once keeps it enabled."
+  },
+  "panels_serverBar_openPermissions": {
+    "message": "Open permission settings"
+  },
+  "panels_serverBar_openPermissionsTitle": {
+    "message": "Opens a new tab to grant access to local server addresses"
+  },
+  "panels_serverBar_recheck": {
+    "message": "Check again"
+  },
+  "panels_serverBar_recheckTitle": {
+    "message": "Try reconnecting to the server"
+  },
+  "panels_serverBar_openSettings": {
+    "message": "Open settings"
+  },
+  "panels_serverBar_openSettingsTitle": {
+    "message": "Check the server URL and API key"
+  },
+  "panels_search_titlePlaceholder": {
+    "message": "Song title"
+  },
+  "panels_search_artistPlaceholder": {
+    "message": "Artist (optional)"
+  },
+  "panels_search_namuwiki": {
+    "message": "Namu Wiki"
+  },
+  "panels_search_google": {
+    "message": "Google"
+  },
+  "panels_search_lyricsWord": {
+    "message": "lyrics"
+  },
+  "panels_search_externalLinksLabel": {
+    "message": "Look for lyrics elsewhere"
+  },
+  "panels_search_externalLinkTitle": {
+    "message": "Search \"$P2$\" on $P1$ (new tab)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "panels_paste_placeholder": {
+    "message": "Paste lyrics here and AI will time them for you\nPart labels ([Verse], Chorus, etc.) and comment lines are filtered out automatically."
+  },
+  "panels_paste_attributionPlaceholder": {
+    "message": "Source (optional) — e.g. Namu Wiki, Genius"
+  },
+  "panels_paste_attributionTitle": {
+    "message": "Note where these lyrics came from and it's saved with the sync and shown in the source badge. You can leave this blank."
+  },
+  "panels_paste_filterNote": {
+    "message": "Part labels ([Verse], Chorus) and comment/credit lines are removed automatically — we'll tell you what was removed"
+  },
+  "panels_paste_generateButton": {
+    "message": "Generate sync from pasted lyrics"
+  },
+  "panels_paste_emptyWarning": {
+    "message": "Paste lyrics first"
+  },
+  "panels_paste_closeToggle": {
+    "message": "Close paste box"
+  },
+  "panels_paste_openToggle": {
+    "message": "Paste lyrics manually"
+  },
+  "panels_serverDown_text": {
+    "message": "Server unavailable"
+  },
+  "panels_serverDown_note": {
+    "message": "Lyrics search still works without the server, but this song wasn't found on external sources either. Generating, regenerating, and translating sync requires the server."
+  },
+  "panels_serverDown_retry": {
+    "message": "Search lyrics again"
+  },
+  "panels_serverDown_retryTitlePermission": {
+    "message": "Grant the permission, then click to search again from scratch"
+  },
+  "panels_serverDown_retryTitleOther": {
+    "message": "Fix the server, then click to search again from scratch"
+  },
+  "panels_empty_searchAgain": {
+    "message": "Search again"
+  },
+  "panels_empty_title": {
+    "message": "No lyrics found"
+  },
+  "panels_empty_detailedSearch": {
+    "message": "Detailed search (pick a result, link a sync)"
+  },
+  "panels_loading_manualSearch": {
+    "message": "Search manually instead of waiting"
+  },
+  "panels_error_retry": {
+    "message": "Retry"
+  },
+  "panels_generating_note": {
+    "message": "Feel free to keep watching. This updates automatically when done."
+  },
+  "panels_searchSheet_searchButton": {
+    "message": "Search"
+  },
+  "panels_searchSheet_searching": {
+    "message": "Searching…"
+  },
+  "panels_searchSheet_back": {
+    "message": "← Back to lyrics"
+  },
+  "panels_searchSheet_title": {
+    "message": "Search lyrics — pick a result directly"
+  },
+  "panels_searchSheet_sub": {
+    "message": "Searches Vocaloid Lyrics Wiki (pronunciation & translation) + LRCLIB (synced lyrics) together"
+  },
+  "panels_searchSheet_serverBadNote": {
+    "message": "LRCLIB search still works, but matching original titles on Vocaloid Lyrics Wiki and generating sync needs the server."
+  },
+  "panels_results_empty": {
+    "message": "No results — try a shorter title or the original-language (Japanese) title"
+  },
+  "panels_results_pronTranslationMeta": {
+    "message": "Pron. & translation"
+  },
+  "panels_results_syncedMeta": {
+    "message": "Synced"
+  },
+  "panels_results_plainMeta": {
+    "message": "Plain"
+  },
+  "panels_results_vocaroLabel": {
+    "message": "Vocaloid Lyrics Wiki"
+  },
+  "panels_results_lrclibLabel": {
+    "message": "LRCLIB"
+  },
+  "overlay_detecting": {
+    "message": "Detecting song…"
+  },
+  "overlay_header_pip": {
+    "message": "View in Picture-in-Picture"
+  },
+  "overlay_header_regen": {
+    "message": "Regenerate sync (ignore server cache)"
+  },
+  "overlay_header_regenConfirm": {
+    "message": "Regenerate the server sync?\nThis takes about a minute; the current lyrics stay visible until it's done."
+  },
+  "overlay_header_search": {
+    "message": "Search lyrics again (pick another result)"
+  },
+  "overlay_header_settings": {
+    "message": "Settings"
+  },
+  "overlay_header_collapse": {
+    "message": "Collapse"
+  },
+  "overlay_header_expand": {
+    "message": "Expand"
+  },
+  "overlay_header_close": {
+    "message": "Close (reopen from the toolbar icon)"
+  },
+  "overlay_genChip_title": {
+    "message": "Click to expand my generation queue"
+  },
+  "overlay_genChip_cancel": {
+    "message": "Cancel transcription"
+  },
+  "overlay_genChip_cancelConfirm": {
+    "message": "Cancel the transcription in progress?"
+  },
+  "overlay_resumeChip": {
+    "message": "Back to current lyrics"
+  },
+  "overlay_footer_syncCaption": {
+    "message": "Sync"
+  },
+  "overlay_footer_pullEarlier": {
+    "message": "Shift lyrics 0.1s earlier"
+  },
+  "overlay_footer_pushLater": {
+    "message": "Shift lyrics 0.1s later"
+  },
+  "overlay_footer_resetLabel": {
+    "message": "Reset"
+  },
+  "overlay_footer_resetTitle": {
+    "message": "Reset offset"
+  },
+  "overlay_debug_waiting": {
+    "message": "debug: waiting…"
+  },
+  "overlay_debug_toggleAll": {
+    "message": "All"
+  },
+  "overlay_debug_toggleAllTitle": {
+    "message": "Whole-song debug panel — original vs. heard, side by side. Click a row to seek."
+  },
+  "overlay_debug_created": {
+    "message": "created=$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_debug_grades": {
+    "message": "align good$P1$%·mid$P2$%·low$P3$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "overlay_debug_alignmentText": {
+    "message": "alignedText=$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_debug_alignmentPronunciation": {
+    "message": "pronunciation (Korean reading)"
+  },
+  "overlay_debug_alignmentOriginal": {
+    "message": "original text"
+  },
+  "overlay_loading_default": {
+    "message": "Searching for lyrics…"
+  },
+  "overlay_banner_aiKaraoke": {
+    "message": "AI transcription can add karaoke (pitch & pronunciation)"
+  },
+  "overlay_banner_aiTranscribe": {
+    "message": "Run AI transcription"
+  },
+  "overlay_line_seekTitle": {
+    "message": "Click to jump to this line"
+  },
+  "overlay_plain_generateSync": {
+    "message": "Generate sync"
+  },
+  "overlay_plain_noTimesync": {
+    "message": "These lyrics have no timesync"
+  },
+  "overlay_search_backToAuto": {
+    "message": "Back to automatic search"
+  },
+  "overlay_search_resetSync": {
+    "message": "Reset this video's sync (delete from server)"
+  },
+  "overlay_search_resetSyncTitle": {
+    "message": "Completely erases a sync made from mispasted lyrics so you can start over"
+  },
+  "overlay_search_resetSyncConfirm": {
+    "message": "Delete all server sync data for this video (timing, pronunciation, translation)?\nAutomatic search runs again afterward, and you can paste new lyrics."
+  },
+  "overlay_link_srcPlaceholder": {
+    "message": "Original video URL or ID (must already have a transcription)"
+  },
+  "overlay_link_offsetPlaceholder": {
+    "message": "Offset (sec)"
+  },
+  "overlay_link_offsetTitle": {
+    "message": "Positive if this video starts later than the original, negative if earlier"
+  },
+  "overlay_link_ratePlaceholder": {
+    "message": "Rate"
+  },
+  "overlay_link_rateTitle": {
+    "message": "Playback rate vs. the original — nightcore≈1.25, use 1 for the same speed"
+  },
+  "overlay_link_filterPlaceholder": {
+    "message": "Search saved syncs — first line, video ID, or source"
+  },
+  "overlay_link_needVideoId": {
+    "message": "Enter a video URL or 11-character ID"
+  },
+  "overlay_link_connecting": {
+    "message": "Connecting…"
+  },
+  "overlay_link_sectionTitle": {
+    "message": "Link another video's sync (for instrumentals/covers)"
+  },
+  "overlay_link_verifiedBadge": {
+    "message": " · verified"
+  },
+  "overlay_link_unverifiedBadge": {
+    "message": " · unverified"
+  },
+  "overlay_link_currentStatus": {
+    "message": "Linked to $P1$ ($P2$)$P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "overlay_link_unlink": {
+    "message": "Unlink"
+  },
+  "overlay_link_connect": {
+    "message": "Link"
+  },
+  "overlay_link_pickFromList": {
+    "message": "Pick from server's saved syncs"
+  },
+  "overlay_link_loadingList": {
+    "message": "Loading list…"
+  },
+  "overlay_link_noSavedSyncs": {
+    "message": "No syncs saved on the server"
+  },
+  "overlay_link_noFilterMatch": {
+    "message": "No syncs match your search"
+  },
+  "overlay_link_pickHint": {
+    "message": "Clicking an item fills the source field — check the offset, then click 'Link'"
+  },
+  "overlay_link_noFirstLine": {
+    "message": "(no first line)"
+  },
+  "overlay_link_lineCountMeta": {
+    "message": "$P1$ lines",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeVerified": {
+    "message": "Borrowed sync from $P1$ · auto-linked, verified by audio correlation",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeUnverified": {
+    "message": "Borrowed sync from $P1$ · manually linked, unverified — adjust the offset or unlink if it drifts",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_link_describeUnknown": {
+    "message": "Borrowed sync from $P1$ · verification unknown (older server)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_generating_default": {
+    "message": "Generating sync… $P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_pip_placeholder": {
+    "message": "Lyrics are showing in the Picture-in-Picture window"
+  },
+  "overlay_pip_backToPanel": {
+    "message": "Back to panel"
+  },
+  "overlay_settings_serverStatusTitle": {
+    "message": "Server status — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_warn_text": {
+    "message": "The transcription may be inaccurate (alignment confidence $P1$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_warn_title": {
+    "message": "The average alignment confidence for transcription/pronunciation is low. Check that the original lyrics are correct, or try regenerating."
+  },
+  "overlay_warn_close": {
+    "message": "Dismiss this warning (you can also turn it off in settings)"
+  },
+  "overlay_genList_currentVideo": {
+    "message": "$P1$ (current video)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_source_vocaro": {
+    "message": "Vocaloid Lyrics Wiki"
+  },
+  "overlay_source_caption": {
+    "message": "YouTube captions"
+  },
+  "overlay_source_syncedLyrics": {
+    "message": "Synced lyrics"
+  },
+  "overlay_source_plainLyrics": {
+    "message": "Plain lyrics"
+  },
+  "overlay_source_openPage": {
+    "message": "Open source page"
+  },
+  "overlay_settings_fontSize_small": {
+    "message": "Small"
+  },
+  "overlay_settings_fontSize_medium": {
+    "message": "Medium"
+  },
+  "overlay_settings_fontSize_large": {
+    "message": "Large"
+  },
+  "overlay_settings_optAuto": {
+    "message": "Auto"
+  },
+  "overlay_settings_theme_dark": {
+    "message": "Dark"
+  },
+  "overlay_settings_theme_light": {
+    "message": "Light"
+  },
+  "overlay_settings_pronScript_hangul": {
+    "message": "Hangul"
+  },
+  "overlay_settings_pronScript_romaji": {
+    "message": "Romaji"
+  },
+  "overlay_settings_pronScript_kana": {
+    "message": "Kana"
+  },
+  "overlay_settings_sourcePriority_vocaro": {
+    "message": "Vocaloid Lyrics Wiki first"
+  },
+  "overlay_settings_sourcePriority_lrclib": {
+    "message": "LRCLIB first"
+  },
+  "overlay_settings_pitchWindow_half": {
+    "message": "½ bar"
+  },
+  "overlay_settings_pitchWindow_bars": {
+    "message": "$P1$ bar(s)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_pitchMode_page": {
+    "message": "Fixed screen · playhead moves"
+  },
+  "overlay_settings_pitchMode_scroll": {
+    "message": "Scroll · playhead fixed"
+  },
+  "overlay_settings_pitchFont_normal": {
+    "message": "Medium"
+  },
+  "overlay_settings_pitchFont_large": {
+    "message": "Large"
+  },
+  "overlay_settings_pitchFont_xlarge": {
+    "message": "Extra large"
+  },
+  "overlay_settings_pitchFont_small": {
+    "message": "Small"
+  },
+  "overlay_settings_pronPosition_note": {
+    "message": "Above notes"
+  },
+  "overlay_settings_pronPosition_bottom": {
+    "message": "Bottom of screen"
+  },
+  "overlay_settings_metronomeRate_half": {
+    "message": "½× (half notes)"
+  },
+  "overlay_settings_metronomeRate_one": {
+    "message": "1× (quarter notes)"
+  },
+  "overlay_settings_metronomeRate_two": {
+    "message": "2× (eighth notes)"
+  },
+  "overlay_settings_metronomeBeat_n": {
+    "message": "beat $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_micOctave_n": {
+    "message": "$P1$ octave",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_micOctave_none": {
+    "message": "No correction"
+  },
+  "overlay_settings_permBtnTitle": {
+    "message": "Opens a new tab to grant access to your self-hosted server"
+  },
+  "overlay_settings_apiKeyPlaceholder": {
+    "message": "(optional) server API key"
+  },
+  "overlay_settings_row_autoSearch": {
+    "message": "Auto-search lyrics (music videos only)"
+  },
+  "overlay_settings_row_autoSearchTitle": {
+    "message": "Detects music videos from YouTube Music metadata, channel, and title, then opens the lyrics panel automatically. You can still open it manually from the toolbar icon when this is off."
+  },
+  "overlay_settings_row_autoSearchShorts": {
+    "message": "Auto-search on Shorts too"
+  },
+  "overlay_settings_row_autoSearchShortsTitle": {
+    "message": "Off by default — the lyrics panel doesn't open automatically on Shorts. You can still open it manually from the toolbar icon at any time."
+  },
+  "overlay_settings_row_fontSize": {
+    "message": "Font size"
+  },
+  "overlay_settings_row_theme": {
+    "message": "Theme"
+  },
+  "overlay_settings_row_showTranslation": {
+    "message": "Show translation"
+  },
+  "overlay_settings_row_translationLanguage": {
+    "message": "Translation language"
+  },
+  "overlay_settings_row_uiLanguage": {
+    "message": "Display language"
+  },
+  "overlay_settings_row_pronScript": {
+    "message": "Pronunciation script"
+  },
+  "overlay_settings_row_showPronunciation": {
+    "message": "Show pronunciation (when available)"
+  },
+  "overlay_settings_row_sourcePriority": {
+    "message": "Lyrics source priority"
+  },
+  "overlay_settings_row_pipKeepPanel": {
+    "message": "Keep panel lyrics during PiP"
+  },
+  "overlay_settings_row_pipShowVideo": {
+    "message": "Show video together in PiP"
+  },
+  "overlay_settings_row_pitchGuide": {
+    "message": "Karaoke pitch lane (BETA · PiP)"
+  },
+  "overlay_settings_row_pitchWindow": {
+    "message": "Pitch lane visible range"
+  },
+  "overlay_settings_row_pitchMode": {
+    "message": "Pitch lane scroll mode"
+  },
+  "overlay_settings_row_pitchFont": {
+    "message": "Pitch lane text size"
+  },
+  "overlay_settings_row_pitchCountdown": {
+    "message": "Countdown before lyrics start"
+  },
+  "overlay_settings_row_pitchF0Curve": {
+    "message": "Show raw pitch curve (f0)"
+  },
+  "overlay_settings_row_pitchF0CurveTitle": {
+    "message": "Shows the raw melody curve extracted by the pitch model as a blue line on the lane. Can be toggled independently of debug mode."
+  },
+  "overlay_settings_row_pronPosition": {
+    "message": "Pronunciation position"
+  },
+  "overlay_settings_row_pronPositionTitle": {
+    "message": "Where to show pronunciation for songs with syllable timing. Above notes = attached right below each note; bottom = centered at the bottom with a progress gradient."
+  },
+  "overlay_settings_row_melodyPlayback": {
+    "message": "Play melody (karaoke window)"
+  },
+  "overlay_settings_row_melodyPlaybackTitle": {
+    "message": "Plays the transcribed notes as a synthesizer. Only sounds while the karaoke window is open."
+  },
+  "overlay_settings_row_metronome": {
+    "message": "Metronome"
+  },
+  "overlay_settings_row_metronomeTitle": {
+    "message": "Ticks to the server-estimated BPM (assumes 4/4, accented every 4th beat)."
+  },
+  "overlay_settings_row_metronomeRate": {
+    "message": "Metronome speed"
+  },
+  "overlay_settings_row_metronomeRateTitle": {
+    "message": "Use 2× (eighth notes) for songs that feel slow, ½× for very fast ones. You can also change this from a button inside the karaoke window."
+  },
+  "overlay_settings_row_metronomeBeat": {
+    "message": "Downbeat"
+  },
+  "overlay_settings_row_metronomeBeatTitle": {
+    "message": "Shifts the downbeat when a song's first accent doesn't line up. The metronome accent and lane bar lines move together."
+  },
+  "overlay_settings_row_audioOut": {
+    "message": "Karaoke audio output device"
+  },
+  "overlay_settings_row_audioOutTitle": {
+    "message": "Only the melody and metronome play through this device. Video audio uses your regular output."
+  },
+  "overlay_settings_row_micPitch": {
+    "message": "Show mic pitch (lane)"
+  },
+  "overlay_settings_row_micPitchTitle": {
+    "message": "Shows your sung pitch as a teal trail on the karaoke lane. Turning this on requests microphone access."
+  },
+  "overlay_settings_row_micDevice": {
+    "message": "Microphone device"
+  },
+  "overlay_settings_row_micOctave": {
+    "message": "Mic octave correction"
+  },
+  "overlay_settings_row_micOctaveTitle": {
+    "message": "If your mic trail draws an octave above or below the notes, correct it here."
+  },
+  "overlay_settings_deviceNote": {
+    "message": "Device names only appear after you grant microphone access once"
+  },
+  "overlay_settings_serverUrlLabel": {
+    "message": "Sync server URL "
+  },
+  "overlay_settings_apiKeyLabel": {
+    "message": "API key"
+  },
+  "overlay_settings_row_lowConfWarning": {
+    "message": "Low alignment confidence warning"
+  },
+  "overlay_settings_row_lowConfWarningTitle": {
+    "message": "Shows a warning bar at the top of the lyrics panel for songs with very low transcription confidence."
+  },
+  "overlay_settings_row_notifyOnComplete": {
+    "message": "Notify when transcription completes"
+  },
+  "overlay_settings_row_notifyOnCompleteTitle": {
+    "message": "Sends a browser notification when a queued transcription finishes, even in another tab."
+  },
+  "overlay_settings_row_debugInfo": {
+    "message": "Show debug info"
+  },
+  "overlay_settings_serverRequiredNote": {
+    "message": "Generating sync and translating requires the Everyric server"
+  },
+  "overlay_settings_closeButton": {
+    "message": "Close"
+  },
+  "overlay_settings_deviceN": {
+    "message": "Device $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_defaultOutput": {
+    "message": "Default output"
+  },
+  "overlay_settings_defaultMic": {
+    "message": "Default microphone"
+  },
+  "options_pageTitle": {
+    "message": "Everyric Permission Settings"
+  },
+  "options_subtitle": {
+    "message": "Grant or revoke access to your self-hosted (local) sync server here."
+  },
+  "options_intro1": {
+    "message": "Everyric uses the <code>https://everyric.moref.co</code> sync server by default. Access to it is already granted on install, so <strong>there's nothing to do here</strong>."
+  },
+  "options_intro2": {
+    "message": "This page is only needed if you <strong>run your own server</strong>. Local server addresses are only used by a few self-hosters, so instead of requiring this permission for everyone on install, it's an <em>optional permission</em> granted only by those who need it. Granting it lets the extension send lyrics/sync requests to that address; revoking it stops that immediately."
+  },
+  "options_currentServerHeading": {
+    "message": "Current sync server"
+  },
+  "options_serverUrlLoading": {
+    "message": "Loading…"
+  },
+  "options_serverKindChecking": {
+    "message": "Checking"
+  },
+  "options_serverNoteDefault": {
+    "message": "Change the server address from the settings (⚙) in the YouTube lyrics panel — this page only handles permissions."
+  },
+  "options_permHeading": {
+    "message": "Local server access permission"
+  },
+  "options_grantButtonDefault": {
+    "message": "Grant"
+  },
+  "options_revokeButtonDefault": {
+    "message": "Revoke"
+  },
+  "options_recheckButton": {
+    "message": "Check status again"
+  },
+  "options_tipsHeading": {
+    "message": "Good to know"
+  },
+  "options_tip1": {
+    "message": "Granting persists until you remove the extension — it's a one-time action."
+  },
+  "options_tip2": {
+    "message": "An extension update can revoke this permission, suddenly disconnecting your self-hosted server. If that happens, just grant it again here."
+  },
+  "options_tip3": {
+    "message": "You can also check and change site access from Everyric's details on <code>chrome://extensions</code>. Changes made there show up here too."
+  },
+  "options_tip4": {
+    "message": "A local server on a different port, or a third-party server address, requires rebuilding the extension to use."
+  },
+  "options_serverKind_remote": {
+    "message": "Remote server"
+  },
+  "options_serverNote_remote": {
+    "message": "Your current setting is a remote server, so this page's permission isn't needed. Change the server address from the settings (⚙) in the YouTube lyrics panel."
+  },
+  "options_serverKind_notAllowed": {
+    "message": "Can't be granted"
+  },
+  "options_serverNote_notAllowed": {
+    "message": "$P1$ isn't an address the extension can grant access to. The local addresses it can grant are only $P2$ — a different port or address requires rebuilding the extension.",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "options_serverKind_grantedLocal": {
+    "message": "Local server · granted"
+  },
+  "options_serverKind_needsPermLocal": {
+    "message": "Local server · needs permission"
+  },
+  "options_serverNote_granted": {
+    "message": "Requests can be sent to this address."
+  },
+  "options_serverNote_needsPerm": {
+    "message": "Grant access below to send requests to this address. (Requests go to $P1$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "options_currentServerMarker": {
+    "message": "Currently configured server"
+  },
+  "options_badgeGranted": {
+    "message": "Granted"
+  },
+  "options_badgeNotGranted": {
+    "message": "Not granted"
+  },
+  "options_grantButton_preemptive": {
+    "message": "Pre-grant local server access"
+  },
+  "options_grantButton_normal": {
+    "message": "Grant local server access"
+  },
+  "options_revokeButton_all": {
+    "message": "Revoke all permissions"
+  },
+  "options_revokeButton_one": {
+    "message": "Revoke permission"
+  },
+  "options_grantResult_success": {
+    "message": "Granted. Any open YouTube tabs' lyrics panels will recheck automatically."
+  },
+  "options_grantResult_denied": {
+    "message": "Not granted. This permission is required to use a self-hosted server; the default server (everyric.moref.co) works without it."
+  },
+  "options_grantResult_error": {
+    "message": "Couldn't request the permission — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "options_revokeResult_success": {
+    "message": "Revoked. Requests will no longer go to your local server — the lyrics panel will show a permission-needed notice again."
+  },
+  "options_revokeResult_failure": {
+    "message": "Couldn't revoke it."
+  },
+  "options_revokeResult_error": {
+    "message": "Couldn't revoke it — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_notice_permPageFailed": {
+    "message": "Couldn't open the permission settings page — open Everyric's \"Extension options\" from the extensions management page (chrome://extensions) instead"
+  },
+  "content_notice_candidateLoadFailed": {
+    "message": "Couldn't load the selected lyrics — try another result"
+  },
+  "content_failure_generateRequest": {
+    "message": "The sync generation request failed."
+  },
+  "content_failure_regenerateRequest": {
+    "message": "The regeneration request failed."
+  },
+  "content_failure_resetSync": {
+    "message": "Resetting the sync failed."
+  },
+  "content_failure_cancelRequest": {
+    "message": "The cancel request failed."
+  },
+  "content_linkProbe_chip": {
+    "message": "Same song suspected — checking auto-link…"
+  },
+  "content_link_cannotSelf": {
+    "message": "Can't link a video to itself"
+  },
+  "content_link_replaceOwnConfirm": {
+    "message": "This video already has its own transcription.\nLinking will delete it and use the original video's sync instead. Continue?"
+  },
+  "content_link_cancelledKeepOwn": {
+    "message": "Linking cancelled — keeping your own transcription"
+  },
+  "content_link_ownDeleteFailed": {
+    "message": "Couldn't delete the existing transcription$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_failedWithNote": {
+    "message": "Linking failed — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_failedNoNote": {
+    "message": "Linking failed — check that the original video has a transcription (sync)"
+  },
+  "content_link_unlinkFailed": {
+    "message": "Unlinking failed$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_unlinkFailedCheckServer": {
+    "message": " — check the server status"
+  },
+  "content_link_autoConfSuffix": {
+    "message": " (audio match $P1$%)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_link_autoLinked": {
+    "message": "Auto-linked — pulled in this song's sync$P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_debug_zoneAdlib": {
+    "message": "ad-lib★"
+  },
+  "content_debug_zoneVocal": {
+    "message": "vocal"
+  },
+  "content_debug_zoneInstrumental": {
+    "message": "instrumental/silent"
+  },
+  "content_age_justNow": {
+    "message": "just now"
+  },
+  "content_age_minutesAgo": {
+    "message": "$P1$ min ago",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_age_hoursAgo": {
+    "message": "$P1$ hr ago",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_age_daysAgo": {
+    "message": "$P1$ day(s) ago",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_unavailable": {
+    "message": "Translation unavailable — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_generating": {
+    "message": "Generating translation & pronunciation…"
+  },
+  "content_translation_failedWithStatus": {
+    "message": "Translation failed — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_failedNoResult": {
+    "message": "Translation failed — the server didn't return a result"
+  },
+  "content_translation_lineCountMismatch": {
+    "message": "Couldn't apply the translation — line counts don't match (translation: $P1$ lines · lyrics: $P2$ lines)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_translation_partialFailure": {
+    "message": "Translation partially failed — $P1$ line(s) didn't get a result from the server",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_translation_aiGenerating": {
+    "message": "Generating AI translation & pronunciation…"
+  },
+  "content_error_lyricsLoadFailed": {
+    "message": "Couldn't load lyrics"
+  },
+  "content_error_candidatesLoadFailed": {
+    "message": "Couldn't load candidates — $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_error_unknown": {
+    "message": "unknown error"
+  },
+  "content_error_jobGone": {
+    "message": "Couldn't find that job on the server (it may have restarted) — try generating again"
+  },
+  "content_error_syncGenerationFailed": {
+    "message": "Sync generation failed"
+  },
+  "content_loading_selectedCandidate": {
+    "message": "Loading the selected lyrics…"
+  },
+  "content_generate_blockedAutoCaption": {
+    "message": "These are auto-generated captions, so transcription may be inaccurate — paste accurate lyrics to generate a sync"
+  },
+  "content_generate_tooManyLines": {
+    "message": "The lyrics are too long ($P1$ lines) — shorten them to 500 lines or fewer",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_generate_autoCaptionBlocked": {
+    "message": "Auto-generated captions aren't accurate enough to build a sync from — search for lyrics or paste them instead"
+  },
+  "content_notify_transcribeComplete": {
+    "message": "Transcription complete"
+  },
+  "content_notify_transcribeFailed": {
+    "message": "Transcription failed"
+  },
+  "content_notify_otherVideoReady": {
+    "message": "$P1$ — sync is ready. Open the video to check it out",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_queue_position": {
+    "message": "queue position $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_queue_label": {
+    "message": "queued"
+  },
+  "content_completion_notLoadedMsg": {
+    "message": "$P1$ — couldn't load the sync",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_notLoadedWarning": {
+    "message": "Couldn't load the sync"
+  },
+  "content_completion_readyMsg": {
+    "message": "$P1$ — lyrics sync is ready",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_pronWord": {
+    "message": "pronunciation"
+  },
+  "content_completion_partialPron": {
+    "message": "pronunciation $P1$/$P2$ lines",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_trWord": {
+    "message": "translation"
+  },
+  "content_completion_partialTr": {
+    "message": "translation $P1$/$P2$ lines",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_allReadyMsg": {
+    "message": "$P1$ — lyrics sync, pronunciation, and translation are all ready",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_partialReadyMsg": {
+    "message": "$P1$ — sync is ready, but some lines are empty ($P2$)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_completion_partialReadyWarning": {
+    "message": "Only $P1$ was added to some lines — try regenerating",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_completion_missingMsg": {
+    "message": "$P1$ — sync was made, but $P2$ is missing$P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "content_completion_missingWarning": {
+    "message": "Sync was made, but $P1$ wasn't added$P2$ — try regenerating",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_genChip_preparing": {
+    "message": "Preparing to generate sync — requesting AI translation & pronunciation…"
+  },
+  "content_genChip_stageProgress": {
+    "message": "$P1$ $P2$% · overall $P3$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "content_genChip_percentOnly": {
+    "message": "$P1$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_transcribing": {
+    "message": "Transcribing $P1$$P2$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "content_genChip_othersSuffix": {
+    "message": " · $P1$ more",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_othersOnly": {
+    "message": "Transcribing $P1$ other video(s)",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "content_genChip_stageOnly": {
+    "message": "$P1$ $P2$%",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      }
+    }
+  },
+  "serverError_lyrics_too_long": {
+    "message": "The lyrics are too long — shorten them and try again"
+  },
+  "serverError_video_too_long": {
+    "message": "This video is too long — that length isn't supported yet"
+  },
+  "serverError_captions_no_text": {
+    "message": "This caption track has no text — pick a different track or paste the lyrics"
+  }
 }
