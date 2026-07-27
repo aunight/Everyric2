@@ -1445,5 +1445,33 @@
   },
   "overlay_langChip_generateFor": {
     "message": "이 언어로 번역 생성"
+  },
+  "content_translation_originalOnly": {
+    "message": "원문 모드 — 번역 없음"
+  },
+  "overlay_translationPending": {
+    "message": "$P1$ 번역 준비 중…",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_source_miraheze": {
+    "message": "VocaloidLyrics Wiki"
+  },
+  "overlay_translationSource_caption": {
+    "message": "번역: 유튜브 자막"
+  },
+  "overlay_translationSource_wiki": {
+    "message": "번역: $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_translationSource_llm": {
+    "message": "번역: AI 번역"
   }
 }

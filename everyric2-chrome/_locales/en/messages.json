@@ -1445,5 +1445,33 @@
   },
   "overlay_langChip_generateFor": {
     "message": "Generate a translation in this language"
+  },
+  "content_translation_originalOnly": {
+    "message": "Original only — no translation"
+  },
+  "overlay_translationPending": {
+    "message": "Preparing $P1$ translation…",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_source_miraheze": {
+    "message": "VocaloidLyrics Wiki"
+  },
+  "overlay_translationSource_caption": {
+    "message": "Translation: YouTube captions"
+  },
+  "overlay_translationSource_wiki": {
+    "message": "Translation: $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_translationSource_llm": {
+    "message": "Translation: AI"
   }
 }

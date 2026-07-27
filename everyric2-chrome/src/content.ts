@@ -41,7 +41,7 @@ import type {
   TranslateResult,
   TranslatedLine,
 } from './types';
-import { affectsServerStatus, failureToStatus, serverKnownBad, statusLine, unknownStatus } from './lib/server-status';
+import { affectsServerStatus, failureToStatus, okStatus, serverKnownBad, statusLine, unknownStatus } from './lib/server-status';
 import { resolveTheme } from './lib/theme';
 import type { SourceResult } from './lib/sources';
 import type { VocaroLine, VocaroResult } from './lib/vocaro';
@@ -1120,7 +1120,7 @@ async function tryCaptionTranslationLayer(
   if (!merged.some(m => m !== undefined)) return false;
   // applyTranslations를 재사용 — translationLang 기록·availableLangs 칩 반영·pip 갱신까지
   // 기존 LLM 경로와 동일하게 맞아떨어진다. pronunciation은 안 실어 보낸다(자막엔 없다).
-  applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' })));
+  applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' })), { kind: 'caption' });
   data.humanTranslated = true;
   persistTranslationLayer(videoId, lang, data.lines, merged, 'caption');
   return true;
@@ -1149,20 +1149,30 @@ async function tryWikiTranslationLayer(
   if (data.source !== 'everyric' || !data.synced || !currentSong) return false;
   let wikiLines: { text: string; translation?: string }[] | null;
   let wikiAttribution: SourceAttribution | undefined;
+  // 배지 병기용 짧은 이름(U2) — attribution.name은 저장용(곡 제목 포함, 길다), 이건
+  // 표시용(overlay.source.*와 같은 라벨 — setSourceBadge의 base 라벨과 동일한 문구를
+  // 재사용해 "가사 원출처"와 "번역 출처"가 같은 위키를 가리킬 때 같은 이름으로 보이게 한다).
+  let wikiShortName: string | undefined;
   if (lang === 'en') {
     const res = await sendToBackground<SourceResult | null>({
       type: 'MIRAHEZE_LOOKUP', payload: { title: currentSong.title },
     });
     if (videoId !== currentVideoId) return false;
     wikiLines = res.data?.lines ?? null;
-    if (res.data) wikiAttribution = attributionFromSource(res.data);
+    if (res.data) {
+      wikiAttribution = attributionFromSource(res.data);
+      wikiShortName = t('overlay.source.miraheze');
+    }
   } else if (lang === 'ko') {
     const res = await sendToBackground<VocaroResult | null>({
       type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
     });
     if (videoId !== currentVideoId) return false;
     wikiLines = res.data?.lines ?? null;
-    if (res.data) wikiAttribution = { name: '보카로 가사 위키', url: res.data.pageUrl };
+    if (res.data) {
+      wikiAttribution = { name: '보카로 가사 위키', url: res.data.pageUrl };
+      wikiShortName = t('overlay.source.vocaro');
+    }
   } else {
     return false; // ja 등 대응 번역 위키가 없다
   }
@@ -1185,7 +1195,10 @@ async function tryWikiTranslationLayer(
   // pronunciation은 절대 싣지 않는다 — miraheze 로마자는 정렬용이 아니라 표시용이고,
   // 발음은 서버 pron dict가 정본이다(라틴 정렬 붕괴 실측 — 로마자를 정렬 입력에 쓰면
   // 무너진다는 것과 같은 이유로, 표시에서도 로마자 대신 pron dict 값을 신뢰한다).
-  applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' })));
+  applyTranslations(
+    data, data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' })),
+    { kind: 'wiki', wikiName: wikiShortName },
+  );
   data.humanTranslated = true;
   persistTranslationLayer(videoId, lang, data.lines, translations, 'wiki', wikiAttribution);
   return true;
@@ -1237,7 +1250,15 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
   // 쏘고 "번역 생성 중…" 문구가 잠깐 떴다가 서버의 조용한 거절로 사라졌다 — 헛호출+깜빡임.
   // 사용자가 칩·설정으로 방금 이 언어로 전환한 직후에도(handleSettingsChange → clearTranslations
   // → loadTranslations 경로) 이 가드가 그대로 적용돼 같은 무요청·무깜빡임이 보장된다.
-  if (detectSongScript(srcLines) === lang) return;
+  //
+  // U3-a: 대각선 자체는 정상 상태지만, 곡 자신의 언어 칩(늘 "보유" 스타일)을 눌렀을 때
+  // 사용자 눈엔 "번역 줄이 사라졌다"로만 보인다는 실보고 — 원문만 보는 중임을 짧게 알린다.
+  // clearTranslations가 이미 setTranslationStatus(null)로 이전 상태를 지운 뒤이므로
+  // 여기서 새로 세팅해도 이전 문구와 겹치지 않는다.
+  if (detectSongScript(srcLines) === lang) {
+    overlay?.setTranslationStatus(t('content.translation.originalOnly'));
+    return;
+  }
   // 위키 사람 번역(내 번역 언어와 같을 때만)이 있으면 발동하지 않는다
   // (clearTranslations의 같은 가드와 규칙을 맞춘다)
   if (hasMatchingHumanTranslation(data)) return;
@@ -1273,58 +1294,77 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
   // TranslatedLine[](서버 응답 원본, .pron 딕셔너리가 없다)이라 resolvedPronunciation을
   // 못 쓴다 — isUsablePronunciation으로 같은 원칙(hangul이면 콘텐츠도 검증)을 적용한다.
   if (cached && (!expectsPron || cached.some(l => isUsablePronunciation(l.pronunciation)))) {
-    applyTranslations(data, cached);
+    applyTranslations(data, cached, { kind: 'llm' });
     return;
   }
 
-  // 언어 전환 직후라면 로컬 체인보다 먼저 서버 레이어부터 다시 확인한다(감사 #9) —
-  // 이미 싱크가 있는 곡이 여기까지 내려왔다는 것은 지금 손에 든 data가 이 언어로 조회된
-  // 게 아니라는 뜻이므로, lang=을 실어 다시 물어서 서버가 이미 만들어 둔 레이어가
-  // 있으면 그걸 쓰고 로컬 자막·위키·LLM 시도를 전부 건너뛴다.
-  if (opts.languageSwitch && await tryServerLayerRefresh(data, videoId, lang)) return;
-  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(서버 재확인 중)
-
-  // 서버 번역 레이어가 미스라도(이 아래로 내려왔다는 것 자체가 미스) 내 언어의 유튜브
-  // 수동 자막이 있으면 LLM보다 먼저 그것을 쓴다 — 사람이 쓴 자막이 LLM보다 낫다는 원칙은
-  // tryCaptionFallback(첫 로딩 폴백)과 같다. 대각선(곡 스크립트==내 언어)은 이 지점에
-  // 닿기 전에 이미 위에서 반환됐으므로 여기서 따로 확인하지 않는다.
-  if (await tryCaptionTranslationLayer(data, videoId, lang)) return;
-  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(자막 시도 중)
-
-  // 자막도 미스면 내 언어의 위키(미라헤즈=en·vocaro=ko)를 다음으로 시도한다 — 이미
-  // 싱크가 있는 곡은 자동 로딩이 위키 체인까지 안 가므로(그건 lookupWikiSources가
-  // 싱크가 **없을 때만** 도는 별개 경로다), 위키에 사람 번역이 있어도 여기까지 오지
-  // 않으면 곧장 LLM으로 갔다 — 그 갭을 메운다. 매 영상 로드마다 위키를 두드리는 게
-  // 아니라 "레이어 미스 + 대각선 아님"일 때만이다(정확히 이 지점 — 어차피 LLM을
-  // 부를 참이었던 경우로 국한된다).
-  if (await tryWikiTranslationLayer(data, videoId, lang)) return;
-  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(위키 시도 중)
-
-  // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
-  if (serverKnownBad(serverStatus)) {
-    overlay?.setTranslationStatus(t('content.translation.unavailable', [statusLine(serverStatus)]));
-    return;
-  }
+  // U3-b: 미보유 언어 칩을 누르면 여기서부터 실제 검색(서버 레이어 재확인→자막→위키→LLM)이
+  // 시작된다 — 그 전체 구간에 걸쳐 대기 표시를 켠다. 예전엔 이 표시가 맨 마지막 LLM
+  // 호출 직전에만 켜져서, 로컬 체인(캡션·위키 조회)이 도는 동안은 칩 펄스 말고는 아무
+  // 신호가 없었다(실보고: "빈 번역 줄"만 보인다). try/finally로 감싸 어느 단계에서
+  // return하든 pending은 반드시 꺼진다 — 예전엔 이 지점에서만 세팅·해제가 붙어 있어도
+  // 문제가 없었지만, 앞으로 당기면서 "성공해서 조기 반환"하는 경로들도 전부 스스로
+  // 해제해야 하므로 흩어놓지 않고 한 곳에 모았다.
   overlay?.setTranslationStatus(t('content.translation.generating'));
-  // 제목바 언어 칩 로딩 표시 — 응답이 오면(성공이든 실패든) 바로 아래서 끈다.
-  // 곡이 바뀌면 applyLyricsData가 이미 null로 되돌려 놨을 수 있어 순서가 안 꼬인다.
   overlay?.setLangPending(lang);
-  const lines = await requestTranslation(videoId, srcLines);
-  overlay?.setLangPending(null);
-  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜
-  if (!settings.showTranslation || settings.translationLanguage !== lang) return;
+  try {
+    // 언어 전환 직후라면 로컬 체인보다 먼저 서버 레이어부터 다시 확인한다(감사 #9) —
+    // 이미 싱크가 있는 곡이 여기까지 내려왔다는 것은 지금 손에 든 data가 이 언어로 조회된
+    // 게 아니라는 뜻이므로, lang=을 실어 다시 물어서 서버가 이미 만들어 둔 레이어가
+    // 있으면 그걸 쓰고 로컬 자막·위키·LLM 시도를 전부 건너뛴다.
+    if (opts.languageSwitch && await tryServerLayerRefresh(data, videoId, lang)) return;
+    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(서버 재확인 중)
 
-  if (!lines || lines.length === 0) {
-    // requestTranslation이 실패 사유를 이미 상태에 반영했다 — 그 사유를 그대로 보여 준다
-    overlay?.setTranslationStatus(serverKnownBad(serverStatus)
-      ? t('content.translation.failedWithStatus', [statusLine(serverStatus)])
-      : t('content.translation.failedNoResult'));
-    return;
+    // 서버 번역 레이어가 미스라도(이 아래로 내려왔다는 것 자체가 미스) 내 언어의 유튜브
+    // 수동 자막이 있으면 LLM보다 먼저 그것을 쓴다 — 사람이 쓴 자막이 LLM보다 낫다는 원칙은
+    // tryCaptionFallback(첫 로딩 폴백)과 같다. 대각선(곡 스크립트==내 언어)은 이 지점에
+    // 닿기 전에 이미 위에서 반환됐으므로 여기서 따로 확인하지 않는다.
+    if (await tryCaptionTranslationLayer(data, videoId, lang)) return;
+    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(자막 시도 중)
+
+    // 자막도 미스면 내 언어의 위키(미라헤즈=en·vocaro=ko)를 다음으로 시도한다 — 이미
+    // 싱크가 있는 곡은 자동 로딩이 위키 체인까지 안 가므로(그건 lookupWikiSources가
+    // 싱크가 **없을 때만** 도는 별개 경로다), 위키에 사람 번역이 있어도 여기까지 오지
+    // 않으면 곧장 LLM으로 갔다 — 그 갭을 메운다. 매 영상 로드마다 위키를 두드리는 게
+    // 아니라 "레이어 미스 + 대각선 아님"일 때만이다(정확히 이 지점 — 어차피 LLM을
+    // 부를 참이었던 경우로 국한된다).
+    if (await tryWikiTranslationLayer(data, videoId, lang)) return;
+    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(위키 시도 중)
+
+    // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
+    if (serverKnownBad(serverStatus)) {
+      overlay?.setTranslationStatus(t('content.translation.unavailable', [statusLine(serverStatus)]));
+      return;
+    }
+    const lines = await requestTranslation(videoId, srcLines);
+    if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜
+    if (!settings.showTranslation || settings.translationLanguage !== lang) return;
+
+    if (!lines || lines.length === 0) {
+      // requestTranslation이 실패 사유를 이미 상태에 반영했다 — 그 사유를 그대로 보여 준다
+      overlay?.setTranslationStatus(serverKnownBad(serverStatus)
+        ? t('content.translation.failedWithStatus', [statusLine(serverStatus)])
+        : t('content.translation.failedNoResult'));
+      return;
+    }
+    applyTranslations(data, lines, { kind: 'llm' });
+  } finally {
+    // 제목바 언어 칩 로딩 표시 해제 — 위 어느 단계에서 return하든(성공·실패·곡 전환)
+    // 반드시 여기서 한 번 꺼진다.
+    overlay?.setLangPending(null);
   }
-  applyTranslations(data, lines);
 }
 
-function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void {
+/** applyTranslations가 화면에 병기할 번역 출처(U2) — 가사 원문 출처(attribution)와
+ *  별개다. 생략하면(tryServerLayerRefresh처럼 출처를 확정할 수 없는 경우) 배지에서
+ *  숨긴다 — 모르는 출처를 아무 이름이나 붙여 잘못 말하는 것보다 안전하다. */
+interface TranslationOrigin {
+  kind: 'caption' | 'wiki' | 'llm';
+  /** kind==='wiki'일 때만 — 실제로 히트한 위키의 짧은 표시 이름 */
+  wikiName?: string;
+}
+
+function applyTranslations(data: LyricsData, translated: TranslatedLine[], origin?: TranslationOrigin): void {
   // 적용은 **인덱스 위치**로만 이뤄진다 — 줄 수가 다르면 전부 어긋난 줄에 붙는다.
   // 생성 경로(fetchLlmLineMeta)에는 이 대조가 있었는데 표시 경로에는 없어서, 두 경로가
   // 서로 다른 규칙으로 동작하는 것 자체가 결함이었다. 키의 원문 지문이 1차로 막지만,
@@ -1349,7 +1389,12 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
     : [...(data.availableLangs ?? []), data.translationLang];
   // availableLangsForChip을 거쳐야 곡 자신의 언어 칩이 계속 "보유" 스타일을 유지한다 —
   // 여기서 data.availableLangs를 그대로 넘기면 방금 병합한 목록으로 덮어써서 잃는다.
-  if (currentData === data) overlay?.setAvailableLangs(availableLangsForChip(data));
+  if (currentData === data) {
+    overlay?.setAvailableLangs(availableLangsForChip(data));
+    // 번역 출처 병기(U2) — 이 배치가 어디서 왔는지 배지에 반영한다. origin이 없으면
+    // (tryServerLayerRefresh 등 출처를 확정 못하는 경우) 숨긴다.
+    overlay?.setTranslationSource(origin?.kind ?? null, origin?.wikiName);
+  }
   // 이 배치의 발음을 실을 스크립트 — 매 줄 동일하므로 루프 밖에서 한 번만 정한다.
   const pronScript = resolveScript(settings);
   let pronApplied = false;
@@ -1678,6 +1723,11 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
     if (pip.isOpen()) pip.showPanelError(t('content.error.lyricsLoadFailed'), note);
     return;
   }
+  // 가사 로딩 성공(U1) — lookupFailure가 없다는 것은 fetchLyricsChain의 lookupSync
+  // (Everyric 서버)가 실제로 응답했다는 뜻이다(공유 FailureSink라 LRCLIB 성공이 앞선
+  // 실패를 가리지 않는다 — clearServerFailureOnSuccess 문서 참고). 옛 실패 배너가
+  // 떠 있었으면 여기서 걷어낸다.
+  if (!lookupFailure) clearServerFailureOnSuccess();
 
   let data = res.data ?? null;
   if (data?.synced) keptLyrics = null; // 새 싱크가 생겼으니 초기화 보관본은 낡았다
@@ -2884,7 +2934,22 @@ function restoreOverlayState(): void {
 /** 마지막으로 확인된 서버 상태(사유 포함) — PiP를 새로 열 때 초기값으로 넘긴다 */
 let serverStatus: ServerStatus = unknownStatus();
 
+/**
+ * serverStatus 갱신 순서 보정용 카운터 (U1 — 실보고: "가사 로딩 성공해도 모달이 안
+ * 사라질 때도 있어").
+ *
+ * refreshServerStatus()는 검색마다 fire-and-forget으로 함께 쏘는데(아래), 그사이
+ * FETCH_LYRICS 같은 다른 요청이 먼저 끝나 상태를 정상으로 되돌려도 refreshServerStatus의
+ * /health 응답이 **그보다 늦게** 도착하면 시퀀스 보호 없이 그대로 덮어써 배너가 되살아났다
+ * — searchLyrics의 searchSeq와 같은 문제, 같은 해법이다. applyServerStatus가 매번
+ * 값을 반영할 때 이 카운터를 올려 "지금 이게 가장 최신"이라고 표시하고,
+ * refreshServerStatus는 시작 시점의 값을 들고 있다가 응답이 왔을 때 그사이 더 최신
+ * 갱신이 있었으면(카운터가 바뀌었으면) 자기 결과를 버린다.
+ */
+let serverStatusSeq = 0;
+
 function applyServerStatus(next: ServerStatus): void {
+  serverStatusSeq++;
   const kindChanged = serverStatus.kind !== next.kind;
   serverStatus = next;
   overlay?.setServerStatus(next);
@@ -2895,7 +2960,9 @@ function applyServerStatus(next: ServerStatus): void {
 }
 
 async function refreshServerStatus(): Promise<void> {
+  const token = serverStatusSeq;
   const res = await sendToBackground<ServerStatus>({ type: 'SERVER_HEALTH' });
+  if (serverStatusSeq !== token) return; // 그사이 더 최신 갱신이 있었다 — 이 응답은 낡았다
   // 백그라운드 자체와 통신이 끊긴 경우(확장 재설치 등)도 서버를 못 쓰는 상태로 본다
   applyServerStatus(res.data ?? failureToStatus(res.failure));
 }
@@ -2908,13 +2975,31 @@ async function refreshServerStatus(): Promise<void> {
  * 판정의 근거로 쓴다. 다만 엔드포인트 국소 실패(404 등)로 서버 전체를 죽었다고 하면
  * 멀쩡한 서버에서 버튼이 잠기므로 affectsServerStatus()가 거른다.
  *
- * 회복(→ ok)은 여기서 하지 않는다. 성공한 요청이 Everyric 서버를 거친 것인지
- * (LRCLIB·위키는 서버를 안 탄다) 응답만으로는 알 수 없기 때문이며, 회복 판정은
- * refreshServerStatus()의 명시적 확인에 맡긴다.
+ * 회복(→ ok)은 여기서 **일반적으로는** 하지 않는다 — 성공한 요청이 Everyric 서버를
+ * 거친 것인지(LRCLIB·위키 직접 조회는 서버를 안 탄다) 이 함수만으로는 알 수 없기
+ * 때문이다. searchLyrics의 FETCH_LYRICS 성공처럼 "이 호출은 반드시 서버(lookupSync)를
+ * 거친다"고 알고 있는 특정 호출부는 noteFailure에 기대지 않고 스스로 clearServerFailure를
+ * 부른다 — 아래 참고.
  */
 function noteFailure(failure: ApiFailure | undefined): ApiFailure | undefined {
   if (failure && affectsServerStatus(failure.kind)) applyServerStatus(failureToStatus(failure));
   return failure;
+}
+
+/**
+ * 서버를 실제로 거치는 호출이 성공했을 때만 부른다(U1) — "가사 로딩 성공" 자체가
+ * "서버가 방금 응답했다"는 직접 증거이므로, 배너가 이미 실패 상태라면 여기서 걷어낸다.
+ * refreshServerStatus()의 명시적 /health 확인과 달리 즉시(같은 틱에) 반영되므로 두
+ * 요청이 경합해도 사용자는 "성공했는데 배너가 남아 있는" 순간을 보지 않는다.
+ *
+ * FETCH_LYRICS에서만 쓴다 — fetchLyricsChain은 skipLrclib 여부와 무관하게 항상
+ * lookupSync(Everyric 서버)를 **먼저** 부르고, 그 호출이 실패하면 이후 LRCLIB이
+ * 성공해도 background.ts의 공유 FailureSink가 실패를 계속 들고 있어(sink.failure는
+ * 아무도 지우지 않는다) res.failure에 그대로 실린다 — 즉 res.failure가 비어 있다는
+ * 것은 LRCLIB로 가려진 것이 아니라 lookupSync 자체가 진짜 성공했다는 뜻이다.
+ */
+function clearServerFailureOnSuccess(): void {
+  if (serverKnownBad(serverStatus)) applyServerStatus(okStatus());
 }
 
 /**

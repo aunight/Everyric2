@@ -1,4 +1,4 @@
-import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncDebugMeta, SyncListItem } from '../types';
+import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SourceAttribution, SyncDebugMeta, SyncListItem } from '../types';
 import { resolveScript, resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
 import { t } from '../lib/i18n';
 import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
@@ -110,6 +110,11 @@ export class LyricsOverlay {
   private noticeChip: HTMLDivElement;
   private noticeTimer = 0;
   private warnBar: HTMLDivElement;
+  /** 미보유 언어 칩을 눌러 번역을 기다리는 동안의 표시(U3-b) — 칩 펄스만으론 눈에 잘
+   *  안 띈다는 실보고로 추가. 라인 목록 바로 위(.ey-warn-bar와 같은 자리 규칙)에 둬서
+   *  "빈 번역 줄"이 아니라 "준비 중"임을 알린다. .ey-tr-status 클래스를 재사용한다
+   *  (이번 작업은 overlay.css 수정 권한이 없어 기존 클래스만 쓴다). */
+  private translationPendingBar: HTMLDivElement;
   /** 서버 오류 배너 — body 밖에 있어 resetBody()로 지워지지 않는다.
    *  덕분에 어떤 화면(가사·검색·생성 중·오류)에서도 사유 한 줄이 반드시 보인다. */
   private serverBar: HTMLDivElement;
@@ -161,6 +166,20 @@ export class LyricsOverlay {
   private pipEnabled = false;
   private sourceUrl: string | null = null;
   private attributionName: string | null = null;
+  /** attribution.sourceId — 가사 원문 출처가 vocaro인지 miraheze인지 구분한다(U2).
+   *  source==='vocaro'는 두 위키를 모두 대표하는 값이라(설계 메모: adoptSourceResult
+   *  참고) 이 값 없이는 배지가 항상 "보카로 가사 위키"로만 뜬다. */
+  private attributionSourceId: string | null = null;
+  /** setSourceBadge(source, synced)가 마지막으로 받은 인자 — setTranslationSource가
+   *  독립적으로 배지를 다시 그려야 할 때(번역 출처가 나중에 붙을 때) 재사용한다. */
+  private badgeSource: LyricsSource = 'lrclib';
+  private badgeSynced = false;
+  /** 사후 채택 번역(자막·위키·LLM)의 출처 — 가사 원문 출처(attribution)와 별개다(U2).
+   *  null이면 배지에 병기하지 않는다. 곡이 바뀌면 resetBody가 지운다. */
+  private translationSourceKind: 'caption' | 'wiki' | 'llm' | null = null;
+  /** kind==='wiki'일 때만 의미가 있다 — 실제로 히트한 위키의 짧은 이름(미라헤즈/보카로),
+   *  content가 sourceId를 이미 알고 있으므로 문자열로 확정해 넘긴다. */
+  private translationSourceWikiName: string | null = null;
   private lastSong: SongInfo | null = null;
   private searchResultsEl: HTMLDivElement | null = null;
   private linkListEl: HTMLDivElement | null = null;
@@ -279,6 +298,15 @@ export class LyricsOverlay {
     this.warnBar = h('div', { className: 'ey-warn-bar' });
     this.warnBar.style.display = 'none';
 
+    // 번역 대기 표시(U3-b) — .ey-tr-status를 재사용하되 라인 목록 바로 위에 단독으로
+    // 둔다(원래는 푸터 안 flex row 전용 클래스라 여백을 직접 보정한다)
+    this.translationPendingBar = h('div', { className: 'ey-tr-status' });
+    this.translationPendingBar.style.display = 'none';
+    this.translationPendingBar.style.padding = '4px 14px 6px';
+    this.translationPendingBar.style.whiteSpace = 'normal';
+    this.translationPendingBar.style.flex = 'none';
+    this.translationPendingBar.style.margin = '0';
+
     // 서버 오류 배너 — 상태가 정상/미확인이면 비어 있고, 아니면 사유+복구 동작이 들어간다
     this.serverBar = h('div', { className: 'ey-server-bar-slot' });
     this.serverBar.style.display = 'none';
@@ -340,7 +368,7 @@ export class LyricsOverlay {
 
     this.panel = h('div', { className: 'ey-panel' },
       this.header, this.langChipsRow, this.serverBar, this.banner, this.genChip, this.genList, this.noticeChip,
-      this.warnBar, this.body, this.resumeChip, this.footer, this.debugStrip, this.debugPanelEl,
+      this.warnBar, this.translationPendingBar, this.body, this.resumeChip, this.footer, this.debugStrip, this.debugPanelEl,
     );
     // 패널 안 타이핑(검색창·가사 붙여넣기)이 유튜브 전역 단축키(스페이스=재생/정지,
     // 방향키=시킹 등)로 새지 않도록 키 이벤트를 패널에서 끊는다
@@ -699,11 +727,24 @@ export class LyricsOverlay {
     this.renderLangChips();
   }
 
-  /** 방금 클릭해 요청을 보낸 언어 — 응답이 올 때까지(성공이든 실패든) 그 칩만 로딩 표시.
-   *  null로 부르면(항상 요청 직후 한 번) 로딩을 끈다. */
+  /**
+   * 방금 클릭해 요청을 보낸 언어 — 응답이 올 때까지(성공이든 실패든) 그 칩만 로딩 표시.
+   * null로 부르면(항상 요청 직후 한 번) 로딩을 끈다.
+   *
+   * U3-b: 칩 펄스만으론 "빈 번역 줄"이 로딩 중이라는 게 눈에 잘 안 띈다는 실보고 —
+   * 라인 목록 바로 위(translationPendingBar)에도 같은 사실을 알린다. 칩과 같은 언어
+   * 라벨을 재사용해 어느 언어를 기다리는지도 함께 보여준다.
+   */
   setLangPending(lang: string | null): void {
     this.pendingLang = lang;
     this.renderLangChips();
+    if (lang) {
+      const label = this.langChipButtons.find(c => c.code === lang)?.btn.textContent ?? lang;
+      this.translationPendingBar.textContent = t('overlay.translationPending', [label]);
+      this.translationPendingBar.style.display = '';
+    } else {
+      this.translationPendingBar.style.display = 'none';
+    }
   }
 
   private renderLangChips(): void {
@@ -1214,6 +1255,13 @@ export class LyricsOverlay {
     this.resumeChip.style.display = 'none';
     this.pipBtn.style.display = 'none';
     this.regenBtn.style.display = 'none';
+    // 번역 출처 병기(U2)·번역 대기 표시(U3-b)는 곡 단위 상태다 — 이전 곡 것이 새 곡
+    // 화면에 남으면 안 된다. content가 setLangPending(null)/setAvailableLangs를 곡
+    // 전환마다 다시 부르긴 하지만, 여기서도 방어적으로 지운다(resetBody는 모든 show*
+    // 경로가 공유하는 단일 지점이라 새는 경로가 생기기 어렵다).
+    this.translationSourceKind = null;
+    this.translationSourceWikiName = null;
+    this.translationPendingBar.style.display = 'none';
     this.lines = [];
     this.lineEls = [];
     this.filledUpTo = 0;
@@ -1234,8 +1282,26 @@ export class LyricsOverlay {
   }
 
   private setSourceBadge(source: LyricsSource, synced: boolean): void {
+    this.badgeSource = source;
+    this.badgeSynced = synced;
+    this.renderSourceBadge();
+  }
+
+  /**
+   * 배지를 실제로 그린다 — setSourceBadge(곡 전환)와 setTranslationSource(번역 출처가
+   * 나중에 붙을 때) 둘 다 여기로 모인다. source·synced는 badgeSource/badgeSynced에
+   * 저장된 마지막 값을 쓴다.
+   *
+   * base 라벨(U2 배지 절충 수정): source==='vocaro'는 vocaro·miraheze 두 위키를 모두
+   * 대표하는 값이라(adoptSourceResult 설계 메모) attributionSourceId로 실제 출처를
+   * 갈라야 한다 — 이게 없으면 miraheze 채택분도 항상 "보카로 가사 위키"로 떴다.
+   */
+  private renderSourceBadge(): void {
+    const source = this.badgeSource;
+    const synced = this.badgeSynced;
     const base = source === 'everyric' ? 'Everyric'
-      : source === 'vocaro' ? t('overlay.source.vocaro')
+      : source === 'vocaro'
+        ? (this.attributionSourceId === 'miraheze' ? t('overlay.source.miraheze') : t('overlay.source.vocaro'))
       : source === 'caption' ? t('overlay.source.caption')
       : 'LRCLIB';
     // 가사 원출처(위키 등)를 병기 — 전사는 서버가 했어도 가사의 출처는 따로 표기
@@ -1246,12 +1312,31 @@ export class LyricsOverlay {
     const link = this.linkedInfo
       ? ` · 🔗${this.linkedInfo.verified ? '✓' : '?'}${this.linkedInfo.offsetSec !== 0 ? `${this.linkedInfo.offsetSec > 0 ? '+' : ''}${this.linkedInfo.offsetSec}s` : ''}`
       : '';
-    this.sourceBadge.textContent = base + extra + link;
+    // 번역 출처 병기(U2) — 가사 원출처(extra)와 별개로, 사후 채택 번역이 어디서 왔는지.
+    // kind==='wiki'면 실제로 히트한 위키 이름(translationSourceWikiName)을 그대로 쓴다.
+    const trSource = this.translationSourceKind === 'caption' ? ` · ${t('overlay.translationSource.caption')}`
+      : this.translationSourceKind === 'wiki'
+        ? ` · ${t('overlay.translationSource.wiki', [this.translationSourceWikiName ?? t('overlay.source.vocaro')])}`
+      : this.translationSourceKind === 'llm' ? ` · ${t('overlay.translationSource.llm')}`
+      : '';
+    this.sourceBadge.textContent = base + extra + link + trSource;
     // 출처 상세: 무엇을 어디서 가져왔는지 — 클릭 전에 툴팁으로도 확인 가능
     const kind = synced ? t('overlay.source.syncedLyrics') : t('overlay.source.plainLyrics');
     this.sourceBadge.title = this.sourceUrl ? `${kind} · ${t('overlay.source.openPage')}\n${this.sourceUrl}` : kind;
     if (this.linkedInfo) this.sourceBadge.title += `\n${this.describeLink(this.linkedInfo)}`;
     this.sourceBadge.classList.toggle('everyric', source === 'everyric');
+  }
+
+  /**
+   * 사후 채택 번역(자막·위키·LLM)의 출처 — 가사 원문 출처(setAttribution)와 별개로
+   * 배지에 병기한다(U2). null이면 표시 안 함. content가 tryCaptionTranslationLayer·
+   * tryWikiTranslationLayer·applyTranslations(LLM 적용) 각 채택 시점에 부른다.
+   * 곡이 바뀌면 resetBody가 지운다.
+   */
+  setTranslationSource(kind: 'caption' | 'wiki' | 'llm' | null, wikiName?: string | null): void {
+    this.translationSourceKind = kind;
+    this.translationSourceWikiName = wikiName ?? null;
+    this.renderSourceBadge();
   }
 
   /**
@@ -1268,9 +1353,15 @@ export class LyricsOverlay {
     return t('overlay.link.describeUnknown', [info.sourceVideoId]);
   }
 
-  /** 가사 원출처 표기 (이름+링크). show* 호출 전에 설정해야 배지에 반영된다. */
-  setAttribution(attr: { name: string; url?: string | null } | null): void {
+  /**
+   * 가사 원출처 표기 (이름+링크+출처 구분). show* 호출 전에 설정해야 배지에 반영된다.
+   * SourceAttribution을 그대로 받는다 — sourceId까지 받아야 vocaro/miraheze 배지를
+   * 가른다(U2, renderSourceBadge 참고). 예전엔 {name,url}만 받아 sourceId가 호출부
+   * 객체에 실려 있어도 버려졌다.
+   */
+  setAttribution(attr: SourceAttribution | null): void {
     this.attributionName = attr?.name ?? null;
+    this.attributionSourceId = attr?.sourceId ?? null;
     this.setSourceUrl(attr?.url ?? null);
   }
 
