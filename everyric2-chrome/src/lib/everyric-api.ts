@@ -199,8 +199,11 @@ export function lookupSync(
   // lang 없이 조회하면 서버 응답은 기존과 필드 단위로 동일해야 한다 — 값이 없을 때만 생략
   if (song?.lang) params.set('lang', song.lang);
   const query = params.size > 0 ? `?${params.toString()}` : '';
+  // 8000ms — 2500ms는 응답이 수십 KB이던 시절의 보정치다. 다국어화로 조회 응답이
+  // 210~240KB(무압축 실측)가 되면서 게이트웨이·일반 회선에서 2.5초를 넘나들어
+  // «됐다가 안 됐다가» 타임아웃이 났다(사용자 실보고). 서버 gzip과 함께 양쪽에서 잡는다.
   return request<EveryricSyncResponse>(
-    server, `/api/sync/${encodeURIComponent(videoId)}${query}`, undefined, 2500, sink,
+    server, `/api/sync/${encodeURIComponent(videoId)}${query}`, undefined, 8000, sink,
   );
 }
 

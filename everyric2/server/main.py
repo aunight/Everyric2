@@ -115,6 +115,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 싱크 조회 응답이 다국어화로 세그당 3표기 발음+모라 타이밍을 실어 210~240KB에 달한다
+# (실측 2026-07-28). 압축 없이 게이트웨이·사용자 회선을 타면 확장의 조회 타임아웃을
+# 넘긴다 — JSON이라 gzip이 ~10배를 줄인다. CORS보다 뒤(=바깥)에 등록해 압축이 마지막에
+# 적용되게 한다.
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
+
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.include_router(sync_router)
 app.include_router(job_router)
 app.include_router(link_jobs_router)
