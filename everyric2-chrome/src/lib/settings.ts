@@ -38,6 +38,8 @@ export const DEFAULT_SETTINGS: Settings = {
   lowConfWarning: true,
   notifyOnComplete: true,
   debugInfo: false,
+  pronunciationScript: 'auto',
+  uiLanguage: 'auto',
 };
 
 const SETTINGS_KEY = 'settings';

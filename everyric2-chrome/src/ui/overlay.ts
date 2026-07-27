@@ -1,4 +1,5 @@
 import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncListItem } from '../types';
+import { resolveScript, resolvedPronSegments, resolvedPronunciation } from '../lib/lang';
 import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
 import { resolveTheme } from '../lib/theme';
 import { h, icon, ICONS } from './dom';
@@ -360,6 +361,8 @@ export class LyricsOverlay {
       }
     }
 
+    // 발음 표기 방식은 라인마다 다시 해석할 이유가 없다 — 곡 하나에 한 번만 계산
+    const pronScript = resolveScript(this.settings);
     const list = h('div', { className: 'ey-lines' });
     lines.forEach((line, index) => {
       const el = h('div', {
@@ -388,20 +391,21 @@ export class LyricsOverlay {
         const confClass = conf == null ? '' : conf < 1e-4 ? ' ey-conf-low' : conf < 2e-2 ? ' ey-conf-mid' : ' ey-conf-ok';
         return h('span', { className: `ey-word${confClass}`, text: word.word, attrs: { 'data-start': String(word.start) } });
       });
-      if (line.pronunciation) {
+      const pron = resolvedPronunciation(line, pronScript);
+      if (pron) {
         // 음절 타이밍(pronSegments)이 있으면 단어처럼 부른 만큼 색이 차오르게 스팬으로
         // (사이 텍스트는 appendTimedSpans가 인접 span에 끼워 넣어 흰 글자 없이 칠해진다)
-        const segs = line.pronSegments;
+        const segs = resolvedPronSegments(line, pronScript);
         const pronEl = h('div', { className: 'ey-line-pron', attrs: { dir: 'auto' } });
         const mapped = segs && segs.length > 0
-          ? appendTimedSpans(pronEl, line.pronunciation, segs, s => s.text, seg =>
+          ? appendTimedSpans(pronEl, pron, segs, s => s.text, seg =>
               h('span', {
                 className: 'ey-pron-syl',
                 text: seg.text,
                 attrs: { 'data-start': String(seg.start) },
               }))
           : 0;
-        if (mapped === 0) pronEl.replaceChildren(line.pronunciation);
+        if (mapped === 0) pronEl.replaceChildren(pron);
         el.append(pronEl);
       }
       if (line.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
@@ -855,12 +859,14 @@ export class LyricsOverlay {
 
   /** lines[].translation을 다시 읽어 각 라인 아래 번역을 갱신/제거한다 */
   refreshTranslations(): void {
+    const pronScript = resolveScript(this.settings);
     this.lineEls.forEach((el, i) => {
       el.querySelector('.ey-line-tr')?.remove();
       const line = this.lines[i];
-      // 번역 API가 발음(한글 독음)을 늦게 채워주는 경우 — 렌더 후 붙은 발음도 표시
-      if (line?.pronunciation && !el.querySelector('.ey-line-pron')) {
-        el.append(h('div', { className: 'ey-line-pron', text: line.pronunciation, attrs: { dir: 'auto' } }));
+      // 번역 API가 발음을 늦게 채워주는 경우 — 렌더 후 붙은 발음도 표시
+      const pron = line ? resolvedPronunciation(line, pronScript) : undefined;
+      if (pron && !el.querySelector('.ey-line-pron')) {
+        el.append(h('div', { className: 'ey-line-pron', text: pron, attrs: { dir: 'auto' } }));
       }
       if (line?.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
     });
@@ -1200,6 +1206,15 @@ export class LyricsOverlay {
       v => this.callbacks.onSettingsChange({ translationLanguage: v }),
     );
 
+    // 발음 표기 방식 — '자동'이면 번역 언어 기준으로 hangul/romaji/kana 중 골라진다
+    // (lib/lang.ts resolveScript). 서버가 표기별 발음(pron dict)을 아직 안 주므로 지금은
+    // hangul(한글 독음) 외의 선택은 화면상 차이가 없다 — 표기가 배포되면 그대로 반영된다.
+    const pronScriptSelect = this.buildSelect(
+      [['auto', '자동'], ['hangul', '한글'], ['romaji', '로마자'], ['kana', '가나']],
+      this.settings.pronunciationScript,
+      v => this.callbacks.onSettingsChange({ pronunciationScript: v as Settings['pronunciationScript'] }),
+    );
+
     const showPronunciation = h('input', { attrs: { type: 'checkbox' } });
     showPronunciation.checked = this.settings.showPronunciation;
     showPronunciation.addEventListener('change', () =>
@@ -1364,6 +1379,7 @@ export class LyricsOverlay {
       h('div', { className: 'ey-settings-row' }, h('label', { text: '테마' }), themeSelect),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 번역 표시' }), showTranslation),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '번역 언어' }), langSelect),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: '발음 표기 방식' }), pronScriptSelect),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '발음 표기 표시 (있을 때)' }), showPronunciation),
       h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 소스 우선순위' }), sourcePriority),
       h('div', { className: 'ey-settings-row' }, h('label', { text: 'PiP 중에도 패널 가사 유지' }), pipKeepPanel),

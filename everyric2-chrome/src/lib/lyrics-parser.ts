@@ -77,6 +77,10 @@ export function segmentsToLines(segments: EveryricSegment[]): LyricLine[] {
     notes: s.notes && s.notes.length > 0 ? s.notes : undefined,
     pronunciation: s.pronunciation || undefined,
     pronSegments: s.pron_segments && s.pron_segments.length > 0 ? s.pron_segments : undefined,
+    // 표기별 발음(hangul/romaji/kana) — 아직 서버가 안 보내는 필드라 대부분 undefined로
+    // 남고, 그 경우 소비처(lib/lang.ts 폴백 헬퍼)가 위 레거시 필드로 자동 폴백한다
+    pron: s.pron && Object.keys(s.pron).length > 0 ? s.pron : undefined,
+    pronSegsByScript: s.pron_segs && Object.keys(s.pron_segs).length > 0 ? s.pron_segs : undefined,
     translation: s.translation || undefined,
     confidence: s.confidence,
     debug: s.debug

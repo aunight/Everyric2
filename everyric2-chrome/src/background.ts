@@ -123,6 +123,8 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         attribution: message.payload.attribution,
         title: message.payload.title,
         artist: message.payload.artist,
+        target_lang: message.payload.targetLang,
+        line_meta_lang: message.payload.lineMetaLang,
       }, sink));
     }
     case 'ATTACH_LINE_META': {
@@ -175,7 +177,12 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       const server = await getServerConfig();
       return call('translate_failed', sink => translateLyrics(
         server, message.payload.text, message.payload.targetLang,
-        { title: message.payload.title, artist: message.payload.artist }, sink,
+        {
+          title: message.payload.title,
+          artist: message.payload.artist,
+          persist: message.payload.persist,
+          videoId: message.payload.videoId,
+        }, sink,
       ));
     }
 
@@ -294,13 +301,14 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
 
 /** 우선순위: Everyric 서버(단어 타이밍 보존) → (skipLrclib가 아니면) LRCLIB 싱크 → LRCLIB 일반 */
 async function fetchLyricsChain(
-  song: SongInfo, skipLrclib = false, sink?: FailureSink,
+  song: SongInfo & { lang?: string }, skipLrclib = false, sink?: FailureSink,
 ): Promise<LyricsData | null> {
   // 제목·아티스트를 함께 보낸다 — 서버가 기존 싱크의 빈 제목을 이 기회에 채운다(백필).
   // 재생성 없이 코퍼스에 제목이 쌓이는 유일한 경로이고, 그게 없으면 커버 링크 후보
   // 탐색이 영원히 빈손이다.
   const sync = await lookupSync(
-    await getServerConfig(), song.videoId, { title: song.title, artist: song.artist }, sink,
+    await getServerConfig(), song.videoId,
+    { title: song.title, artist: song.artist, lang: song.lang }, sink,
   );
   // 서버에 저장된 영상별 사용자 오프셋 — 싱크가 없어도(found=false) 내려온다
   const userOffset = sync?.user_offset ?? undefined;
@@ -314,6 +322,9 @@ async function fetchLyricsChain(
         plainText: lines.map(l => l.text).join('\n'),
         // 서버가 사람 번역(위키 병합분)을 내려줬으면 기계번역으로 덮어쓰지 않는다
         humanTranslated: lines.some(l => l.translation),
+        // lang 파라미터를 준 조회에만 의미가 있다 — 구서버·미지정이면 undefined로 남아
+        // content.ts의 translationLangMatches 가드가 예전 규칙으로 동작한다
+        translationLang: sync.translation_lang ?? undefined,
         debugMeta: sync.debug ?? undefined,
         attribution: sync.attribution ?? undefined,
         tempo: sync.tempo ?? undefined,

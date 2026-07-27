@@ -188,7 +188,7 @@ async function request<T>(
 export function lookupSync(
   server: ServerConfig,
   videoId: string,
-  song?: { title?: string | null; artist?: string | null },
+  song?: { title?: string | null; artist?: string | null; lang?: string },
   sink?: FailureSink,
 ): Promise<EveryricSyncResponse | null> {
   const params = new URLSearchParams();
@@ -196,6 +196,8 @@ export function lookupSync(
   const artist = clip(song?.artist, ARTIST_MAX);
   if (title) params.set('title', title);
   if (artist) params.set('artist', artist);
+  // lang 없이 조회하면 서버 응답은 기존과 필드 단위로 동일해야 한다 — 값이 없을 때만 생략
+  if (song?.lang) params.set('lang', song.lang);
   const query = params.size > 0 ? `?${params.toString()}` : '';
   return request<EveryricSyncResponse>(
     server, `/api/sync/${encodeURIComponent(videoId)}${query}`, undefined, 2500, sink,
@@ -254,6 +256,10 @@ export function generateSync(
     video_id: string; lyrics: string; language?: string; line_meta?: LineMeta[];
     line_meta_pending?: boolean;
     attribution?: SourceAttribution; title?: string; artist?: string;
+    /** 생성 요청자의 번역 언어(기본 서버 "ko") — 없으면 서버가 기존과 동일하게 동작 */
+    target_lang?: string;
+    /** line_meta로 실은 번역의 언어(기본 서버 "ko") */
+    line_meta_lang?: string;
   },
   sink?: FailureSink,
 ): Promise<GenerateResponse | null> {
@@ -325,7 +331,7 @@ export function translateLyrics(
   server: ServerConfig,
   text: string,
   targetLang: string,
-  song?: { title?: string | null; artist?: string | null },
+  song?: { title?: string | null; artist?: string | null; persist?: boolean; videoId?: string },
   sink?: FailureSink,
 ): Promise<TranslateResult | null> {
   return request<TranslateResult>(server, '/api/translate', {
@@ -338,6 +344,10 @@ export function translateLyrics(
       include_pronunciation: true,
       title: song?.title || undefined,
       artist: song?.artist || undefined,
+      // persist+video_id를 함께 주면 서버가 이 번역을 언어별 레이어로 저장한다(둘 다 optional
+      // — 안 주면 오늘과 동일하게 저장 없이 결과만 반환)
+      persist: song?.persist || undefined,
+      video_id: song?.videoId || undefined,
     }),
   }, 120000, sink);
 }

@@ -34,6 +34,13 @@ export interface LyricLine {
   pronunciation?: string;
   /** 발음 음절별 타이밍 (서버가 모라 분해+DP로 산출) — 없으면 시간 비례 그라데이션 폴백 */
   pronSegments?: PronSegment[];
+  /** 표기별 발음 문자열 — {"hangul": "...", "romaji": "...", "kana": "..."}.
+   *  값이 없는 표기는 레거시 pronunciation(한글)으로 폴백한다 — 항상 lib/lang.ts의
+   *  resolvedPronunciation을 거쳐 읽는다 (직접 인덱싱 금지). */
+  pron?: Record<string, string>;
+  /** 표기별 발음 음절 타이밍 — {"hangul": PronSegment[], ...}. 폴백 규칙은 pron과 동일하며
+   *  lib/lang.ts의 resolvedPronSegments를 거쳐 읽는다. */
+  pronSegsByScript?: Record<string, PronSegment[]>;
   /** 라인 단위 CTC 정렬 신뢰도 (0~1) — 곡 전체 통계·디버그 표시용 */
   confidence?: number;
   /** 서버 정렬 진단 (디버그 스트립·레인 디버그 오버레이용) */
@@ -104,6 +111,11 @@ export interface LyricsData {
   linked?: { sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean };
   /** 이 영상에 서버 저장된 사용자 싱크 오프셋(초) — 로드 시 적용 */
   userOffset?: number;
+  /** 지금 실린 translation이 어느 언어인지 — 서버 EveryricSyncResponse.translation_lang을
+   *  그대로 옮긴 값이거나(구서버는 undefined), content.applyTranslations가 새 번역을 적용한
+   *  뒤 세션 내에서 직접 채운 값. undefined면 "모름"(구서버 또는 아직 안 채워짐) — 그 경우
+   *  기존 규칙(모든 줄에 translation이 있으면 충분)으로 폴백한다. */
+  translationLang?: string | null;
 }
 
 export interface LRCLibTrack {
@@ -130,6 +142,10 @@ export interface EveryricSegment {
   translation?: string;
   /** 발음 음절별 타이밍 (서버 계산) */
   pron_segments?: PronSegment[];
+  /** 표기별 발음 문자열 — {"hangul": ..., "romaji": ..., "kana": ...} (서버 wire 포맷) */
+  pron?: Record<string, string>;
+  /** 표기별 발음 음절 타이밍 (서버 wire 포맷) */
+  pron_segs?: Record<string, PronSegment[]>;
   /** 라인 진단: 발성 비율/클램프 여부/보정 전 원본 타이밍/적용 규칙 */
   debug?: {
     active_ratio?: number;
@@ -230,6 +246,9 @@ export interface EveryricSyncResponse {
   } | null;
   /** 이 영상에 저장된 사용자 싱크 오프셋(초) */
   user_offset?: number | null;
+  /** 지금 실린 세그먼트 translation의 언어 — lang 쿼리 파라미터를 준 요청에만 의미가 있다.
+   *  lang 없이 조회하면 항상 undefined(구버전 서버와 응답 필드 구성이 완전히 동일해야 함) */
+  translation_lang?: string | null;
 }
 
 /** GET /api/sync/list 항목 — 링크 후보 선택용 */
@@ -429,6 +448,10 @@ export interface Settings {
   notifyOnComplete: boolean;
   /** 패널 하단에 내부 상태(비디오 바인딩, 싱크 소스 등) 표시 */
   debugInfo: boolean;
+  /** 발음 표기 방식 — 'auto'면 translationLanguage 기준 자동 결정(lib/lang.ts resolveScript) */
+  pronunciationScript: 'auto' | 'hangul' | 'romaji' | 'kana';
+  /** 확장 UI 언어 — 'auto'면 브라우저 로케일. 지금은 값만 저장(i18n 태스크에서 소비) */
+  uiLanguage: 'auto' | 'ko' | 'en' | 'ja';
 }
 
 /** 디버그 스트립에 표시할 내부 상태 스냅샷 */
@@ -507,13 +530,16 @@ export interface CaptionLine {
 }
 
 export type BgRequest =
-  | { type: 'FETCH_LYRICS'; payload: SongInfo & { skipLrclib?: boolean } }
+  // lang은 번역 레이어 언어별 서빙 요청용(옵션) — 없으면 서버는 기존 응답 그대로 준다
+  | { type: 'FETCH_LYRICS'; payload: SongInfo & { skipLrclib?: boolean; lang?: string } }
   | { type: 'FETCH_LRCLIB'; payload: SongInfo }
   | { type: 'SEARCH_CANDIDATES'; payload: { title: string; artist: string; duration: number } }
   | { type: 'PICK_LRCLIB'; payload: { id: number } }
   // title·artist는 완성된 싱크에 함께 저장돼 커버 링크 후보 탐색의 단서가 된다 —
   // 이게 없으면 코퍼스에 제목이 쌓이지 않아 후보 탐색이 영원히 빈손이다
-  | { type: 'GENERATE_SYNC'; payload: { videoId: string; lyrics: string; language?: string; lineMeta?: LineMeta[]; lineMetaPending?: boolean; attribution?: SourceAttribution; title?: string; artist?: string } }
+  // targetLang·lineMetaLang은 생성 요청자의 번역 언어(옵션, 기본 서버는 "ko") — background가
+  // 아직 서버 호출에 전달하지 않으면(구버전 배선) 서버 기본값 "ko"로 생성된다
+  | { type: 'GENERATE_SYNC'; payload: { videoId: string; lyrics: string; language?: string; lineMeta?: LineMeta[]; lineMetaPending?: boolean; attribution?: SourceAttribution; title?: string; artist?: string; targetLang?: string; lineMetaLang?: string } }
   /** 진행 중인 잡에 번역·독음을 나중에 붙인다 (다운로드와 번역을 겹치는 경로).
    *  번역이 실패했어도 **빈 배열로 반드시 한 번 보내야** 잡이 대기 상한까지 서 있지 않는다. */
   | { type: 'ATTACH_LINE_META'; payload: { jobId: string; lineMeta: LineMeta[]; attribution?: SourceAttribution; title?: string; artist?: string } }
@@ -529,7 +555,8 @@ export type BgRequest =
   | { type: 'JOB_STATUS'; payload: { jobId: string } }
   | { type: 'JOB_CANCEL'; payload: { jobId: string } }
   | { type: 'NOTIFY'; payload: { id?: string; title: string; message: string } }
-  | { type: 'TRANSLATE'; payload: { text: string; targetLang: string; title?: string; artist?: string } }
+  // persist+videoId를 함께 주면 서버가 이 번역을 (video_id, fingerprint, target_lang) 레이어로 저장한다(옵션)
+  | { type: 'TRANSLATE'; payload: { text: string; targetLang: string; title?: string; artist?: string; persist?: boolean; videoId?: string } }
   | { type: 'SERVER_HEALTH' }
   | { type: 'SERVER_LOG' }
   /** 권한 관리 페이지(options_ui) 열기 — `chrome.permissions.request()`는 사용자 제스처가

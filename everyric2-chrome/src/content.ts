@@ -5,6 +5,7 @@ import { parseTriLineLyrics } from './lib/tri-line';
 import { describeRemoved, stripPartMarkers } from './lib/lyrics-clean';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
+import { resolveScript } from './lib/lang';
 import { LyricsOverlay } from './ui/overlay';
 import { PipController } from './ui/pip';
 import {
@@ -791,6 +792,14 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
     pip.setShowPronunciation(patch.showPronunciation);
   }
 
+  // 발음 표기 방식(hangul/romaji/kana) 즉시 반영 — pronunciationScript 자체를 바꿨을 때는
+  // 물론, 'auto'일 때는 translationLanguage가 바뀌어도 해석 결과가 달라지므로 함께 본다.
+  // 메인 패널의 이미 그려진 줄은 다음 showSyncedLyrics 호출(곡 전환 등)에서 새 표기를 반영한다
+  // — 지금은 서버가 표기별 발음(pron dict)을 아직 안 주므로 화면상 차이는 없다.
+  if (patch.pronunciationScript !== undefined || patch.translationLanguage !== undefined) {
+    pip.setPronScript(resolveScript(settings));
+  }
+
   // 디버그 토글 → 레인 신뢰도 색상도 함께
   if (patch.debugInfo !== undefined) {
     pip.setShowConfidence(patch.debugInfo);
@@ -1006,7 +1015,10 @@ async function enrichFromVocaro(videoId: string, data: LyricsData): Promise<void
 function clearTranslations(): void {
   overlay?.setTranslationStatus(null);
   if (!currentData) return;
-  if (currentData.source === 'vocaro' || currentData.humanTranslated) return; // 사람 번역은 가사 자체의 일부 — 지우지 않는다
+  // 사람 번역(위키 등)은 가사 자체의 일부 — 지우지 않는다. 단, 그 사람 번역은 지금 ko
+  // 전용이므로(vocaro/humanTranslated 소스가 실제로 한국어일 때만) 다른 번역 언어를 보는
+  // 사용자에게까지 이 가드를 적용하면 그 사용자는 영영 자기 언어 번역을 받지 못한다.
+  if (settings.translationLanguage === 'ko' && (currentData.source === 'vocaro' || currentData.humanTranslated)) return;
   for (const line of currentData.lines) delete line.translation;
   overlay?.refreshTranslations();
   pip.refresh();
@@ -1016,35 +1028,32 @@ async function loadTranslations(): Promise<void> {
   const data = currentData;
   const videoId = currentVideoId;
   if (!data || !videoId || !settings.showTranslation) return;
-  if (data.source === 'vocaro' || data.humanTranslated) return; // 위키가 이미 사람 번역을 제공
+  // 위키 사람 번역은 지금 ko 전용이다 — 다른 언어를 보는 사용자에게는 발동하지 않는다
+  // (clearTranslations의 같은 가드와 규칙을 맞춘다)
+  if (settings.translationLanguage === 'ko' && (data.source === 'vocaro' || data.humanTranslated)) return;
   // 서버 싱크에 번역·발음이 이미 저장돼 있으면(생성 시 LLM 메타 병합) LLM 재호출 생략.
   // 단, 발음이 기대되는 원문(일본어 등 CJK)인데 발음이 하나도 없으면 — 번역만 저장된
   // 낡은 싱크 — 발음까지 다시 받아온다 (그냥 반환하면 발음이 영영 채워지지 않는다)
   //
-  // ⚠ 알려진 한계 — **이 가드는 번역이 어느 언어인지 보지 않는다.** 지금은 한국어권 사용자만
-  // 대상이라 문제가 드러나지 않지만, 다국어로 넓히는 사람은 여기부터 봐야 한다.
-  //
-  // 서버는 번역·발음을 `sync_results.timestamps`의 세그먼트에 박아 저장하고(실측:
-  // s5Rkv_5Sbbo에 번역 134줄·발음 134줄), 그 행의 `language`는 **원문 언어**('ja')다 —
-  // 번역 대상 언어는 어디에도 기록되지 않는다. 그래서 한국인이 만든 싱크를 일본인이 열면
-  // 세그먼트에 한국어 번역이 실려 오고, 이 가드가 "번역 다 있다"고 판정해 **자기 언어로
-  // 재요청하지 않는다.** 발음은 더 노골적이다 — 일본어 곡에 한글 독음이 그대로 뜬다.
-  //
-  // 확장의 로컬 캐시는 `translationKey(videoId, lang, srcLines)`로 언어를 이미 구분한다.
-  // 즉 규칙은 있고 **서버 저장만 그 규칙을 안 따른다.** 고칠 자리는 두 곳 중 하나다:
-  //   (a) 최소 — `timestamps`에 번역 언어를 적고(이미 debug·tempo·key를 담은 딕셔너리다)
-  //       여기서 자기 설정과 비교해 다르면 버리고 재요청. 스키마 변경·마이그레이션 불필요.
-  //       대가: 저장 슬롯이 곡당 하나라 언어가 다른 사용자끼리 서로의 번역을 덮어쓴다.
-  //   (b) 정석 — 번역·발음을 싱크에서 떼어 (video_id, target_lang) 테이블로. 덮어쓰기가
-  //       없어지지만 서버·워커·확장 세 곳과 마이그레이션이 필요하다.
+  // 다국어 가드 — data.translationLang(서버 EveryricSyncResponse.translation_lang을 그대로
+  // 옮긴 값, 또는 이 세션에서 applyTranslations가 새 번역을 적용한 뒤 직접 채운 값)이
+  // 있으면 그 언어가 내 설정과 같을 때만 "이미 있음"으로 본다. 값이 없으면(구서버 응답이거나
+  // background가 아직 lang 쿼리를 서버에 넘기지 않는 배선 갭) 예전 규칙(모든 줄에 번역이
+  // 있으면 충분)으로 폴백한다 — 그 경우 한국어권 밖 사용자는 여전히 남의 언어 번역을 보고
+  // "이미 있다"고 오판될 수 있다. 확장의 로컬 캐시(translationKey)는 언어를 이미 구분하므로
+  // 캐시 경로는 이 문제가 없다.
   const srcLines = data.lines.map(l => l.text);
   const expectsPron = expectsPronunciation(srcLines);
+  const lang = settings.translationLanguage;
+  // translationLang이 있으면(서버가 채워줬거나 이 세션에서 applyTranslations가 직접 채운
+  // 값) 그 언어가 내 언어와 같을 때만 "이미 있음"으로 본다. 필드가 없으면(구서버·아직
+  // 안 채워짐) 예전 규칙 그대로 — 모든 줄에 translation이 있으면 충분하다고 본다.
+  const translationLangMatches = data.translationLang == null || data.translationLang === lang;
   if (
-    data.lines.every(l => l.translation)
+    translationLangMatches
+    && data.lines.every(l => l.translation)
     && (data.lines.some(l => l.pronunciation) || !expectsPron)
   ) return;
-
-  const lang = settings.translationLanguage;
   // 지금 화면의 원문 지문으로 조회한다 — 소스를 갈아탄 뒤 남아 있던 다른 원문의 번역이
   // 위치로 얹히는 것을 키 단계에서 막는다 (translationKey 주석의 실제 경로)
   const cached = translationCacheGet(translationKey(videoId, lang, srcLines));
@@ -1086,6 +1095,11 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
     );
     return;
   }
+  // 이 배치가 어느 언어인지 세션 상태에 남긴다 — 서버가 translation_lang을 안 주는 구버전
+  // 이거나 background가 lang 쿼리를 아직 안 넘기는 배선 갭이 있어도, 최소한 "방금 이
+  // 언어로 번역을 적용했다"는 사실만은 클라이언트가 스스로 안다(loadTranslations의
+  // translationLangMatches 가드가 이 값을 읽는다)
+  data.translationLang = settings.translationLanguage;
   let pronApplied = false;
   data.lines.forEach((line, i) => {
     const t = translated[i]?.translation?.trim();
@@ -1116,10 +1130,34 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   pip.refresh();
 }
 
-/** 원문에 CJK(가나·한자 등)가 실질적으로 있으면 발음표기(한글 독음)가 기대되는 곡 */
+/** 원문 스크립트 추정 — 가나/한자가 실질적으로 있으면 ja, 한글이면 ko, 그 밖은 라틴 문자
+ *  기준 en으로 추정한다(순서 중요: 가나·한자 우선 판정 — 일본어 곡 가사에도 라틴 단어가
+ *  섞여 있어 라틴만 보면 en으로 오판한다). */
+function detectSongScript(texts: string[]): 'ja' | 'ko' | 'en' {
+  const joined = texts.join('');
+  if ((joined.match(/[぀-ヿ㐀-鿿]/g)?.length ?? 0) >= 5) return 'ja';
+  if ((joined.match(/[가-힣]/g)?.length ?? 0) >= 5) return 'ko';
+  return 'en';
+}
+
+/**
+ * 발음표기가 기대되는 곡인가 — 매트릭스: 곡 스크립트가 내 번역 언어와 다르면 기대한다
+ * (ja곡×ko유저 = 기대, ja곡×ja유저 = 기대 안 함). translationLanguage가 zh면 어느 곡
+ * 스크립트와도 일치하지 않으므로 항상 기대(발음은 hangul로 폴백 — 알려진 미결).
+ *
+ * 특례(en곡×ko유저) — 서버는 예전부터 en/ko 원문이면 발음 생성을 건너뛰어 왔고(대각선
+ * 규칙이 생기기 전부터), 이 규칙은 target=ko일 때만 유지된다(en→ko 통째 음차는 서버에
+ * 아직 없다 — ko_reading.py의 latin_to_kana는 ja/en 타깃용이지 ko 타깃용이 아니다).
+ * 이 특례 없이 매트릭스만 적용하면 en곡+ko유저(오늘의 기본 조합)에서 서버가 절대 채우지
+ * 않을 발음을 "기대함"으로 판정해, loadTranslations가 이미 완료된 번역도 매번 다시
+ * 요청하는 회귀가 생긴다 — 실측으로 잡아 특례를 남겼다.
+ */
 function expectsPronunciation(texts: string[]): boolean {
-  const cjk = texts.join('').match(/[぀-ヿ㐀-鿿]/g);
-  return (cjk?.length ?? 0) >= 5;
+  const script = detectSongScript(texts);
+  const lang = settings.translationLanguage;
+  if (script === lang) return false; // 대각선 — 번역·발음 둘 다 생략
+  if (lang === 'ko' && script === 'en') return false; // en 원문 + target=ko 특례
+  return true;
 }
 
 /**
@@ -1172,6 +1210,10 @@ function requestTranslation(
         targetLang: settings.translationLanguage,
         title: currentSong?.title,
         artist: currentSong?.artist ?? undefined,
+        // 최초 호출에 실어 보내 서버가 이 언어 레이어로 저장하게 한다 — 성공하면 다음
+        // 조회부터는(lang 쿼리 배선 이후) 재번역 없이 서버가 바로 이 결과를 돌려준다
+        persist: true,
+        videoId,
       },
     });
     noteFailure(res.failure); // 번역은 서버 전용 경로 — 실패 사유를 상태로 남긴다
@@ -1283,7 +1325,9 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   const wikiFirst = settings.lyricsSourcePriority === 'vocaro';
   const res = await sendToBackground<LyricsData | null>({
     type: 'FETCH_LYRICS',
-    payload: { ...song, skipLrclib: wikiFirst },
+    // lang은 번역 레이어 언어별 서빙 요청용 — background가 아직 서버 호출에 넘기지 않으면
+    // (구버전 배선) 조용히 무시되고 오늘과 동일하게 동작한다
+    payload: { ...song, skipLrclib: wikiFirst, lang: settings.translationLanguage },
   });
   if (seq !== searchSeq || videoId !== currentVideoId) return;
   // 서버 조회가 실패했다면(401·연결 불가 등) 사유를 먼저 상태에 반영한다 — 그래야
@@ -1801,6 +1845,10 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           // 찾을 때 서버가 대조할 유일한 단서다 (없으면 후보 탐색이 영원히 빈손)
           title: currentSong?.title,
           artist: currentSong?.artist ?? undefined,
+          // 생성 요청자의 번역 언어 — background가 아직 서버 호출에 넘기지 않으면(구버전
+          // 배선) 서버 기본값 "ko"로 생성된다(오늘과 동일한 동작)
+          targetLang: settings.translationLanguage,
+          lineMetaLang: settings.translationLanguage,
         },
       });
     if (res.error || !res.data) {
@@ -2219,6 +2267,7 @@ async function handlePipToggle(): Promise<void> {
     },
     initialVideoRatio: settings.pipVideoRatio,
     showPronunciation: settings.showPronunciation,
+    pronScript: resolveScript(settings),
     pitchEnabled: settings.pitchGuide,
     pitchLaneHeight: settings.pitchLaneHeight,
     pitchWindowMeasures: settings.pitchWindowMeasures,

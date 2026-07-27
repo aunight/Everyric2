@@ -1,5 +1,6 @@
 import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo, SongKey, SongTempo, SyncDebugMeta } from '../types';
 import type { MicSample } from '../lib/mic-pitch';
+import { resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
 import { unknownStatus } from '../lib/server-status';
 import type { ThemeName } from '../lib/theme';
 import { h, icon } from './dom';
@@ -36,6 +37,9 @@ export interface PipOptions {
   initialVideoRatio: number;
   /** 현재 라인 밑에 한국어 발음 표기 표시 여부 */
   showPronunciation: boolean;
+  /** 발음 표기 방식(자동 해석 완료 — hangul/romaji/kana). 호출부(content.ts)가
+   *  lib/lang.ts의 resolveScript(settings)로 미리 해석해 넘긴다 */
+  pronScript: PronScript;
   /** 가라오케 음정 바 표시 여부 (노트 데이터가 있는 곡에서만 실제 표시) */
   pitchEnabled: boolean;
   /** 가라오케 레인 높이(px) — 디바이더 드래그로 조절, 설정에 저장 */
@@ -366,6 +370,9 @@ export class PipController {
   private pitchFontScale = 1.2;
   private pitchCountdown = true;
   private pitchPronPosition: 'note' | 'bottom' = 'note';
+  /** 발음 표기 방식 — setLines가 만드는 pitch.notes의 발음 부착(collectPitchData)도
+   *  이 값을 따르므로, setPronScript는 pitch를 다시 계산한다 */
+  private pronScript: PronScript = 'hangul';
   private tempo: SongTempo | null = null;
   private songKey: SongKey | null = null;
   private metronomeRate = 1;
@@ -465,6 +472,7 @@ export class PipController {
     this.pitchFontScale = opts.pitchFontScale;
     this.pitchCountdown = opts.pitchCountdown;
     this.pitchPronPosition = opts.pitchPronPosition;
+    this.pronScript = opts.pronScript;
     this.showConfidence = opts.showConfidence;
     this.metronomeRate = opts.metronomeRate;
     this.metronomeBeat = opts.metronomeBeat;
@@ -878,7 +886,7 @@ export class PipController {
   setLines(lines: LyricLine[]): void {
     this.lines = lines;
     this.index = -1;
-    this.pitch = collectPitchData(lines);
+    this.pitch = collectPitchData(lines, this.pronScript);
     const confs = lines.map(l => l.confidence).filter((v): v is number => v != null).sort((a, b) => a - b);
     const low = confs.filter(v => v < 1e-4).length / Math.max(1, confs.length);
     const mid = confs.filter(v => v >= 1e-4 && v < 2e-2).length / Math.max(1, confs.length);
@@ -962,6 +970,14 @@ export class PipController {
   /** 발음 표기 위치(노트 위/화면 하단) 즉시 반영 — 다음 tick의 renderPitch에서 바로 적용됨 */
   setPitchPronPosition(position: 'note' | 'bottom'): void {
     this.pitchPronPosition = position;
+  }
+
+  /** 발음 표기 방식 변경 즉시 반영 — 음정 노트에 부착된 발음(collectPitchData)도 다시 계산한다 */
+  setPronScript(script: PronScript): void {
+    if (this.pronScript === script) return;
+    this.pronScript = script;
+    this.pitch = collectPitchData(this.lines, this.pronScript);
+    this.renderLines();
   }
 
   /** 현재 라인 인덱스 변경 시 호출 */
@@ -1633,8 +1649,9 @@ export class PipController {
     // pitchPronPosition === 'bottom'이면 음절 타이밍이 있어도 노트 부착을 쓰지 않고
     // 항상 하단 폴백 줄(진행률 그라데이션)로 표시한다 — 줄 높이 확보 판정도 이를 따른다
     const noteAttach = this.pitchPronPosition === 'note';
-    const hasSegs = noteAttach && pages.some(p => p.line.pronSegments && p.line.pronSegments.length > 0);
-    const hasPronRow = !hasSegs && pages.some(p => p.line.pronunciation);
+    const hasSegs = noteAttach
+      && pages.some(p => (resolvedPronSegments(p.line, this.pronScript)?.length ?? 0) > 0);
+    const hasPronRow = !hasSegs && pages.some(p => resolvedPronunciation(p.line, this.pronScript));
     const hasTr = pages.some(p => p.line.translation);
     const fs = this.pitchFontScale;
     // 배율은 반드시 클램프 **이후에** 곱한다 — 예전엔 상한(34px 등) 안에서 곱해서,
@@ -1891,7 +1908,7 @@ export class PipController {
     // ── 발음 폴백 줄 (음절 타이밍이 아예 없는 곡): 현재 라인 발음 그라데이션
     const page = this.index >= 0 ? pages[Math.min(this.index, pages.length - 1)] : undefined;
     if (hasPronRow) {
-      if (page?.line.pronunciation) {
+      if (page && resolvedPronunciation(page.line, this.pronScript)) {
         this.renderPronFallback(ctx, page, now, cw, ty + pronRowH * 0.5, colors, pronPx);
       }
       ty += pronRowH;
@@ -2116,7 +2133,7 @@ export class PipController {
 
     // ── 발음 음절 레인 (기존 그대로) — 색은 음절 신뢰도, 지속은 막대
     ctx.font = '10px ui-monospace, monospace';
-    for (const s of current.line.pronSegments ?? []) {
+    for (const s of resolvedPronSegments(current.line, this.pronScript) ?? []) {
       if (s.end < t0 || s.start > t1) continue;
       const sx = x(s.start);
       const se = x(s.end);
@@ -2250,7 +2267,7 @@ export class PipController {
     colors: PitchColors,
     fontPx: number,
   ): void {
-    const pron = page.line.pronunciation ?? '';
+    const pron = resolvedPronunciation(page.line, this.pronScript) ?? '';
     if (!pron) return;
     ctx.font = `${fontPx}px system-ui, sans-serif`;
     ctx.textAlign = 'center';
@@ -2336,8 +2353,8 @@ export class PipController {
     // 음절 span을 wordEls에 합류시켜 프레임 렌더(renderFrame)의 sung 토글을 그대로 태운다
     if (this.pronEl) {
       this.pronEl.replaceChildren();
-      const pron = current?.pronunciation ?? '';
-      const segs = current?.pronSegments;
+      const pron = (current && resolvedPronunciation(current, this.pronScript)) ?? '';
+      const segs = current ? resolvedPronSegments(current, this.pronScript) : undefined;
       const mapped = current && pron && segs && segs.length > 0
         ? appendTimedSpans(this.pronEl, pron, segs, s => s.text, seg => {
             const el = h('span', { className: 'ey-pron-syl', text: seg.text });
@@ -2369,7 +2386,7 @@ export class PipController {
  * - words: 전 곡 글자 토큰
  * - lo/hi: 곡 전체 고정 세로 스케일 (최소 14반음)
  */
-function collectPitchData(lines: LyricLine[]): PitchData {
+function collectPitchData(lines: LyricLine[], script: PronScript): PitchData {
   const pages: PitchLine[] = [];
   const notes: PitchNote[] = [];
   const words: PitchWord[] = [];
@@ -2391,8 +2408,9 @@ function collectPitchData(lines: LyricLine[]): PitchData {
     lineNotes.sort((a, b) => a.start - b.start);
 
     // 발음 음절을 최대 겹침 노트에 부착 — 계이름처럼 노트에 직접 그린다
-    if (line.pronSegments) {
-      for (const seg of line.pronSegments) {
+    const pronSegs = resolvedPronSegments(line, script);
+    if (pronSegs) {
+      for (const seg of pronSegs) {
         let best: PitchNote | null = null;
         let bestOv = 0;
         for (const n of lineNotes) {
