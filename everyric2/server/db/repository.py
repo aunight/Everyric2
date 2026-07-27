@@ -11,6 +11,7 @@ from everyric2.server.db.models import (
     LinkJob,
     SyncLink,
     SyncResult,
+    TranslationLayer,
     VideoOffset,
 )
 
@@ -412,6 +413,58 @@ class SyncLinkRepository:
         await self.session.delete(existing)
         await self.session.flush()
         return True
+
+
+class TranslationLayerRepository:
+    """언어별 번역 레이어 CRUD — (video_id, fingerprint, target_lang) 유니크 기반 upsert.
+
+    SyncLinkRepository.upsert와 같은 모양(get 후 있으면 필드 교체, 없으면 새로 만들고
+    flush)을 따른다. 유니크 충돌 시 lines/attribution/origin을 통째로 새 값으로 바꾼다 —
+    부분 병합은 하지 않는다(레이어는 항상 한 번의 번역 호출 결과 전체를 담는다).
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_layer(
+        self, video_id: str, fingerprint: str, target_lang: str
+    ) -> TranslationLayer | None:
+        result = await self.session.execute(
+            select(TranslationLayer).where(
+                TranslationLayer.video_id == video_id,
+                TranslationLayer.fingerprint == fingerprint,
+                TranslationLayer.target_lang == target_lang,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_layer(
+        self,
+        video_id: str,
+        fingerprint: str,
+        target_lang: str,
+        lines: list[dict[str, Any]],
+        attribution: dict[str, Any] | None,
+        origin: str,
+    ) -> TranslationLayer:
+        existing = await self.get_layer(video_id, fingerprint, target_lang)
+        if existing:
+            existing.lines = lines
+            existing.attribution = attribution
+            existing.origin = origin
+            await self.session.flush()
+            return existing
+        layer = TranslationLayer(
+            video_id=video_id,
+            fingerprint=fingerprint,
+            target_lang=target_lang,
+            lines=lines,
+            attribution=attribution,
+            origin=origin,
+        )
+        self.session.add(layer)
+        await self.session.flush()
+        return layer
 
 
 class LinkJobRepository:

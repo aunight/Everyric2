@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, String, Text, UniqueConstraint, func
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -110,6 +110,37 @@ class SyncLink(Base):
     # 조회 응답의 linked.verified로 내려보내 클라이언트가 구분할 수 있게 한다.
     verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TranslationLayer(Base):
+    """언어별 번역의 정석 저장소 — (video_id, fingerprint, target_lang) 유니크.
+
+    번역·발음은 지금 SyncResult.timestamps의 세그먼트에 박혀 저장되는데, 그 구조는 "어느
+    언어로 번역했는지"를 어디에도 기록하지 않는다(SyncResult.language 주석 참조 — 그건
+    원문 언어지 번역 대상 언어가 아니다). 그래서 모국어가 다른 두 사용자가 같은 영상을
+    보면 먼저 만든 쪽의 번역 언어가 그대로 내려간다. 이 테이블이 그 언어 슬롯을 분리한다.
+
+    키에 video_id뿐 아니라 fingerprint(가사 원문 지문, lines_fingerprint)를 넣은 이유:
+    **가사가 같으면 싱크가 재생성되어도 번역이 살아남는다.** video_id만 키였다면 오탈자
+    수정 없는 순수 재생성(force)에서도 SyncResult가 새 행을 만들 때마다 같은 번역을 LLM에
+    다시 물어야 했을 것이다. fingerprint를 SyncResult 자체가 아니라 별도로 계산해 두는
+    이유는 여러 SyncResult(엔진 버전이 다른 재생성 등)가 같은 가사를 공유할 수 있어서다.
+    """
+
+    __tablename__ = "translation_layers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    video_id: Mapped[str] = mapped_column(String(32), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(32), index=True)
+    target_lang: Mapped[str] = mapped_column(String(8))
+    # [{"text": str, "translation": str}, ...] — 원문 라인과 번역의 병렬 배열
+    lines: Mapped[list[Any]] = mapped_column(JSON)
+    # {"name","url","license","source_id"} — 위키 등 출처 표기. LLM 번역은 None.
+    attribution: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    origin: Mapped[str] = mapped_column(String(16))  # "llm"|"wiki"|"manual"|"caption"
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("video_id", "fingerprint", "target_lang"),)
 
 
 class LinkJob(Base):
