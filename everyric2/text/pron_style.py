@@ -202,7 +202,9 @@ def _render(pieces: list[_Piece]) -> str:
     return "".join(out)
 
 
-def _render_pronunciation(text: str, tokens: list[ReadingToken]) -> str:
+def _render_pronunciation(
+    text: str, tokens: list[ReadingToken], *, latin_tight: bool = True
+) -> str:
     """이미 만들어진 토큰 열을 위키 표기 관례로 렌더한다 (표기 규칙의 단일 구현).
 
     토큰 열을 인자로 받는 이유: 같은 라인의 **다른 파스**(N-best·루비 미채택·표층 읽기·
@@ -274,10 +276,11 @@ def _render_pronunciation(text: str, tokens: list[ReadingToken]) -> str:
 
     result = _ELLIPSIS_RE.sub("…", " ".join(groups)).replace("・", " ")
     # 라틴 음차는 **여기서** 한다 — 렌더가 끝난 문자열을 보면 형태소 분석기가 쪼갠 조각이
-    # 다시 붙어 있어(it / ' / s → "it' s") 낱말 단위로 표를 조회할 수 있다. 후보 독음
-    # (``pronunciation_candidates``)도 이 함수를 지나므로 모든 후보가 같은 음차를 공유한다 —
-    # 갈라지면 오디오 심판이 "독음 차이"가 아니라 "라틴 표기 차이"를 재게 된다.
-    return " ".join(transliterate_latin(result).split())
+    # 다시 붙어 있어(it / ' / s → "it' s") 낱말 단위로 표를 조회할 수 있다. 독음(읽기)
+    # 후보들은 전부 같은 조밀 음차를 공유해 심판이 "독음 차이"만 재게 하고, 라틴 표기
+    # 축은 ``latin_tight=False``의 **느슨 후보 하나**로만 갈라진다(``pronunciation_candidates``)
+    # — 그 후보와 기본값의 유일한 차이가 라틴 표기여야 심판이 그 축만 재게 된다.
+    return " ".join(transliterate_latin(result, tight=latin_tight).split())
 
 
 def _has_japanese(text: str) -> bool:
@@ -557,4 +560,13 @@ def pronunciation_candidates(text: str, *, max_candidates: int = 8) -> list[str]
             break
         if candidate not in out:
             out.append(candidate)
+    # 라틴 느슨(비조밀) 후보 — **음절이 늘어나는 방향** 하나만. 조밀이 실측 기본값이지만
+    # 가수가 접힌 음절을 다 부르는 곡이 있다(사용자 청취 vg6pnvn1u10: 테익이 아니라
+    # 테이크). tighten은 접기/버리기만 하므로 이 후보는 기본값보다 음절이 항상 많거나
+    # 같다 — 예전 심판을 망친 삭제 편향(음절 지운 후보가 평평한 posterior에서 공짜로
+    # 이김)과 무관한 축이라 안전하다. 독음은 기본값과 동일해 유일한 차이가 라틴 표기다.
+    if len(out) < max_candidates and _LATIN_RE.search(text):
+        loose = _render_pronunciation(text, default_tokens, latin_tight=False)
+        if loose and loose not in out:
+            out.append(loose)
     return out

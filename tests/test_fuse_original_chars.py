@@ -70,6 +70,41 @@ def _starts(ws):
 LINE_START, VOCAL_END, LINE_END = 10.0, 13.14, 13.54
 
 
+def test_subdivide_clumps_within_measured_anchors():
+    """뭉침 세분 — 동일 스팬을 공유하는 글자 묶음을 균등 분할하되 묶음 경계(실측 앵커)는
+    그대로. 불일치 게이트로 역매핑이 남은 줄의 «순간이동» 체감(사용자 2026-07-28)을 없앤다."""
+    from everyric2.server.worker import _subdivide_clumped_words
+
+    r = SyncResult(
+        text="가나다라마바",
+        start_time=10.0,
+        end_time=13.0,
+        word_segments=[
+            _ws("가", 10.0, 11.0), _ws("나", 10.0, 11.0), _ws("다", 10.0, 11.0),
+            _ws("라", 11.0, 12.0), _ws("마", 11.0, 12.0),
+            _ws("바", 12.0, 13.0),
+        ],
+    )
+    changed = _subdivide_clumped_words([r])
+    assert changed == 1
+    starts = _starts(r.word_segments)
+    assert starts[0] == 10.0 and abs(starts[1] - 10.333) < 0.01 and abs(starts[2] - 10.667) < 0.01
+    assert r.word_segments[2].end == 11.0  # 묶음 끝 = 실측 앵커 보존
+    assert starts[3] == 11.0 and abs(starts[4] - 11.5) < 1e-9
+    assert starts == sorted(starts)  # 단조
+    assert r.word_segments[5].start == 12.0  # 홑 글자는 불변
+
+    # 융합된 줄(skip)은 건드리지 않는다
+    r2 = SyncResult(
+        text="가나",
+        start_time=0.0,
+        end_time=2.0,
+        word_segments=[_ws("가", 0.0, 1.0), _ws("나", 0.0, 1.0)],
+    )
+    assert _subdivide_clumped_words([r2], skip={0}) == 0
+    assert _starts(r2.word_segments) == [0.0, 0.0]
+
+
 def test_fusion_skips_lines_where_ja_disagrees_with_the_backmapping():
     """ja 실측 «모양»이 ko 역매핑과 중앙값 0.35s 넘게 어긋나는 라인은 융합하지 않는다.
 

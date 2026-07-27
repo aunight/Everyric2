@@ -730,3 +730,14 @@ def test_latin_only_lines_get_a_pronunciation_but_no_referee_candidates():
     # 재는 축이라 라틴만 있는 줄에는 줄 것이 없다(후보 0개 → 심판 비용 0).
     assert wiki_pronunciation("Approved Approved") == "어프룹 어프룹"
     assert pronunciation_candidates("Approved Approved") == []
+
+
+def test_loose_mode_opens_only_the_final_consonant():
+    """tight=False — 심판의 음절 증가 후보 축. 어말 자음만 개음절로 연다(사용자 청취:
+    가수가 접힌 마지막 음절을 다 부르는 곡이 있다 — vg6pnvn1u10 테이크)."""
+    assert latin_word_to_hangul("take", tight=False) == "테이크"
+    assert latin_word_to_hangul("need", tight=False) == "니드"
+    # 표 낱말·치찰음·어말 l은 변형이 없다 — 느슨 후보가 생기지 않는 부류
+    assert latin_word_to_hangul("want", tight=False) == "원"
+    assert latin_word_to_hangul("kiss", tight=False) == "키스"
+    assert latin_word_to_hangul("all", tight=False) == "올"

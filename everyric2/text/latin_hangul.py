@@ -603,7 +603,12 @@ def _add_coda(syls: list[list], jong: str, *, on_bare: bool = False) -> bool:
     return True
 
 
-def _assemble(units: list[tuple[str, str]]) -> str:
+def _assemble(units: list[tuple[str, str]], *, final_bare: bool = False) -> str:
+    """``final_bare=True``는 **어말 자음을 받침으로 닫지 않고 개음절로** 둔다(take 테익→
+    테이크, need 닏→니드) — 관습형에 가까운 «다 부르는» 표기로, 오디오 심판의 음절 증가
+    후보 축 전용이다(latin_word_to_hangul의 tight=False 참조). 어말만 여는 이유: 사용자
+    청취 사례(테이크·아윌 테이크 잇)가 전부 어말 접힘이 실제로 불린 경우였고, 낱말
+    중간의 받침(원트의 ㄴ, 백드롭의 ㄱ)은 관습 표기도 받침으로 적는다."""
     syls: list[list] = []
     i, n = 0, len(units)
     while i < n:
@@ -649,6 +654,9 @@ def _assemble(units: list[tuple[str, str]]) -> str:
         # 닫았더니 kiss→킷·ice→아잇·miss→밋이 나왔고 가수는 키스로 불렀다(사용자 청취
         # vg6pnvn1u10, 2026-07-28). 낱말 중간의 받침화(best→벳, text→텍스)는 그대로다.
         final_sibilant = nxt is None and onset in "ㅅㅈㅊ"
+        # final_bare 모드: 어말 자음을 받침으로 닫지 않는다 (l은 예외 — 어말 l을 개음절
+        # 르로 열면 관습에도 없는 표기가 된다: all 올, feel 필)
+        final_open = final_bare and nxt is None and val != "l"
         if val == "l":
             if _add_coda(syls, "ㄹ", on_bare=True):
                 i += 1
@@ -656,6 +664,7 @@ def _assemble(units: list[tuple[str, str]]) -> str:
         elif (
             coda
             and not final_sibilant
+            and not final_open
             and not (forced_bare and val not in _FORCES_BARE)
             and _add_coda(syls, coda)
         ):
@@ -666,9 +675,9 @@ def _assemble(units: list[tuple[str, str]]) -> str:
     return "".join(_compose(s[0], s[1], s[2]) for s in syls)
 
 
-def _rules(word: str) -> str:
+def _rules(word: str, *, final_bare: bool = False) -> str:
     silent, magic = _prepare(word)
-    return _assemble(_graphemes(word, silent, magic))
+    return _assemble(_graphemes(word, silent, magic), final_bare=final_bare)
 
 
 # ---------------------------------------------------------------------------
@@ -689,8 +698,14 @@ def _normalize(word: str) -> str:
     return "".join(kept).lower()
 
 
-def latin_word_to_hangul(word: str) -> str:
-    """라틴 낱말 1개를 조밀 한글 음차로. 음차할 수 없으면 원문을 그대로 돌려준다."""
+def latin_word_to_hangul(word: str, *, tight: bool = True) -> str:
+    """라틴 낱말 1개를 조밀 한글 음차로. 음차할 수 없으면 원문을 그대로 돌려준다.
+
+    ``tight=False``면 규칙 엔진 출력을 조밀화(tighten) 없이 돌려준다 — 관습형에 가까운
+    «음절을 다 부르는» 표기다(take 테익→테이크). 오디오 심판의 음절 증가 방향 후보
+    전용이다: 조밀이 실측 기본값이지만 가수가 접힌 음절을 실제로 부르는 곡이 있다
+    (사용자 청취 vg6pnvn1u10 「Take kiss me」 — 테이크로 부른다). 표·글자 이름 경로는
+    tight와 무관하다(실측으로 못박은 값이라 느슨한 변형이 없다 — 후보도 안 생긴다)."""
     core = _normalize(word)
     letters = core.replace("'", "")
     if not letters:
@@ -708,8 +723,11 @@ def latin_word_to_hangul(word: str) -> str:
         # 낱글자 · 모음 없는 대문자 약어(NG·DJ·TV) · 목록에 있는 두문자어(ATM·VIP)
         # → 글자 이름으로 읽는다. 그 밖의 대문자는 낱말이다(BOY·VOCALOID·LOVE·STOP).
         return "".join(_LETTER_NAMES.get(c, c) for c in letters)
-    out = _rules(letters)
-    return tighten(out) if out else word
+    if tight:
+        out = _rules(letters)
+        return tighten(out) if out else word
+    out = _rules(letters, final_bare=True)
+    return out or word
 
 
 # ---------------------------------------------------------------------------
@@ -727,8 +745,10 @@ _LATIN_WORD_RE = re.compile(r"[A-Za-z]+(?:\s*[" + _APOSTROPHES + r"]\s*[A-Za-z]+
 _DIGIT_UNITS = {"mm": "미리"}
 
 
-def transliterate_latin(text: str) -> str:
+def transliterate_latin(text: str, *, tight: bool = True) -> str:
     """문자열의 라틴 낱말만 조밀 한글 음차로 바꾼다. 라틴이 없으면 원본 그대로.
+
+    ``tight=False``는 낱말 단위로 ``latin_word_to_hangul``에 그대로 전달된다(근거는 그쪽).
 
     숫자 자체는 **손대지 않는다.** 1秒는 사람이 「이치뵤오」로 읽지만 우리는 「1뵤오」를 내고
     있고, 숫자를 일본어 수사로 읽는 것은 라틴 음차와 별개 문제(읽기 선택이 문맥·조수사에
@@ -743,6 +763,6 @@ def transliterate_latin(text: str) -> str:
             head = text[: m.start()].rstrip()
             if head and head[-1].isdigit():
                 return unit
-        return latin_word_to_hangul(m.group())
+        return latin_word_to_hangul(m.group(), tight=tight)
 
     return _LATIN_WORD_RE.sub(replace, text)

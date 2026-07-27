@@ -1780,6 +1780,44 @@ def _resynth_word_segments(word_segments, start: float, end: float) -> None:
         w.confidence = None
 
 
+def _subdivide_clumped_words(results, skip=frozenset()) -> int:
+    """역매핑이 한 음절 스팬을 여러 글자에 복사한 «뭉침»을 글자 수 균등으로 세분한다(제자리).
+
+    동일 (start, end)를 공유하는 연속 글자 묶음마다 그 스팬을 균등 분할한다 — 묶음의
+    첫 시작·마지막 끝(ko 실측 앵커)은 그대로이고 안쪽만 나뉜다. 뭉친 글자들이 동시에
+    점등했다가 다음 묶음으로 순간이동하는 카라오케 체감(사용자 보고 2026-07-28)을 없애는
+    표시 평활화이지 측정이 아니다 — 그래서 융합 가드(_measured_anchor_count)가 도는
+    융합 **뒤에만** 불러야 한다(먼저 부르면 합성 앵커가 실측 앵커 수를 부풀려 융합을
+    잘못 막는다). conf는 묶음 값을 유지한다. 반환: 세분이 일어난 줄 수.
+    """
+    changed = 0
+    for i, r in enumerate(results):
+        if i in skip or not r.word_segments:
+            continue
+        ws = r.word_segments
+        touched = False
+        j = 0
+        while j < len(ws):
+            k = j + 1
+            while (
+                k < len(ws)
+                and abs(ws[k].start - ws[j].start) < 1e-9
+                and abs(ws[k].end - ws[j].end) < 1e-9
+            ):
+                k += 1
+            n = k - j
+            if n > 1 and ws[j].end > ws[j].start:
+                base, span = ws[j].start, (ws[j].end - ws[j].start) / n
+                for m in range(n):
+                    ws[j + m].start = base + span * m
+                    ws[j + m].end = base + span * (m + 1)
+                touched = True
+            j = k
+        if touched:
+            changed += 1
+    return changed
+
+
 def _resynth_pron_segments(pron_segments, start: float, end: float) -> None:
     """pron_segments(음절 dict 목록) 시간을 [start,end]에 음절 수 균등 비례로 재합성(제자리)."""
     n = len(pron_segments or [])
@@ -3421,6 +3459,7 @@ def _run_alignment(
         # (_impossible_word_distribution)에 더 이상 안 걸려 균등 분배로 덮이지 않는다 —
         # 균등 분배는 더 나은 실측값이 없을 때의 폴백이어야 한다. 반대로 leak 라벨 라인은
         # 재합성이 그대로 덮으므로(기존 규칙 유지) 그 경로 동작은 바뀌지 않는다.
+        fused_lines: set[int] = set()
         if pron_data is not None and settings.alignment.fuse_original_chars:
             fused_lines = _fuse_original_char_timing(
                 results,
@@ -3435,6 +3474,18 @@ def _run_alignment(
                     f"Fused measured original-text char timing into {len(fused_lines)}/"
                     f"{len(results)} line(s) (ko line bounds and pron_segments kept; chars "
                     f"mapped onto each line's measured pron-syllable window)"
+                )
+
+        # 융합되지 않은 줄의 역매핑 «뭉침»(한 음절 스팬이 여러 글자에 복사됨)을 글자 수
+        # 균등으로 세분한다. 불일치 게이트로 ja 대신 역매핑이 남은 줄에서, 뭉친 글자들이
+        # 한꺼번에 점등했다가 다음 그룹으로 순간이동하는 체감 회귀가 보고됐다(사용자
+        # 2026-07-28). 그룹 «경계»는 ko 실측 그대로라 정확도는 불변이고 그룹 안에만
+        # 흐름이 생긴다. 융합 줄은 ja 실측이라 건드리지 않는다.
+        if pron_data is not None:
+            subdivided = _subdivide_clumped_words(results, skip=fused_lines)
+            if subdivided:
+                logger.info(
+                    f"Subdivided clumped back-mapped char spans on {subdivided} line(s)"
                 )
 
         # 자막 스캐폴드 (모든 스냅·클램프 뒤, 재합성·직렬화 앞): 붕괴 곡의 줄 시작을
