@@ -192,6 +192,9 @@ export interface AppSettings {
   autoLabelColors: boolean;
   /** 커팅으로 나뉜 조각을 원본 위치에 그대로 둘지. 끄면 각 글자가 있던 자리로 옮긴다. */
   keepCutPosition: boolean;
+  /** 이미 만들어진 싱크를 영상 ID로 조회할 서버. */
+  serverUrl: string;
+  serverApiKey: string;
 }
 
 export interface HostResult {

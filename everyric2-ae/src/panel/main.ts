@@ -10,6 +10,7 @@ import {
 import { installEngine } from "./engine-install";
 import { inspectEnvironment, readJsonFile, runLocalSync } from "./local-sync";
 import { normalizeSyncPayload, planLayerFill, planLineLyrics, planTypography } from "./planner";
+import { fetchServerSync } from "./server-client";
 import { fetchLatestManifest, openExternal, panelUpdate, RELEASES_URL } from "./updater";
 import type { LatestManifest } from "./updater";
 import { isNewerVersion, parseVersion, satisfiesRange, SUPPORTED_ENGINE_RANGE } from "./version";
@@ -51,6 +52,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   replacePrevious: true,
   autoLabelColors: false,
   keepCutPosition: false,
+  serverUrl: "https://everyric.moref.co",
+  serverApiKey: "",
 };
 
 function element<T extends HTMLElement>(id: string): T {
@@ -283,6 +286,14 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusCutNoSelection: "AE에서 텍스트 레이어를 선택하세요.",
     statusCutApplying: "레이어를 자르는 중…",
     statusCutApplied: "조각 {count}개로 나눴습니다.",
+    fetchServer: "서버에서 가져오기",
+    videoUrlPlaceholder: "유튜브 주소 또는 영상 ID (서버에 이미 만들어진 싱크)",
+    serverUrlHint: "이미 만들어진 싱크를 영상 ID로 조회할 서버입니다.",
+    serverKeyHint: "공개 서버에서는 비워 두세요.",
+    statusServerNeedVideo: "유튜브 주소나 영상 ID를 입력하세요.",
+    statusServerFetching: "서버에서 싱크를 가져오는 중…",
+    statusServerFetched: "서버 싱크 {count}줄을 불러왔습니다.",
+    statusServerLinked: "다른 영상({source})의 싱크를 빌려온 것입니다. 오프셋이 이 영상과 맞는지 확인하세요.",
   },
   ja: {
     settingsAria: "設定",
@@ -455,6 +466,14 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusCutNoSelection: "AEでテキストレイヤーを選択してください。",
     statusCutApplying: "レイヤーを切っています…",
     statusCutApplied: "{count}個の断片に分けました。",
+    fetchServer: "サーバーから取得",
+    videoUrlPlaceholder: "YouTubeのURLまたは動画ID（サーバーにある同期データ）",
+    serverUrlHint: "既存の同期データを動画IDで照会するサーバーです。",
+    serverKeyHint: "公開サーバーでは空のままにしてください。",
+    statusServerNeedVideo: "YouTubeのURLか動画IDを入力してください。",
+    statusServerFetching: "サーバーから同期データを取得中…",
+    statusServerFetched: "サーバーの同期データ {count} 行を読み込みました。",
+    statusServerLinked: "別の動画({source})の同期データを借りたものです。オフセットがこの動画と合うか確認してください。",
   },
   en: {
     settingsAria: "Settings",
@@ -627,6 +646,14 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusCutNoSelection: "Select a text layer in After Effects.",
     statusCutApplying: "Splitting the layer…",
     statusCutApplied: "Split into {count} pieces.",
+    fetchServer: "Fetch from server",
+    videoUrlPlaceholder: "YouTube URL or video ID (a sync the server already has)",
+    serverUrlHint: "Server to look up existing syncs by video ID.",
+    serverKeyHint: "Leave empty on the public server.",
+    statusServerNeedVideo: "Enter a YouTube URL or video ID.",
+    statusServerFetching: "Fetching the sync from the server…",
+    statusServerFetched: "Loaded {count} lines from the server.",
+    statusServerLinked: "This sync is borrowed from another video ({source}). Check that the offset fits this one.",
   },
 };
 
@@ -686,6 +713,7 @@ class EveryricStudioPanel {
     });
     this.bindClick("refreshCompBtn", () => this.refreshComp());
     this.bindClick("loadJsonBtn", () => this.loadJson());
+    this.bindClick("fetchServerBtn", () => this.fetchFromServer());
     this.bindClick("checkEngineBtn", () => this.checkEngine());
     this.bindClick("runSyncBtn", () => this.runSync());
     this.bindClick("cancelSyncBtn", () => this.cancelSync());
@@ -831,6 +859,10 @@ class EveryricStudioPanel {
     this.setText("#view-sync .section-heading h1", "syncTitle");
     this.setText("#view-sync .section-heading p", "syncIntro");
     this.setText("#loadJsonBtn", "loadJson");
+    this.setText("#fetchServerBtn", "fetchServer");
+    element<HTMLInputElement>("videoUrlInput").placeholder = this.t("videoUrlPlaceholder");
+    this.setLabelHint("serverUrlInput", "serverUrlHint");
+    this.setLabelHint("serverApiKeyInput", "serverKeyHint");
     this.setText(".divider span", "localDivider");
     this.setText('label[for="lyricsInput"]', "lyricsLabel");
     this.setText("#checkEngineBtn", "engineCheck");
@@ -971,6 +1003,8 @@ class EveryricStudioPanel {
     element<HTMLInputElement>("replacePreviousCheck").checked = this.settings.replacePrevious;
     element<HTMLInputElement>("autoLabelColorsCheck").checked = this.settings.autoLabelColors;
     element<HTMLInputElement>("keepCutPositionCheck").checked = this.settings.keepCutPosition;
+    element<HTMLInputElement>("serverUrlInput").value = this.settings.serverUrl;
+    element<HTMLInputElement>("serverApiKeyInput").value = this.settings.serverApiKey;
     this.renderPresetState();
     this.applyLocaleToUI();
   }
@@ -1005,6 +1039,8 @@ class EveryricStudioPanel {
       replacePrevious: element<HTMLInputElement>("replacePreviousCheck").checked,
       autoLabelColors: element<HTMLInputElement>("autoLabelColorsCheck").checked,
       keepCutPosition: element<HTMLInputElement>("keepCutPositionCheck").checked,
+      serverUrl: element<HTMLInputElement>("serverUrlInput").value.trim() || DEFAULT_SETTINGS.serverUrl,
+      serverApiKey: element<HTMLInputElement>("serverApiKeyInput").value.trim(),
     };
     this.saveSettings();
     if (close) {
@@ -1275,6 +1311,30 @@ class EveryricStudioPanel {
       this.setSyncDocument(normalizeSyncPayload(payload, picked.path.split(/[\\/]/).pop() ?? "JSON"));
     } catch (error) {
       this.statusKey("error", "statusParseError", { error: errorMessage(error) });
+    }
+  }
+
+  private async fetchFromServer(): Promise<void> {
+    this.captureSettings(false);
+    const query = element<HTMLInputElement>("videoUrlInput").value;
+    if (!query.trim()) {
+      this.statusKey("error", "statusServerNeedVideo");
+      return;
+    }
+    this.setBusyKey(true, "statusServerFetching");
+    try {
+      const result = await fetchServerSync(this.settings.serverUrl, query, this.settings.serverApiKey);
+      this.setSyncDocument(result.document);
+      if (result.attribution?.name) this.addProgress("info", `${this.t("cutTransLabel")} · ${result.attribution.name}`);
+      if (result.linked?.source_video_id) {
+        // 빌려온 싱크는 다른 영상 기준이라, 오프셋이 맞는지 사용자가 알아야 한다.
+        this.addProgress("warn", this.t("statusServerLinked", { source: result.linked.source_video_id }));
+      }
+      this.statusKey("success", "statusServerFetched", { count: result.document.lines.length });
+    } catch (error) {
+      this.statusKey("error", "statusParseError", { error: errorMessage(error) });
+    } finally {
+      this.setBusy(false);
     }
   }
 

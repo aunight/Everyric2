@@ -243,6 +243,9 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .update-badge:hover { background: var(--panel-2); }
 .update-badge[hidden] { display: none; }
 
+.server-input { width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); }
+.server-input:focus { outline: none; border-color: rgba(217,255,88,.4); }
+
 /* 글자 커팅 */
 .cut-stage { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(23,26,29,.72); overflow: hidden; }
 .cut-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 9px 11px; border-bottom: 1px solid var(--line-soft); }

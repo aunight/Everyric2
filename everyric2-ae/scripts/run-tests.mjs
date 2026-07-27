@@ -253,6 +253,53 @@ try {
   assert.ok(cutBlocker({ ...wholeLine, text: "君" }).includes("두 개 이상"));
   assert.ok(buildCutSession({ ...wholeLine, locked: true }, cutDocument).blocked, "a blocked layer still builds a session so the panel can explain why");
 
+  const serverOutfile = path.join(temp, "server-client.mjs");
+  await build({
+    entryPoints: [path.join(root, "src/panel/server-client.ts")],
+    outfile: serverOutfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+  });
+  const { extractVideoId, normalizeServerUrl } = await import(`${pathToFileURL(serverOutfile).href}?v=${Date.now()}`);
+  assert.equal(extractVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(extractVideoId("https://youtu.be/dQw4w9WgXcQ?t=30"), "dQw4w9WgXcQ");
+  assert.equal(extractVideoId("https://www.youtube.com/shorts/dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(extractVideoId("https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=RD"), "dQw4w9WgXcQ");
+  assert.equal(extractVideoId("dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(extractVideoId("https://example.com/video"), null, "a non-YouTube link yields no id");
+  assert.equal(extractVideoId(""), null);
+  assert.equal(normalizeServerUrl("everyric.moref.co/"), "https://everyric.moref.co");
+  assert.equal(normalizeServerUrl("http://127.0.0.1:8300//"), "http://127.0.0.1:8300", "a local http server keeps its scheme");
+  assert.equal(normalizeServerUrl("  "), "");
+
+  // 서버 응답의 timestamps는 세그먼트 배열이고 words/pronunciation/translation을 그대로 담는다.
+  const serverShaped = normalizeSyncPayload({
+    language: "ja",
+    timestamps: [
+      {
+        text: "君の名前",
+        start: 10,
+        end: 12,
+        pronunciation: "키미노 나마에",
+        translation: "너의 이름",
+        words: Array.from("君の名前").map((word, index) => ({ word, start: 10 + index * 0.5, end: 10.5 + index * 0.5 })),
+      },
+    ],
+  });
+  assert.equal(serverShaped.lines.length, 1);
+  assert.equal(serverShaped.language, "ja");
+  assert.equal(serverShaped.lines[0].atoms.length, 4, "server word timings become character atoms");
+  assert.equal(serverShaped.lines[0].pronunciation, "키미노 나마에");
+  assert.equal(serverShaped.lines[0].translation, "너의 이름");
+  const serverCut = buildCutSession(
+    { index: 1, name: "Server", inPoint: 10, outPoint: 12, text: "君の名前", sourceTextKeys: 0, locked: false },
+    serverShaped,
+  );
+  assert.equal(serverCut.matchQuality, "exact");
+  assert.equal(serverCut.pronunciation, "키미노 나마에", "the cut view carries the pronunciation as a reading aid");
+
   const hostSource = fs.readFileSync(path.join(root, "src/jsx/host.ts"), "utf8");
   assert.ok(hostSource.includes('layer.comment = "EV2|"'), "generated ownership metadata must remain in layer comments");
   assert.ok(hostSource.includes('layer.name = "EV2 " + block.id + " · "'), "generated layer names should expose card-block ids and lyric text");
