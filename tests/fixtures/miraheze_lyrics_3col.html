@@ -1,0 +1,27 @@
+<!-- vocaloidlyrics.miraheze.org의 action=parse 결과 구조만 본뜬 픽스처 (내용은 합성 더미).
+     한 페이지에 표가 둘이다: lyrics-1은 만다린 커버(lyrics-jp 헤더가 없다), lyrics-2가
+     진짜 일본어 가사 표다 — 파서는 lyrics-2를 골라야 한다. 실측된 특수 행도 함께 넣었다:
+       · 연 사이 빈 줄  <tr><td><br /></td></tr>        (칸 1개 + 내용 없음)
+       · 영어 삽입구    <td colspan="3" class="merged">  (칸 1개 + 내용 있음) -->
+<div class="mw-parser-output">
+<h2>Mandarin cover</h2>
+<table class="lyrics-table" id="lyrics-1">
+<tbody>
+<tr class="lyrics-table-header"><th class="lyrics-zh">Chinese</th><th class="lyrics-pinyin">Pinyin</th><th class="lyrics-en">English</th></tr>
+<tr><td>假的一行</td><td>jiǎ de yī háng</td><td>dummy cover line</td></tr>
+</tbody>
+</table>
+
+<h2>Japanese lyrics</h2>
+<table class="lyrics-table" id="lyrics-2">
+<tbody>
+<tr class="lyrics-table-header"><th class="lyrics-jp">Japanese</th><th class="lyrics-romaji">Romaji</th><th class="lyrics-en">English</th></tr>
+<tr><td>だみーいちぎょうめ</td><td>damii ichigyoume</td><td>dummy first line</td></tr>
+<tr style="color:#33ccff"><td>だみーにぎょうめ</td><td>damii nigyoume</td><td>dummy second line</td></tr>
+<tr><td><br /></td></tr>
+<tr><td colspan="3" class="merged nowrap">dummy interjection</td></tr>
+<tr><td>だみーさんぎょうめ<br />つづき</td><td>damii sangyoume tsuzuki</td><td>dummy third line</td></tr>
+<tr><td>だみーよんぎょうめ</td><td>damii yongyoume</td><td></td></tr>
+</tbody>
+</table>
+</div>
