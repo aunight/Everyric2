@@ -760,21 +760,32 @@ async def _lazy_attach_pron_variants(
     """
     from everyric2.text.ja_reading import reading_source
 
-    if reading_source() != "fugashi":
-        return
     segments = resp.timestamps or []
     if not any(not seg.get("pron") for seg in segments):
         return  # 전부 이미 표기가 있다 — 할 일 없음
 
-    from everyric2.server.worker import attach_pron_variants
+    def _attach_all() -> bool:
+        # **여기가 스레드인 것이 이 함수의 존재 이유다.** reading_source()의 첫 호출은
+        # fugashi+UniDic 사전 로드(수 초)이고 attach 루프도 동기 CPU다 — async 핸들러에서
+        # 인라인으로 돌리면 이벤트 루프가 통째로 멎어 /health까지 전부 타임아웃된다
+        # (실측 2026-07-28: 재시작 직후 사용자 요청 클러스터가 1.5~8s 타임아웃 — gzip
+        # 배포 재시작 7분 뒤 첫 lazy attach가 콜드 로드를 요청 경로에서 지불한 사고).
+        if reading_source() != "fugashi":
+            return False
+        from everyric2.server.worker import attach_pron_variants
 
-    for seg in segments:
-        try:
-            attach_pron_variants(seg)
-        except Exception:
-            logger.exception("Lazy pron attach failed for a segment; leaving it as-is")
+        for seg in segments:
+            try:
+                attach_pron_variants(seg)
+            except Exception:
+                logger.exception("Lazy pron attach failed for a segment; leaving it as-is")
+        return True
 
-    background_tasks.add_task(_persist_pron_variants, sync_id, segments)
+    import anyio
+
+    attached = await anyio.to_thread.run_sync(_attach_all)
+    if attached:
+        background_tasks.add_task(_persist_pron_variants, sync_id, segments)
 
 
 @router.post("/link", response_model=SyncLinkResponse)

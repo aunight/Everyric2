@@ -49,6 +49,25 @@ async def lifespan(app: FastAPI):
 
     await init_db()
     _gpu_available()  # 기동 시 프리웜 — 첫 /health가 2초 페널티를 물지 않게
+    # 읽기 엔진(fugashi+UniDic) 프리웜 — lazy attach가 요청 스레드에서 첫 사전 로드(수 초)를
+    # 지불하지 않게 기동 시 한 번 데운다. 스레드에서 돌려 기동 자체도 안 막는다. 실패해도
+    # 기능은 lazy 경로가 폴백 판정하므로 무해(로그만).
+    import anyio
+
+    def _warm_reading_engine() -> None:
+        try:
+            from everyric2.text.ja_reading import reading_source, tokenize_reading
+
+            if reading_source() == "fugashi":
+                tokenize_reading("予熱", phonetic=True, adopt_ruby=True)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Reading engine warm-up failed; lazy attach will pay the cold load"
+            )
+
+    await anyio.to_thread.run_sync(_warm_reading_engine)
     start_lease_sweeper()
     try:
         yield
