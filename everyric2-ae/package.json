@@ -13,6 +13,7 @@
     "build": "npm run clean && npm run typecheck && npm test && npm run build:panel && npm run build:jsx",
     "install-plugin": "node scripts/install.mjs",
     "dev": "npm run build && npm run install-plugin",
+    "ae:test": "node scripts/ae-cdp-run.mjs scripts/ae-cut-test.jsx",
     "build:runtime": "node scripts/build-runtime.mjs",
     "build:zxp": "node scripts/build-zxp.mjs",
     "release:zxp": "npm run build && npm run build:runtime && npm run build:zxp"
