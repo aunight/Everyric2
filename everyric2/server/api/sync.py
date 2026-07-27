@@ -230,6 +230,10 @@ class SyncLookupResponse(BaseModel):
     # lang="ko"인데 레이어가 없으면 레거시 저장분이 ko라는 이행 가정으로 "ko"를 낸다
     # (세그에 번역이 하나도 없으면 None). 레이어가 없는 비ko lang은 번역을 비우고 None.
     translation_lang: str | None = None
+    # 이 싱크(지문 기준)로 실제 서빙 가능한 번역 언어 목록 — 레이어 테이블에 존재하는
+    # target_lang + (세그에 레거시 ko 번역이 있으면 "ko" 포함), 중복 제거·정렬. lang
+    # 지정/미지정 요청 모두 채운다 — 추가 필드라 구버전 클라이언트는 무시하면 그만이다.
+    available_langs: list[str] | None = None
 
 
 class LineMeta(BaseModel):
@@ -460,26 +464,96 @@ def _build_sync_response(
     )
 
 
-async def _apply_translation_lang(
-    session, video_id: str, resp: "SyncLookupResponse", lang: str | None
-) -> "SyncLookupResponse":
-    """lang 쿼리 파라미터에 따라 조회 응답의 세그먼트 translation을 그 언어로 맞춘다.
+async def _persist_legacy_ko_layer(
+    video_id: str,
+    fingerprint: str,
+    lines: list[dict[str, Any]],
+    attribution: dict[str, Any] | None,
+) -> None:
+    """세그에 박혀 있던 레거시 ko 번역을 TranslationLayer(origin="legacy")로 백필한다.
 
-    **lang이 없으면 아무것도 하지 않는다** — 구버전 클라이언트의 응답이 필드 단위로
-    기존과 동일해야 한다는 전역 제약을 여기서 지킨다. video_id는 항상 URL 경로의
-    값(자기 싱크든 링크로 빌린 싱크든)을 쓴다 — TranslationLayer는 (video_id, fingerprint,
-    target_lang) 키라 보는 영상 기준으로 일관되게 조회해야 POST /api/translate의
-    persist=true 저장과 같은 키로 맞아떨어진다.
+    배포 이전(레이어 테이블이 생기기 전) 생성분은 ko 번역이 SyncResult.timestamps의
+    세그먼트에만 있고 레이어가 없다. lang=en 같은 비ko 조회는 레이어가 없으면 세그
+    translation을 비우므로(TranslationLayer.origin 주석 참고), 그 상태에서 재생성이 한 번
+    이라도 일어나면 원래 있던 ko 번역(위키 사람 번역 포함)을 되살릴 방법이 사라진다 —
+    두 호출부(`_apply_translation_lang`의 lang=ko 조회, `regenerate_sync`의 잡 생성 직전)가
+    이 함수로 "레이어가 아직 없으면 지금 채운다"를 수행한다.
+
+    BackgroundTasks로 스케줄되므로 요청을 처리하던 세션이 아니라 독립된 세션을 새로
+    연다 — translate.py의 `_persist_translation_layer`와 같은 동기↔비동기 브리지 뒤
+    저장 패턴이다. 실패해도 이미 나간 응답에는 영향이 없으므로 로그만 남기고 삼킨다.
+    """
+    try:
+        async with get_session() as session:
+            await TranslationLayerRepository(session).upsert_layer(
+                video_id, fingerprint, "ko", lines=lines, attribution=attribution, origin="legacy"
+            )
+    except Exception:
+        logger.exception("Failed to backfill legacy ko translation layer for video %s", video_id)
+
+
+async def _schedule_ko_backfill_if_needed(
+    session,
+    background_tasks: BackgroundTasks,
+    video_id: str,
+    segments: list[dict[str, Any]],
+    attribution: dict[str, Any] | None,
+) -> None:
+    """세그에 레거시 ko 번역이 있고 그 지문의 ko 레이어가 아직 없으면 백그라운드로 채운다.
+
+    응답(조회든 재생성이든)을 늦추지 않으려고 upsert 자체는 `_persist_legacy_ko_layer`로
+    미룬다 — 여기서는 "채울 필요가 있는가"만 판정하고 스케줄만 건다."""
+    has_translation = any((seg.get("translation") or "").strip() for seg in segments)
+    if not has_translation:
+        return
+    fingerprint = lines_fingerprint([seg.get("text", "") or "" for seg in segments])
+    if await TranslationLayerRepository(session).get_layer(video_id, fingerprint, "ko") is not None:
+        return
+    lines = [
+        {"text": seg.get("text", "") or "", "translation": seg.get("translation", "") or ""}
+        for seg in segments
+    ]
+    background_tasks.add_task(_persist_legacy_ko_layer, video_id, fingerprint, lines, attribution)
+
+
+async def _apply_translation_lang(
+    session,
+    video_id: str,
+    resp: "SyncLookupResponse",
+    lang: str | None,
+    background_tasks: BackgroundTasks,
+) -> "SyncLookupResponse":
+    """조회 응답에 available_langs를 채우고, lang이 있으면 세그먼트 translation을 그
+    언어로 맞춘다.
+
+    **available_langs는 lang 유무와 무관하게 항상 채운다** — 추가 필드라 구버전 클라이언트
+    호환에는 영향이 없다. 번역 치환은 **lang이 없으면 하지 않는다** — 구버전 클라이언트의
+    응답이 필드 단위로 기존과 동일해야 한다는 전역 제약을 여기서 지킨다. video_id는 항상
+    URL 경로의 값(자기 싱크든 링크로 빌린 싱크든)을 쓴다 — TranslationLayer는 (video_id,
+    fingerprint, target_lang) 키라 보는 영상 기준으로 일관되게 조회해야 POST
+    /api/translate의 persist=true 저장과 같은 키로 맞아떨어진다.
 
     세그먼트는 원본 result.timestamps의 리스트를 직접 건드리지 않도록 얕은 복사본을
     만들어 교체한다 — JSON 컬럼은 재할당해야 변경이 감지되므로(다른 곳의 동일 주석 참고)
     이 자체가 SyncResult를 오염시키진 않지만, 세션 수명 동안 같은 ORM 객체가 재사용될
     가능성을 원천 차단하는 편이 안전하다.
     """
-    if not lang or not resp.found:
+    if not resp.found:
         return resp
     segments = [dict(seg) for seg in (resp.timestamps or [])]
     fingerprint = lines_fingerprint([seg.get("text", "") or "" for seg in segments])
+    has_legacy_translation = any((seg.get("translation") or "").strip() for seg in segments)
+
+    layer_langs = await TranslationLayerRepository(session).list_layer_langs(video_id, fingerprint)
+    available = set(layer_langs)
+    if has_legacy_translation:
+        available.add("ko")
+    resp.available_langs = sorted(available)
+
+    if not lang:
+        resp.timestamps = segments
+        return resp
+
     layer = await TranslationLayerRepository(session).get_layer(video_id, fingerprint, lang)
     if layer is not None:
         # merge_line_meta(worker.py)와 같은 색인 규칙 — 값이 있는 첫 항목을 채택한다
@@ -497,8 +571,13 @@ async def _apply_translation_lang(
     elif lang == "ko":
         # 레이어가 없으면 저장된 레거시 번역이 ko라는 이행 가정 — 그대로 둔다.
         # 세그에 번역이 하나도 없으면 "ko"라고 우길 근거가 없으므로 None.
-        has_translation = any((seg.get("translation") or "").strip() for seg in segments)
-        resp.translation_lang = "ko" if has_translation else None
+        resp.translation_lang = "ko" if has_legacy_translation else None
+        if has_legacy_translation:
+            # 이번 조회로 레거시 ko가 노출되는 김에 레이어에 옮겨 백필한다 — 다음 번
+            # lang=en 등 비ko 조회·재생성에서도 이 번역이 살아남게 한다.
+            await _schedule_ko_backfill_if_needed(
+                session, background_tasks, video_id, segments, resp.attribution
+            )
     else:
         # 비ko이고 레이어가 없으면 레거시 값이 어느 언어인지 알 수 없다 — 비운다
         for seg in segments:
@@ -753,6 +832,17 @@ async def get_sync(
     title: Annotated[str | None, Query(max_length=256)] = None,
     artist: Annotated[str | None, Query(max_length=128)] = None,
     lang: Annotated[str | None, Query(max_length=8)] = None,
+    # 기본값을 둔 이유: `BackgroundTasks | None = None`은 FastAPI가 이 타입을 더 이상
+    # "시스템이 주입하는 특수 의존성"으로 인식하지 못하게 만들어 라우트 등록 자체가
+    # FastAPIError로 깨진다(POST /api/translate에서 실측). 그렇다고 필수 인자로 두면
+    # 이 함수를 직접 호출하는 기존 테스트 20여 곳(test_sync_link.py 등 — 이 작업의
+    # 수정 허용 범위 밖)이 전부 깨진다. `BackgroundTasks()` 기본값은 타입 주석 자체는
+    # Optional이 아니라서 FastAPI가 여전히 실제 요청마다 **새 인스턴스를 주입**하고
+    # (기본값은 무시된다 — ASGI 요청으로 직접 검증함) 응답 후 정상적으로 실행해 준다.
+    # 기본값 인스턴스는 이 함수를 직접 호출하는 기존 테스트가 인자를 생략했을 때만
+    # 쓰이는 껍데기이고, 아무도 실행해 주지 않아 그 호출들의 백필 스케줄은 조용히
+    # 버려진다(그 테스트들은 애초에 백필을 검증하지 않는다).
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """이 영상의 싱크를 조회한다. 자기 싱크 > 링크로 빌려온 싱크 순.
 
@@ -763,7 +853,8 @@ async def get_sync(
 
     lang은 선택이다 — 주면 세그먼트 translation을 그 언어의 TranslationLayer로 맞춰
     치환하고 응답의 translation_lang에 실제 반영된 언어를 담는다(규칙은
-    _apply_translation_lang 참고). 안 주면 기존 필드 그대로다(구버전 클라이언트 호환)."""
+    _apply_translation_lang 참고). 안 주면 기존 필드 그대로다(구버전 클라이언트 호환).
+    available_langs는 lang 유무와 무관하게 항상 채워진다."""
     _validate_video_id(video_id)
     async with get_session() as session:
         repo = SyncRepository(session)
@@ -776,14 +867,14 @@ async def get_sync(
                 await repo.set_title_if_missing(result, title, artist)
                 resp = _build_sync_response(result, result.timestamps)
                 resp.user_offset = user_offset
-                return await _apply_translation_lang(session, video_id, resp, lang)
+                return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
         else:
             results = await repo.get_by_video(video_id)
             if results:
                 await repo.set_title_if_missing(results[0], title, artist)
                 resp = _build_sync_response(results[0], results[0].timestamps)
                 resp.user_offset = user_offset
-                return await _apply_translation_lang(session, video_id, resp, lang)
+                return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
 
         # 자기 싱크가 없고 링크가 있으면 source 싱크를 offset 적용해 빌려 온다
         link = await SyncLinkRepository(session).get(video_id)
@@ -809,7 +900,7 @@ async def get_sync(
                 # lang 레이어는 보는 영상(video_id) 기준으로 조회한다 — source_video_id가
                 # 아니다. POST /api/translate persist=true도 항상 요청받은 video_id로
                 # 저장하므로, 조회도 같은 키를 써야 서로 맞아떨어진다.
-                return await _apply_translation_lang(session, video_id, resp, lang)
+                return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
 
         return SyncLookupResponse(found=False, user_offset=user_offset)
 
@@ -1415,11 +1506,28 @@ async def regenerate_sync(
 
     # 확인(기존 싱크/활성 잡)→생성 사이에 다른 요청이 끼면 중복 잡이 생긴다 — 직렬화
     async with _CREATE_LOCK, get_session() as session:
+        sync_repo = SyncRepository(session)
+
+        # 잡 생성 전 — 이 영상의 **최신** 싱크(새 lyrics_hash와 무관하게)에 레거시(세그
+        # 전용) ko 번역이 남아 있고 아직 레이어가 없으면 지금 백필한다. 안 하면 이번
+        # 재생성(특히 force)으로 그 세그 자체가 새 싱크로 갈아끼워지면서 옛 ko 번역
+        # (위키 사람 번역 포함)을 되살릴 방법이 사라진다 — TranslationLayer.origin="legacy"
+        # 주석 참고.
+        latest_syncs = await sync_repo.get_by_video(request.video_id)
+        if latest_syncs:
+            latest_timestamps = latest_syncs[0].timestamps or {}
+            await _schedule_ko_backfill_if_needed(
+                session,
+                background_tasks,
+                request.video_id,
+                latest_timestamps.get("segments", []) or [],
+                latest_timestamps.get("attribution"),
+            )
+
         if request.force:
             # 강제 재생성은 GPU 수십 초를 태우는 파괴적 행위 — 공개 배포에선 일일 한도 적용
             await _check_destructive_limit(session, "regenerate", request.video_id, x_api_key)
         if not request.force:
-            sync_repo = SyncRepository(session)
             existing = await sync_repo.get_by_video_and_hash(request.video_id, lyrics_hash_value)
             if existing:
                 if request.line_meta or request.attribution:

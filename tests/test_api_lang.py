@@ -18,8 +18,15 @@ from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from everyric2.config.settings import get_settings
 from everyric2.server.api import translate as translate_api
-from everyric2.server.api.sync import SyncLinkRequest, create_sync_link, get_sync
+from everyric2.server.api.sync import (
+    RegenerateRequest,
+    SyncLinkRequest,
+    create_sync_link,
+    get_sync,
+    regenerate_sync,
+)
 from everyric2.server.api.translate import TranslateRequest, translate_lyrics
 from everyric2.server.db import connection as db_conn
 from everyric2.server.db.models import Base
@@ -32,7 +39,13 @@ FP = lines_fingerprint(LINES)
 
 
 @contextlib.asynccontextmanager
-async def _env():
+async def _env(**server_overrides):
+    """in-memory SQLite로 몽키패치 + 선택적 서버 설정 오버라이드(local_worker 등).
+
+    test_caption_line_meta.py의 _env(**server_overrides)와 같은 패턴 — regenerate_sync는
+    local_worker=True(기본값)면 백그라운드로 실 워커 파이프라인(process_job)까지 큐잉하려
+    들어 유닛 테스트에서 await하면 안 된다. local_worker=False로 두면 상태만 queued로
+    마킹하고 끝나 백필 태스크만 안전하게 실행할 수 있다."""
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -43,10 +56,16 @@ async def _env():
         await conn.run_sync(Base.metadata.create_all)
     orig = db_conn.async_session
     db_conn.async_session = sm
+    server = get_settings().server
+    saved = {k: getattr(server, k) for k in server_overrides}
+    for k, v in server_overrides.items():
+        object.__setattr__(server, k, v)
     try:
         yield sm
     finally:
         db_conn.async_session = orig
+        for k, v in saved.items():
+            object.__setattr__(server, k, v)
         await engine.dispose()
 
 
@@ -424,5 +443,236 @@ def test_linked_sync_lookup_applies_lang_keyed_by_requested_video_id():
             src_resp = await get_sync("SRCSRCSRC01", lang="en")
             assert src_resp.translation_lang is None
             assert all(seg["translation"] == "" for seg in src_resp.timestamps)
+
+    asyncio.run(body())
+
+
+# ── ko 자동 백필: 실사고 시나리오 — 배포 이전 생성분의 ko 번역(위키 사람 번역 포함)이
+# en 유저의 재생성으로 서빙에서 사라지는 것을 막는다 ────────────────────────
+
+
+def test_ko_lookup_backfills_layer_and_survives_regeneration_without_legacy_segments():
+    """레이어 없는 옛 싱크를 lang=ko로 읽으면 (a) 레거시 그대로 서빙되고 (b) 백그라운드로
+    레이어에 옮겨 백필된다. 그 뒤 "en 유저가 재생성해 새 싱크의 세그엔 ko 번역이 아예
+    없는" 상황을 흉내 내도, 미리 백필된 레이어 덕분에 lang=ko 조회가 여전히 그 번역을
+    돌려준다 — 백필이 없었다면 이 지점에서 translation_lang이 None이 됐을 것이다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h1",
+                    timestamps=_seed_segments(["레거시 번역 1", "레거시 번역 2"]),
+                )
+                await s.commit()
+
+            # (1) lang=ko 조회 — 레거시 그대로 서빙 + 백그라운드 백필 스케줄
+            bg = BackgroundTasks()
+            resp = await get_sync(VIDEO, lang="ko", background_tasks=bg)
+            assert resp.translation_lang == "ko"
+            assert [seg["translation"] for seg in resp.timestamps] == [
+                "레거시 번역 1",
+                "레거시 번역 2",
+            ]
+            await _run_background(bg)
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "ko")
+                assert layer is not None
+                assert layer.origin == "legacy"
+                assert layer.lines == [
+                    {"text": "첫 줄", "translation": "레거시 번역 1"},
+                    {"text": "둘째 줄", "translation": "레거시 번역 2"},
+                ]
+
+            # (2) en 유저의 재생성을 흉내 — 같은 가사지만 새 싱크의 세그엔 ko 번역이 없다
+            async with sm() as s:
+                repo = SyncRepository(s)
+                await repo.delete_by_video(VIDEO)
+                await repo.create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            # (3) 백필된 레이어가 살아 있어 lang=ko가 여전히 복원된다
+            recovered = await get_sync(VIDEO, lang="ko")
+            assert recovered.translation_lang == "ko"
+            assert [seg["translation"] for seg in recovered.timestamps] == [
+                "레거시 번역 1",
+                "레거시 번역 2",
+            ]
+
+    asyncio.run(body())
+
+
+def test_ko_lookup_without_legacy_translation_schedules_nothing():
+    # 세그에 번역이 하나도 없으면 백필할 것도 없다 — 빈 레이어를 만들지 않는다
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            resp = await get_sync(VIDEO, lang="ko", background_tasks=bg)
+            assert resp.translation_lang is None
+            await _run_background(bg)
+
+            async with sm() as s:
+                assert await TranslationLayerRepository(s).get_layer(VIDEO, FP, "ko") is None
+
+    asyncio.run(body())
+
+
+# ── 재생성 직전 ko 백필 ───────────────────────────────────────────────
+
+
+def test_regenerate_backfills_ko_layer_before_creating_job():
+    """재생성 잡을 만들기 전에, 이 영상의 최신 싱크에 남아 있는 레거시 ko 번역을 레이어로
+    옮긴다 — 재생성(특히 force)이 그 세그 자체를 갈아끼우기 전에 선수를 친다.
+
+    local_worker=False로 둔다 — 기본값(True)이면 _dispatch_job이 실 워커 파이프라인
+    (process_job)까지 background_tasks에 얹어, 백필만 확인하려는 이 테스트가 await bg()
+    할 때 실제 다운로드·정렬을 돌리려 든다."""
+
+    async def body():
+        async with _env(local_worker=False) as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="oldhash",
+                    timestamps=_seed_segments(["레거시 번역 1", "레거시 번역 2"]),
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            await regenerate_sync(
+                RegenerateRequest(video_id=VIDEO, lyrics="완전히 다른 새 가사", force=True),
+                bg,
+                x_api_key=None,
+            )
+            await _run_background(bg)
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "ko")
+                assert layer is not None
+                assert layer.origin == "legacy"
+                assert layer.lines == [
+                    {"text": "첫 줄", "translation": "레거시 번역 1"},
+                    {"text": "둘째 줄", "translation": "레거시 번역 2"},
+                ]
+
+    asyncio.run(body())
+
+
+def test_regenerate_does_not_backfill_when_ko_layer_already_exists():
+    # 이미 레이어가 있으면(예: 이전 요청이 이미 백필함) 다시 만들 필요가 없다 — origin이
+    # "llm"이던 것을 "legacy"로 잘못 덮어쓰지 않는지 확인한다.
+    async def body():
+        async with _env(local_worker=False) as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="oldhash",
+                    timestamps=_seed_segments(["레거시 번역 1", "레거시 번역 2"]),
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "ko",
+                    lines=[{"text": "첫 줄", "translation": "이미 있던 정식 번역"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            await regenerate_sync(
+                RegenerateRequest(video_id=VIDEO, lyrics="완전히 다른 새 가사", force=True),
+                bg,
+                x_api_key=None,
+            )
+            await _run_background(bg)
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "ko")
+                assert layer.origin == "llm"  # 그대로 — legacy로 덮어써지지 않았다
+
+    asyncio.run(body())
+
+
+# ── available_langs ────────────────────────────────────────────────
+
+
+def test_available_langs_includes_stored_layers_and_legacy_ko():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO,
+                    lyrics_hash="h1",
+                    timestamps=_seed_segments(["레거시 번역 1", "레거시 번역 2"]),
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "First"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "ja",
+                    lines=[{"text": "첫 줄", "translation": "最初"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            # lang 미지정 조회도 available_langs를 채운다 — 정렬 + 레거시 ko 포함 + 중복 제거
+            resp = await get_sync(VIDEO)
+            assert resp.available_langs == ["en", "ja", "ko"]
+
+            # lang 지정 조회도 마찬가지로 채운다
+            resp_en = await get_sync(VIDEO, lang="en")
+            assert resp_en.available_langs == ["en", "ja", "ko"]
+
+    asyncio.run(body())
+
+
+def test_available_langs_excludes_ko_without_legacy_translation():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "First"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)
+            assert resp.available_langs == ["en"]
+
+    asyncio.run(body())
+
+
+def test_available_langs_is_none_when_sync_not_found():
+    async def body():
+        async with _env():
+            resp = await get_sync("NOSYNCNOS01")
+            assert resp.found is False
+            assert resp.available_langs is None
 
     asyncio.run(body())

@@ -130,6 +130,15 @@ class TranslationLayer(Base):
     수정 없는 순수 재생성(force)에서도 SyncResult가 새 행을 만들 때마다 같은 번역을 LLM에
     다시 물어야 했을 것이다. fingerprint를 SyncResult 자체가 아니라 별도로 계산해 두는
     이유는 여러 SyncResult(엔진 버전이 다른 재생성 등)가 같은 가사를 공유할 수 있어서다.
+
+    origin="legacy": 이 레이어 테이블이 생기기 전(배포 이전)에 만들어진 싱크는 ko 번역이
+    SyncResult.timestamps의 세그먼트에만 박혀 있고 레이어가 없다. lang=en 등 비ko 조회는
+    그 세그 translation을 비우므로(레이어가 없으면 어느 언어인지 알 수 없다), 그 상태에서
+    재생성(특히 force)이 한 번이라도 일어나면 원래 세그에 있던 ko 번역(위키 사람 번역
+    포함)을 되살릴 방법이 사라진다. sync.py의 GET 조회(lang=ko)와 재생성 직전 두 지점이
+    이 사고를 막기 위해 세그의 레거시 번역을 이 origin으로 레이어에 옮겨 백필한다 — "llm"이
+    아닌 이유는 실제로 LLM이 만든 값이 아닐 수 있어서다(사람 위키 번역이 세그에 병합된
+    경우 포함, attribution이 있으면 그 출처를 그대로 보존한다).
     """
 
     __tablename__ = "translation_layers"
@@ -142,7 +151,7 @@ class TranslationLayer(Base):
     lines: Mapped[list[Any]] = mapped_column(JSON)
     # {"name","url","license","source_id"} — 위키 등 출처 표기. LLM 번역은 None.
     attribution: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    origin: Mapped[str] = mapped_column(String(16))  # "llm"|"wiki"|"manual"|"caption"
+    origin: Mapped[str] = mapped_column(String(16))  # "llm"|"wiki"|"manual"|"caption"|"legacy"
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (UniqueConstraint("video_id", "fingerprint", "target_lang"),)

@@ -470,6 +470,21 @@ class TranslationLayerRepository:
         await self.session.flush()
         return layer
 
+    async def list_layer_langs(self, video_id: str, fingerprint: str) -> list[str]:
+        """이 (video_id, fingerprint)에 존재하는 레이어들의 target_lang 목록 — 정렬·중복 제거.
+
+        조회 응답의 available_langs가 이걸 쓴다 — "이 싱크로 지금 서빙 가능한 번역 언어가
+        뭐가 있나"를 클라이언트가 알 수 있게 한다."""
+        result = await self.session.execute(
+            select(TranslationLayer.target_lang)
+            .where(
+                TranslationLayer.video_id == video_id,
+                TranslationLayer.fingerprint == fingerprint,
+            )
+            .distinct()
+        )
+        return sorted(result.scalars().all())
+
 
 class LinkJobRepository:
     """링크 검증 잡 CRUD — 중복 쌍 병합·FIFO claim·결과 마감."""
