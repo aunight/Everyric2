@@ -2070,6 +2070,34 @@ async function handlePickCandidate(candidate: SearchCandidate): Promise<void> {
   applyLyricsData(data);
 }
 
+/**
+ * 서버가 lookup 응답에 동봉한 translations_by_lang(사용자 채택안, V2 확장)으로 세션
+ * 언어별 캐시(translationCache)를 첫 로딩에서 선채움한다. 기존 V2는 tryCaption/
+ * tryWiki/tryServerLayerRefresh가 "그 언어로 한 번 직접 받아온 뒤"에야 캐시가
+ * 생겨서 첫 전환은 여전히 네트워크 체인을 탔다 — 이건 그 첫 전환마저 없앤다. 서버가
+ * 이미 갖고 있던 레이어라 origin은 tryServerLayerRefresh와 같은 'server' 태그를
+ * 쓴다(정확한 원출처를 클라이언트가 모른다 — U2 배지엔 숨겨진다).
+ *
+ * availableLangs 정합: translations_by_lang에만 있고 availableLangs엔 없는 언어가
+ * 있으면(있어선 안 되지만 서버가 아직 두 필드를 완전히 같은 소스로 채우지 않는
+ * 과도기일 수 있어 방어적으로) 여기서 availableLangs에 편입한다 — 그래야 그 언어도
+ * 칩에 "보유" 스타일로 뜬다(호출부가 이 함수를 setAvailableLangs보다 먼저 부른다).
+ */
+function prefillTranslationCacheFromServer(data: LyricsData): void {
+  const videoId = currentVideoId;
+  if (!data.translationsByLang || !videoId) return;
+  const srcLines = data.lines.map(l => l.text);
+  for (const [lang, arr] of Object.entries(data.translationsByLang)) {
+    if (arr.length !== data.lines.length) continue; // 인덱스 정합 불확실 — 안전하게 건너뜀
+    if (!arr.some(Boolean)) continue; // 이 언어는 사실상 빈 레이어 — 캐시할 게 없다
+    const translated = data.lines.map((line, i) => ({ original: line.text, translation: arr[i] ?? '' }));
+    setTranslationCache(translationKey(videoId, lang, srcLines), translated, { kind: 'server' });
+    if (!data.availableLangs?.includes(lang)) {
+      data.availableLangs = [...(data.availableLangs ?? []), lang];
+    }
+  }
+}
+
 function applyLyricsData(data: LyricsData | null): void {
   const panel = ensureOverlay();
   currentData = data;
@@ -2103,6 +2131,9 @@ function applyLyricsData(data: LyricsData | null): void {
   panel.setAttribution(attribution ?? null);
   // 다른 영상 싱크를 빌려온 상태면 출처 배지·검색 시트 해제 UI에 반영
   panel.setLinked(data?.source === 'everyric' ? data.linked ?? null : null);
+  // 서버가 동봉한 언어별 번역을 세션 캐시에 선채움한다(V2 확장) — availableLangs를
+  // 갱신할 수도 있으므로 반드시 setAvailableLangs보다 먼저 부른다.
+  if (data) prefillTranslationCacheFromServer(data);
   // 제목바 언어 칩 — everyric 소스에만 의미가 있다(availableLangs는 서버 번역 레이어 목록,
   // 곡 자신의 언어는 availableLangsForChip이 항상 합쳐 넣는다 — 대각선 칩 참고).
   // 곡이 바뀌면 이전 곡에 걸려 있던 로딩 표시도 함께 지운다.

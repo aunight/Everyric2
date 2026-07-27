@@ -358,7 +358,7 @@ async function fetchLyricsChain(
   // 서버에 저장된 영상별 사용자 오프셋 — 싱크가 없어도(found=false) 내려온다
   const userOffset = sync?.user_offset ?? undefined;
   if (sync?.found && sync.timestamps && sync.timestamps.length > 0) {
-    const lines = segmentsToLines(sync.timestamps);
+    const { lines, translationsByLang } = segmentsToLines(sync.timestamps, sync.translations_by_lang);
     if (lines.length > 0) {
       return {
         source: 'everyric',
@@ -372,6 +372,9 @@ async function fetchLyricsChain(
         translationLang: sync.translation_lang ?? undefined,
         // 제목바 언어 칩용 — 구서버는 필드 자체가 없어 undefined(칩 숨김)
         availableLangs: sync.available_langs ?? undefined,
+        // 세션 언어별 캐시 선채움용(V2 확장) — segmentsToLines가 lines와 같은 순서로
+        // 이미 재정렬해 왔다. 구서버는 undefined(기존 폴백 그대로).
+        translationsByLang,
         debugMeta: sync.debug ?? undefined,
         attribution: fromWireAttribution(sync.attribution),
         tempo: sync.tempo ?? undefined,

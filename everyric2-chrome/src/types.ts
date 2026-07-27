@@ -128,6 +128,13 @@ export interface LyricsData {
    *  "보유"로 반영). undefined면 "서버 신호도 세션 내 성공도 없음" — 칩은 그래도 뜬다
    *  (곡 자신의 언어만이라도 폴백 표시, content.availableLangsForChip 참고). */
   availableLangs?: string[];
+  /** EveryricSyncResponse.translations_by_lang을 lib/lyrics-parser.segmentsToLines가
+   *  lines와 같은 순서로 재정렬한 값(V2 확장). content가 첫 로딩에서 이 필드를 훑어
+   *  세션 언어별 캐시(translationCache)를 선채움한다 — 그러면 서버가 이미 갖고 있는
+   *  언어로의 전환은 **첫 클릭부터** 네트워크 0 즉시 스왑이다(기존 V2는 그 언어를
+   *  로컬에서 한 번 직접 받아온 뒤에야 캐시가 생겨 두 번째 전환부터만 그랬다).
+   *  값이 없는 인덱스(그 세그에 번역 없음)는 undefined. */
+  translationsByLang?: Record<string, (string | undefined)[]>;
 }
 
 export interface LRCLibTrack {
@@ -269,6 +276,14 @@ export interface EveryricSyncResponse {
   /** 이 곡에 이미 저장된 번역 레이어의 언어 목록 — 제목바 언어 칩이 "보유"/"미보유"를
    *  가르는 데 쓴다. 구버전 서버는 이 필드 자체가 없으므로 undefined → 칩을 숨긴다. */
   available_langs?: string[] | null;
+  /** 이 곡에 저장된 모든 번역 레이어를 통째로 동봉(V2 확장) — 언어 코드 → **timestamps와
+   *  같은 세그 순서**의 번역 배열(그 세그에 번역이 없으면 null). lyrics-parser.
+   *  segmentsToLines가 timestamps를 정렬·필터링해 LyricLine[]으로 바꿀 때 인덱스가
+   *  바뀌므로, 이 필드도 반드시 segmentsToLines에 함께 넘겨 같은 재정렬을 거쳐야 한다
+   *  (그냥 배열 인덱스로 lines[i]에 직접 대응시키면 필터·정렬로 어긋난다). 구서버는
+   *  필드 자체가 없다 — 그 경우 세션 내 첫 전환까지는 기존 로컬 체인(자막→위키→LLM)이
+   *  그대로 동작한다(폴백, 회귀 아님). */
+  translations_by_lang?: Record<string, (string | null)[]> | null;
 }
 
 /** GET /api/sync/list 항목 — 링크 후보 선택용 */

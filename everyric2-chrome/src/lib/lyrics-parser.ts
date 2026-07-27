@@ -64,14 +64,31 @@ export function parsePlainLyrics(text: string): LyricLine[] {
     .map(line => ({ time: null, endTime: null, text: line }));
 }
 
-export function segmentsToLines(segments: EveryricSegment[]): LyricLine[] {
-  // 이진 탐색(SyncEngine)이 시간 오름차순을 전제하므로 서버 순서를 믿지 않고 정렬
+export interface SegmentsToLinesResult {
+  lines: LyricLine[];
+  /** translationsByLang을 lines와 같은 순서로 재정렬한 값 — 두 번째 인자를 안 주면 undefined */
+  translationsByLang?: Record<string, (string | undefined)[]>;
+}
+
+/**
+ * translationsByLang(있으면)은 서버가 보낸 **원본 timestamps 순서·인덱스** 기준이다.
+ * 이 함수가 유효성 필터(시작 시각·빈 텍스트)와 시간순 정렬을 거치며 순서를 바꾸므로,
+ * 그대로 lines[i]에 대응시키면 필터·정렬로 인덱스가 어긋난다 — 원본 인덱스를 함께
+ * 들고 있다가 최종 순서로 재배치해야 한다(V2 확장, 감사 지시: "lyrics-parser 매핑").
+ */
+export function segmentsToLines(
+  segments: EveryricSegment[],
+  translationsByLang?: Record<string, (string | null)[]> | null,
+): SegmentsToLinesResult {
+  // 이진 탐색(SyncEngine)이 시간 오름차순을 전제하므로 서버 순서를 믿지 않고 정렬.
+  // originalIndex를 같이 들고 다녀야 translationsByLang을 올바른 세그에 대응시킬 수 있다.
   const valid = segments
-    .filter(s => typeof s.start === 'number' && (s.text ?? '').trim().length > 0)
-    .sort((a, b) => a.start - b.start);
-  return valid.map((s, i) => ({
+    .map((s, originalIndex) => ({ s, originalIndex }))
+    .filter(({ s }) => typeof s.start === 'number' && (s.text ?? '').trim().length > 0)
+    .sort((a, b) => a.s.start - b.s.start);
+  const lines = valid.map(({ s }, i) => ({
     time: s.start,
-    endTime: s.end ?? valid[i + 1]?.start ?? null,
+    endTime: s.end ?? valid[i + 1]?.s.start ?? null,
     text: s.text.trim(),
     words: s.words && s.words.length > 0 ? s.words : undefined,
     notes: s.notes && s.notes.length > 0 ? s.notes : undefined,
@@ -95,4 +112,13 @@ export function segmentsToLines(segments: EveryricSegment[]): LyricLine[] {
         }
       : undefined,
   }));
+
+  let reindexed: Record<string, (string | undefined)[]> | undefined;
+  if (translationsByLang) {
+    reindexed = {};
+    for (const [lang, arr] of Object.entries(translationsByLang)) {
+      reindexed[lang] = valid.map(({ originalIndex }) => arr[originalIndex] ?? undefined);
+    }
+  }
+  return { lines, translationsByLang: reindexed };
 }
