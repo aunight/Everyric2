@@ -2008,7 +2008,13 @@ def _measured_vocal_window(
 
 
 def _fuse_original_char_timing(
-    results, ja_results, fixes, max_char_rate: float = 0.0, pron_data=None, label: str = "fuse"
+    results,
+    ja_results,
+    fixes,
+    max_char_rate: float = 0.0,
+    pron_data=None,
+    label: str = "fuse",
+    max_disagreement: float = 0.0,
 ) -> set[int]:
     """ko 라인 경계는 그대로 두고 **라인 내부 원문 글자 분포만** ja 정렬 실측값으로 교체.
 
@@ -2092,6 +2098,26 @@ def _fuse_original_char_timing(
             w.start = max(w.start, prev)
             w.end = max(w.end, w.start)
             prev = w.end
+        # ja 실측이 ko 역매핑과 **크게** 어긋나는 라인은 융합하지 않는다. ko 음절은 가수가
+        # 실제로 낸 소리의 발음 텍스트를 kor 어댑터로 잰 값이고, ja는 한자 OOV 치환·희소
+        # 토큰 위의 측정이라 둘이 크게 갈리면 ja가 틀린 쪽이었다(사용자 청취 2026-07-28 +
+        # 오프라인 대조: JW3N-HvU0MA 융합 25줄 중 8줄이 글자 시작 중앙값 0.35s 초과,
+        # p90 0.76s — 그 줄들이 정확히 「한글 전사가 더 정확한」 줄들이다). 해상도(뭉침
+        # 해소)는 융합의 존재 이유지만 정확도가 먼저다 — 크게 어긋나면 뭉치더라도 ko
+        # 실측에 정박한 역매핑을 지킨다. 작은 어긋남은 ja의 세밀함이 이득이라 통과시킨다.
+        if max_disagreement > 0 and r.word_segments:
+            ko_starts: dict[str, list[float]] = {}
+            for w in r.word_segments:
+                ko_starts.setdefault(w.word, []).append(w.start)
+            deltas: list[float] = []
+            for w in new:
+                lst = ko_starts.get(w.word)
+                if lst:
+                    deltas.append(abs(w.start - lst.pop(0)))
+            if deltas:
+                deltas.sort()
+                if deltas[len(deltas) // 2] > max_disagreement:
+                    continue
         r.word_segments = new
         fused.add(i)
         labels = fixes.setdefault(i, [])
@@ -3402,6 +3428,7 @@ def _run_alignment(
                 fixes,
                 settings.alignment.mass_leak_min_char_rate,
                 pron_data=pron_data,
+                max_disagreement=settings.alignment.fuse_max_disagreement_sec,
             )
             if fused_lines:
                 logger.info(

@@ -211,6 +211,20 @@ def test_nani_before_case_particle_matches_the_song():
     assert wiki_pronunciation("何を含んでたって") == "나니오 후쿤데탓테"
 
 
+def test_nanika_before_case_particle_matches_the_song():
+    # 何かを攫う → 「나니카오 사라우」(기존 오류: 「난카오」 — 사용자 청취 -tKVN2mAKRI,
+    # 2026-07-28). 何+か+격조사는 부정칭 대명사 なにか임이 표기로 확정되는 무결한 부분집합이다.
+    assert wiki_pronunciation("何かを攫う") == "나니카오 사라우"
+    assert wiki_pronunciation("何かが違う") == "나니카가 치가우"
+
+
+def test_nanika_without_case_particle_keeps_nan():
+    # 격조사가 안 따라오면 부사적 용법(회화체 なんか)과 못 가르므로 기본값 なん을 지킨다.
+    # 관용구 축(何とか)도 か 뒤에 격조사가 없어 불변이다 — 규칙 확장의 안전 경계.
+    assert wiki_pronunciation("何か違う") == "난카 치가우"
+    assert wiki_pronunciation("何とかなるさ") == "난토카 나루사"
+
+
 def test_watashi_default_matches_the_song():
     # 私は → 「와타시와」(기존 오류: 「와타쿠시와」). 같은 곡의 私たちは・私の願いは도.
     assert wiki_pronunciation("私は") == "와타시와"

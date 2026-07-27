@@ -567,30 +567,49 @@ def _adopt_counter_sandhi(tokens: list[ReadingToken]) -> None:
 # 바로 뒤에 오면 표준 발음은 なに다(실측: 何を含んでたって → 정답 「나니오 후쿤데탓테」,
 # 기존 출력 「난오 후쿤데탓테」).
 #
-# で・と・の・て・か는 일부러 뺐다 — UniDic 품사만으로는 관용구(なん 고정)와 진짜 격조사
+# で・と・の・て는 일부러 뺐다 — UniDic 품사만으로는 관용구(なん 고정)와 진짜 격조사
 # 용법(なに)을 가를 수 없다(실측: 何とか・何となく・何と言った가 何と戦う・何と一緒に와
 # 品詞・pos2 태그가 완전히 같다 — 全部 代名詞/ナン + 助詞/格助詞). 何の도 뺐다: 何の花・
 # 何のため・何の意味もない 전부 UniDic kana가 なん이고, 실제 표준 발음도 なんの다(何が
-# 만큼 확고한 なに가 아니다 — 넣으면 새 오류가 된다). 何か는 표기가 이미 なに·なん
-# 어느 쪽으로도 걸리지 않는 고정 낱말이라(か가 격조사가 아니라 副助詞) 이 표에 없어도
-# 자동으로 제외된다.
+# 만큼 확고한 なに가 아니다 — 넣으면 새 오류가 된다).
+#
+# 何か는 한때 「か가 副助詞라 자동 제외되고, 하나로 굳어 있다」고 봤는데 실측이 반증했다
+# (-tKVN2mAKRI 「何かを攫う」: 우리 「난카오」, 실제 가창 「나니카오」). 표준 발음도
+# 부정칭 대명사 何か는 なにか다(なんか는 회화체 축약). 다만 부사적 용법(なんか君って…)과
+# 표기만으로 못 가르는 경우가 있으므로 **何+か 뒤에 격조사(が・を・に)가 또 붙는 꼴만**
+# なに로 돌린다 — 何かを・何かが・何かに는 부정칭 대명사임이 표기로 확정되는 무결한
+# 부분집합이고, 위 관용구 축(何とか류)은 か 뒤에 격조사가 오지 않아 걸리지 않는다.
 _NANI_CASE_PARTICLES = frozenset({"が", "を", "に"})
 
 
 def _nani_override(words, i: int, text: str, idx: int) -> str | None:
-    """뒤에 격조사(が・を・に)가 바로 붙는 何를 なに로 읽을지 판정. 아니면 None(なん 유지)."""
+    """격조사(が・を・に)가 바로, 또는 副助詞 か를 사이에 두고 붙는 何를 なに로 읽을지 판정.
+
+    아니면 None(なん 유지)."""
     word = words[i]
     if word.surface != "何" or (getattr(word.feature, "pos1", "") or "") != "代名詞":
         return None
     if i + 1 >= len(words):
         return None
     nxt = words[i + 1]
+    tail_start = idx + len(word.surface)
+    # 何+か+격조사 (부정칭 대명사 なにか) — か 다음 토큰이 격조사인지까지 본다
+    if nxt.surface == "か" and (getattr(nxt.feature, "pos1", "") or "") == "助詞":
+        if text[tail_start : tail_start + 1] != "か" or i + 2 >= len(words):
+            return None
+        nxt2 = words[i + 2]
+        if (
+            nxt2.surface in _NANI_CASE_PARTICLES
+            and (getattr(nxt2.feature, "pos2", "") or "") == "格助詞"
+            and text[tail_start + 1 : tail_start + 1 + len(nxt2.surface)] == nxt2.surface
+        ):
+            return "なに"
+        return None
     nxt_surface = nxt.surface
     if nxt_surface not in _NANI_CASE_PARTICLES:
         return None
     if (getattr(nxt.feature, "pos2", "") or "") != "格助詞":
         return None
-    tail_start = idx + len(word.surface)
     if text[tail_start : tail_start + len(nxt_surface)] != nxt_surface:
         return None
     return "なに"

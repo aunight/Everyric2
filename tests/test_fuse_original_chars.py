@@ -70,6 +70,37 @@ def _starts(ws):
 LINE_START, VOCAL_END, LINE_END = 10.0, 13.14, 13.54
 
 
+def test_fusion_skips_lines_where_ja_disagrees_with_the_backmapping():
+    """ja 실측 «모양»이 ko 역매핑과 중앙값 0.35s 넘게 어긋나는 라인은 융합하지 않는다.
+
+    선형 사상이 전역 이동·스케일은 지워 주므로, 살아남는 불일치는 라인 안 분포의 모양
+    차이다 — 그것이 컸던 줄들이 사용자 청취에서 「한글 전사가 더 정확한」 줄들이었다
+    (JW3N-HvU0MA 융합 25줄 중 8줄 >0.35s, p90 0.76s). 그 줄은 뭉치더라도 ko 실측에
+    정박한 역매핑을 지킨다.
+    """
+    text = "가나다라마바"
+    ko = _spread(text, 10.0, 16.0)  # 역매핑이 고르게 퍼진 기준 분포
+    # ja: 앞 다섯 글자가 선두 0.5s에 뭉치고 마지막 글자만 끝에 — 비선형 모양 차이
+    ja = SyncResult(
+        text=text,
+        start_time=10.0,
+        end_time=16.0,
+        confidence=0.02,
+        word_segments=[_ws(c, 10.0 + 0.1 * k, 10.1 + 0.1 * k, 0.02) for k, c in enumerate(text[:5])]
+        + [_ws(text[5], 15.9, 16.0, 0.02)],
+    )
+    before = _starts(ko.word_segments)
+    fused = _fuse_original_char_timing([ko], [ja], {}, max_disagreement=0.35)
+    assert fused == set()
+    assert _starts(ko.word_segments) == before  # 역매핑 그대로
+
+    # 모양이 거의 같으면(±0.1s) 세밀함이 이득이라 융합된다
+    ko2 = _spread(text, 10.0, 16.0)
+    ja2 = _spread(text, 10.1, 16.1)
+    fused2 = _fuse_original_char_timing([ko2], [ja2], {}, max_disagreement=0.35)
+    assert fused2 == {0}
+
+
 def _pron(n, start, end, text="가"):
     """발음 음절 스팬 n개를 [start,end]에 균등 배치 — ko CTC 실측값 자리."""
     w = (end - start) / n

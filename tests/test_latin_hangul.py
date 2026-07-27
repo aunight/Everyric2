@@ -164,13 +164,19 @@ def test_rules_alone_reproduce_the_measured_words(word, expected):
         # 어말이면 /ɪər/. ``ar``은 원래부터 맞았다(car 카, part 팟) — 사상 문제가 아니라
         # 자소 우선순위 문제였다.
         ("learn", "런"),
-        ("earth", "엇"),
+        # 어말 치찰음(s·z·th)은 받침이 아니라 음절이다 — kiss→킷 사고의 교정
+        # (_SUNG_ALONE 주석, 사용자 청취 vg6pnvn1u10: 가수는 키스로 부른다).
+        ("earth", "어스"),
+        ("kiss", "키스"),
+        ("miss", "미스"),
+        ("ice", "아이스"),
+        ("nice", "나이스"),
         ("heard", "헏"),
         ("search", "서치"),
         ("early", "얼리"),
         ("hear", "히"),
         ("year", "이"),
-        ("years", "잇"),  # 복수의 s는 어말 판정을 막지 않는다
+        ("years", "이스"),  # 복수의 s는 어말 판정을 막지 않고, 어말 치찰음이라 음절로 남는다
         ("car", "카"),
         ("part", "팟"),
         ("start", "스탓"),
@@ -421,7 +427,7 @@ def test_initial_aw_before_a_vowel_is_the_prefix_a_plus_a_glide(word, expected):
         # 이 무리가 어웨·어웨솜이 되어 깨진다.
         ("awe", "오"),
         ("awed", "옫"),
-        ("awes", "옷"),
+        ("awes", "오스"),  # 어말 치찰음은 음절 (표의 eyes 아이즈와 같은 꼴)
         ("awesome", "오솜"),  # 2음절 ✓. 둘째 모음은 -some 접미사의 별개 결함이다(관습형 오섬)
         ("awesomely", "오소멜리"),
         ("awestruck", "옷트럭"),
@@ -470,7 +476,7 @@ def test_a_consonant_after_initial_aw_is_untouched(word, expected):
         ("dawn", "돈"),
         ("crawl", "크롤"),
         ("hawk", "혹"),
-        ("flawless", "플롤렛"),
+        ("flawless", "플롤레스"),  # 어말 치찰음은 음절
         ("sawdust", "소덧"),
         # rawhide는 aw + h인데도 /ɔː/다 — awhile을 잡으려고 aw+h를 어두 밖까지
         # 넓히면 이 낱말이 깨진다(라화읻).

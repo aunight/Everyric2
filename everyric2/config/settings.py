@@ -351,6 +351,21 @@ class AlignmentSettings(BaseSettings):
         "to restore the pure back-mapping behaviour.",
     )
 
+    fuse_max_disagreement_sec: float = Field(
+        default=0.35,
+        description="Per-line guard for fuse_original_chars (0 disables): when the ja-measured "
+        "char starts disagree with the ko back-mapping by more than this at the MEDIAN, the "
+        "line keeps its back-mapping instead of fusing. The ko syllables measure the phonetics "
+        "the singer actually produced (pronunciation text, kor adapter) while ja measures "
+        "kanji with OOV substitutions and sparse tokens — when the two diverge sharply, ja "
+        "was the wrong one (user listening 2026-07-28 across 4 songs, plus offline audit: "
+        "on JW3N-HvU0MA 8 of 25 fused lines exceeded 0.35s median with p90 0.76s, and those "
+        "were exactly the lines heard as worse than the Korean transcription). Small "
+        "disagreements pass — ja's finer intra-line grain is the whole point of fusing. 0.35s "
+        "sits at the corpus p75-p90 of the per-line disagreement distribution, above the "
+        "perceptual threshold (~0.2-0.3s) but below clear mistiming.",
+    )
+
     dual_align_conf: float = Field(
         default=0.002,
         description="Confidence floor for the dual-alignment safety net (0 disables). Once the "

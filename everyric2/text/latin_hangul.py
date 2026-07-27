@@ -83,15 +83,19 @@ def _decompose(ch: str) -> tuple[str, str, str] | None:
 # ㅌ→ㅅ / ㄷ→ㄷ는 실측 표기를 글자 출처대로 보존한 것이다: t에서 온 것은 잇·올라잇,
 # d에서 온 것은 닏·윋로 적혀 있었다(굿만 d에서 ㅅ으로 적혀 표로 못박는다). 셋 다 음가는
 # [t̚]라 정렬에는 차이가 없다.
+# ㅅ·ㅈ·ㅊ가 여기 없는 것은 의도다 — 치찰음 음절은 접지 않는다(_SUNG_ALONE 참조).
 _BARE_CODA = {
     "ㄱ": "ㄱ", "ㄴ": "ㄴ", "ㄷ": "ㄷ", "ㄹ": "ㄹ", "ㅁ": "ㅁ", "ㅂ": "ㅂ",
-    "ㅅ": "ㅅ", "ㅈ": "ㅅ", "ㅊ": "ㅅ", "ㅋ": "ㄱ", "ㅌ": "ㅅ", "ㅍ": "ㅂ",
+    "ㅋ": "ㄱ", "ㅌ": "ㅅ", "ㅍ": "ㅂ",
     "ㅎ": "",  # h는 받침이 없다 — 버린다
 }
 
-# 붙일 곳이 없어도 **버리지 않는** 초성 — 치찰음은 홀로도 부른다. 실측의 it's가 잇이 아니라
-# 잇츠(2음절)로 적혀 있는 것이 근거다. 반대로 파열음은 앞 음절이 받침으로 차 있으면 아예
-# 들리지 않는다(want 원트 → 원, approved 어프루브드 → 어프룹).
+# 접지도 버리지도 **않는** 초성 — 치찰음(스·즈·츠)은 홀로도 부르는 진짜 음절이다.
+# 실측의 it's가 잇이 아니라 잇츠(2음절)인 것이 근거이고, 한때 「붙일 곳이 있으면 접는다」로
+# 두었다가 kiss→킷, ice→아잇, miss→밋이 나오는 것을 사용자 청취로 잡았다(vg6pnvn1u10,
+# 2026-07-28 — 가수는 키스로 부른다). 관습 표기(키스·아이스·미스)도 스를 살리는 쪽이고,
+# 표로 못박았던 yes→예스도 이제 규칙만으로 같은 값이 나온다. 반대로 파열음은 앞 음절이
+# 받침으로 차 있으면 아예 들리지 않는다(want 원트 → 원, approved 어프루브드 → 어프룹).
 _SUNG_ALONE = frozenset("ㅅㅈㅊ")
 
 
@@ -125,6 +129,9 @@ def tighten(word: str) -> str:
     syls = list(word)
     while len(syls) >= 2 and _is_bare(syls[-1]):
         onset = _decompose(syls[-1])[0]
+        # 치찰음은 접지도 버리지도 않는다 — 근거는 _SUNG_ALONE 주석 (kiss→킷 사고)
+        if onset in _SUNG_ALONE:
+            break
         prev = _decompose(syls[-2])
         if prev is None:
             break
@@ -133,8 +140,6 @@ def tighten(word: str) -> str:
             syls[-2] = _compose(prev[0], prev[1], coda)
             syls.pop()
             continue
-        if onset in _SUNG_ALONE:
-            break
         syls.pop()
     return "".join(syls)
 
@@ -228,7 +233,12 @@ _CONVENTIONAL_WORDS = {
     "yes": "예스",
     "don't": "돈", "can't": "캔", "won't": "원",
     "come": "컴", "some": "섬", "done": "던", "gone": "곤",
-    "are": "아", "our": "아워", "were": "워",
+    # are — 아로 적었다가 사용자 청취 교정(vg6pnvn1u10 「Are you ready」, 2026-07-28):
+    # 가창은 r가 들리는 얼이다. 음절 수는 동일해 정렬에는 중립이고 표시가 맞아진다.
+    "are": "얼", "our": "아워", "were": "워",
+    # 규칙 엔진이 철자 모음을 그대로 읽어 틀리는 상용어 — 사용자 청취로 잡았다(위와 같은 곡).
+    # god은 o를 ㅗ로(곧), ready는 ea를 이로(리디) 읽었다. 둘 다 닫힌 예외라 표에서 잡는다.
+    "god": "갓", "ready": "레디",
     "eye": "아이", "eyes": "아이즈",
     "i'd": "아읻", "i've": "아입",  # 실측 I'm 아임 · I'll 아일과 같은 꼴(아이 + 조밀 종성)
     # heart·hearth만 ear를 /ɑːr/로 읽는다(닫힌 예외 2개). 관습형 하트를 조밀화한 값이다.
@@ -634,11 +644,21 @@ def _assemble(units: list[tuple[str, str]]) -> str:
             continue
 
         forced_bare = nxt is not None and nxt[0] == "C" and nxt[1] in _FORCES_BARE
+        # 어말 치찰음(s·z·th)은 받침으로 닫지 않고 음절(스·즈)로 살린다 — 치찰음 릴리스는
+        # 실제로 한 음절로 불린다(실측 it's→잇츠, 표의 eyes→아이즈와 같은 원리). 받침으로
+        # 닫았더니 kiss→킷·ice→아잇·miss→밋이 나왔고 가수는 키스로 불렀다(사용자 청취
+        # vg6pnvn1u10, 2026-07-28). 낱말 중간의 받침화(best→벳, text→텍스)는 그대로다.
+        final_sibilant = nxt is None and onset in "ㅅㅈㅊ"
         if val == "l":
             if _add_coda(syls, "ㄹ", on_bare=True):
                 i += 1
                 continue
-        elif coda and not (forced_bare and val not in _FORCES_BARE) and _add_coda(syls, coda):
+        elif (
+            coda
+            and not final_sibilant
+            and not (forced_bare and val not in _FORCES_BARE)
+            and _add_coda(syls, coda)
+        ):
             i += 1
             continue
         syls.append([onset, bare_jung, "", True])
