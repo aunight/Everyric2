@@ -1,4 +1,5 @@
 import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo } from '../types';
+import { t } from '../lib/i18n';
 import { describeRemoved, stripPartMarkers } from '../lib/lyrics-clean';
 import { formatLogEntry, needsHostPermission, serverBlockedTip, serverKnownBad, serverUsable, statusLine } from '../lib/server-status';
 import { h, icon, ICONS } from './dom';
@@ -97,20 +98,20 @@ function serverBarIcon(kind: ServerStatus['kind']): string {
 export function buildServerLogSection(ctx: PanelContext): HTMLDetailsElement | null {
   if (!serverKnownBad(ctx.server) && !ctx.debug) return null;
 
-  const list = h('div', { className: 'ey-log-list ey-state-sub', text: '펼치면 불러와요' });
+  const list = h('div', { className: 'ey-log-list ey-state-sub', text: t('panels.serverLog.loadHint') });
   const details = h('details', { className: 'ey-log' },
-    h('summary', { className: 'ey-log-summary', text: '최근 서버 요청 기록' }),
+    h('summary', { className: 'ey-log-summary', text: t('panels.serverLog.title') }),
     list,
   );
   let loading = false;
   const refresh = () => {
     if (loading) return;
     loading = true;
-    list.replaceChildren(h('div', { className: 'ey-state-sub', text: '불러오는 중…' }));
+    list.replaceChildren(h('div', { className: 'ey-state-sub', text: t('panels.serverLog.loading') }));
     void ctx.loadServerLog().then(entries => {
       loading = false;
       if (entries.length === 0) {
-        list.replaceChildren(h('div', { className: 'ey-state-sub', text: '기록이 없어요 (확장을 다시 로드하면 초기화돼요)' }));
+        list.replaceChildren(h('div', { className: 'ey-state-sub', text: t('panels.serverLog.empty') }));
         return;
       }
       // 경로·본문의 키류는 기록 시점에 이미 마스킹됐다 — 여기서는 그대로 그린다
@@ -151,8 +152,7 @@ export function buildServerStatusBar(ctx: PanelContext): HTMLDivElement | null {
   if (needsPerm) {
     bar.append(h('div', {
       className: 'ey-server-bar-detail',
-      text: '자체 호스팅 서버 접근은 설치 시 권한을 받지 않아요 (기본 서버에는 필요 없어요). '
-        + '전에 쓰고 있었다면 확장 업데이트로 회수됐을 수 있어요 — 한 번 허용하면 계속 유지돼요.',
+      text: t('panels.serverBar.permissionNeeded'),
     }));
   }
 
@@ -160,22 +160,22 @@ export function buildServerStatusBar(ctx: PanelContext): HTMLDivElement | null {
   if (needsPerm) {
     actions.append(h('button', {
       className: 'ey-primary-btn',
-      text: '권한 설정 열기',
-      attrs: { title: '로컬 서버 접근을 허용하는 페이지를 새 탭에서 엽니다' },
+      text: t('panels.serverBar.openPermissions'),
+      attrs: { title: t('panels.serverBar.openPermissionsTitle') },
       on: { click: () => ctx.callbacks.onOpenPermissions() },
     }));
   }
   actions.append(
     h('button', {
       className: 'ey-secondary-btn',
-      text: '다시 확인',
-      attrs: { title: '서버에 다시 연결해 봅니다' },
+      text: t('panels.serverBar.recheck'),
+      attrs: { title: t('panels.serverBar.recheckTitle') },
       on: { click: () => ctx.callbacks.onRecheckServer() },
     }),
     h('button', {
       className: 'ey-secondary-btn',
-      text: '설정 열기',
-      attrs: { title: '서버 URL과 API 키를 확인할 수 있어요' },
+      text: t('panels.serverBar.openSettings'),
+      attrs: { title: t('panels.serverBar.openSettingsTitle') },
       on: { click: () => ctx.callbacks.onOpenSettings() },
     }),
   );
@@ -220,9 +220,9 @@ export function buildSearchForm(
   initial: { title: string; artist: string },
   opts: { buttonLabel: string; submitOnEnter: boolean; onSubmit: (q: { title: string; artist: string }) => void },
 ): SearchFormRefs {
-  const titleInput = h('input', { className: 'ey-input', attrs: { placeholder: '곡 제목' } });
+  const titleInput = h('input', { className: 'ey-input', attrs: { placeholder: t('panels.search.titlePlaceholder') } });
   titleInput.value = initial.title;
-  const artistInput = h('input', { className: 'ey-input', attrs: { placeholder: '아티스트 (선택)' } });
+  const artistInput = h('input', { className: 'ey-input', attrs: { placeholder: t('panels.search.artistPlaceholder') } });
   artistInput.value = initial.artist;
 
   const submit = () => {
@@ -259,17 +259,17 @@ export function buildLyricsSearchLinks(song: SongInfo | null): HTMLDivElement {
 
   const enc = encodeURIComponent;
   const targets: { label: string; url: string }[] = [
-    { label: '나무위키', url: `https://namu.wiki/Search?q=${enc(query)}` },
-    { label: '구글', url: `https://www.google.com/search?q=${enc(`${query} 가사`)}` },
+    { label: t('panels.search.namuwiki'), url: `https://namu.wiki/Search?q=${enc(query)}` },
+    { label: t('panels.search.google'), url: `https://www.google.com/search?q=${enc(`${query} ${t('panels.search.lyricsWord')}`)}` },
     { label: 'Genius', url: `https://genius.com/search?q=${enc(query)}` },
   ];
   wrap.append(
-    h('div', { className: 'ey-state-sub', text: '다른 곳에서 가사 찾아보기' }),
-    h('div', { className: 'ey-search-links-row' }, ...targets.map(t =>
+    h('div', { className: 'ey-state-sub', text: t('panels.search.externalLinksLabel') }),
+    h('div', { className: 'ey-search-links-row' }, ...targets.map(target =>
       h('a', {
         className: 'ey-secondary-btn ey-search-link',
-        text: t.label,
-        attrs: { href: t.url, target: '_blank', rel: 'noopener noreferrer', title: `${t.label}에서 "${query}" 검색 (새 탭)` },
+        text: target.label,
+        attrs: { href: target.url, target: '_blank', rel: 'noopener noreferrer', title: t('panels.search.externalLinkTitle', [target.label, query]) },
       }))),
   );
   return wrap;
@@ -282,8 +282,7 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
   const lyricsArea = h('textarea', {
     className: 'ey-textarea',
     attrs: {
-      placeholder: '여기에 가사를 붙여넣으면 AI가 타이밍을 맞춰줘요\n'
-        + '[Verse]·1절·후렴 같은 파트 표기와 주석 줄은 자동으로 걸러내요.',
+      placeholder: t('panels.paste.placeholder'),
       rows: '6',
     },
   });
@@ -296,23 +295,23 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
   const attributionInput = h('input', {
     className: 'ey-input',
     attrs: {
-      placeholder: '출처 (선택) — 예: 나무위키, Genius',
-      title: '가사를 어디서 가져왔는지 적어두면 싱크에 함께 저장돼 출처 배지에 표시돼요. 비워도 됩니다.',
+      placeholder: t('panels.paste.attributionPlaceholder'),
+      title: t('panels.paste.attributionTitle'),
     },
   });
   const pasteSection = h('div', { className: 'ey-paste-section' },
     lyricsArea,
     h('div', {
       className: 'ey-state-sub',
-      text: '파트 표기([Verse]·1절·후렴)와 주석·크레딧 줄은 자동으로 제외해요 — 무엇을 제외했는지 알려드려요',
+      text: t('panels.paste.filterNote'),
     }),
     statusEl,
     attributionInput,
-    ctx.makeGenerateButton('붙여넣은 가사로 싱크 생성', () => {
+    ctx.makeGenerateButton(t('panels.paste.generateButton'), () => {
       const text = lyricsArea.value.trim();
       if (!text) {
         // 빈 채로 눌렀을 때 무반응이면 버튼이 죽은 줄 안다 — 안내 후 입력칸으로 포커스
-        setListStatus(statusEl, '가사를 먼저 붙여넣어 주세요');
+        setListStatus(statusEl, t('panels.paste.emptyWarning'));
         lyricsArea.focus();
         return;
       }
@@ -330,12 +329,12 @@ export function buildPasteSection(ctx: PanelContext, startOpen = false): HTMLDiv
 
   const pasteToggle = h('button', {
     className: 'ey-secondary-btn',
-    text: startOpen ? '붙여넣기 닫기' : '가사 직접 붙여넣기',
+    text: startOpen ? t('panels.paste.closeToggle') : t('panels.paste.openToggle'),
     on: {
       click: () => {
         const hidden = pasteSection.style.display === 'none';
         pasteSection.style.display = hidden ? '' : 'none';
-        pasteToggle.textContent = hidden ? '붙여넣기 닫기' : '가사 직접 붙여넣기';
+        pasteToggle.textContent = hidden ? t('panels.paste.closeToggle') : t('panels.paste.openToggle');
       },
     },
   });
@@ -363,7 +362,7 @@ export function buildServerDownState(ctx: PanelContext, song: SongInfo | null): 
       className: 'ey-state-emoji',
       text: status.kind === 'offline' || status.kind === 'error' ? '🔌' : serverBarIcon(status.kind),
     }),
-    h('div', { className: 'ey-state-text', text: status.reason || '서버를 쓸 수 없어요' }),
+    h('div', { className: 'ey-state-text', text: status.reason || t('panels.serverDown.text') }),
   );
   if (status.code) el.append(h('div', { className: 'ey-state-sub', text: status.code }));
   el.append(
@@ -371,17 +370,16 @@ export function buildServerDownState(ctx: PanelContext, song: SongInfo | null): 
     // 외부 소스에도 이 곡 가사가 없었다는 뜻이다 — 둘 다 사실대로 말한다
     h('div', {
       className: 'ey-state-sub',
-      text: '가사 검색은 서버 없이도 되지만 이 곡은 외부 소스에서도 찾지 못했어요. '
-        + '싱크 생성·재생성·번역은 서버가 있어야 해요.',
+      text: t('panels.serverDown.note'),
     }),
     buildLyricsSearchLinks(song),
     h('button', {
       className: 'ey-secondary-btn',
-      text: '가사 다시 검색',
+      text: t('panels.serverDown.retry'),
       attrs: {
         title: status.kind === 'permission'
-          ? '권한을 허용한 뒤 누르면 처음부터 다시 찾아봐요'
-          : '서버를 고친 뒤 누르면 처음부터 다시 찾아봐요',
+          ? t('panels.serverDown.retryTitlePermission')
+          : t('panels.serverDown.retryTitleOther'),
       },
       on: { click: () => ctx.callbacks.onRetrySearch() },
     }),
@@ -398,18 +396,18 @@ export function buildEmptyState(ctx: PanelContext, song: SongInfo | null): HTMLD
   const form = buildSearchForm(
     { title: song?.title ?? '', artist: song?.artist ?? '' },
     {
-      buttonLabel: '다시 검색',
+      buttonLabel: t('panels.empty.searchAgain'),
       submitOnEnter: false,
       onSubmit: q => ctx.callbacks.onRetrySearch(q),
     },
   );
   return h('div', { className: 'ey-state' },
     h('div', { className: 'ey-state-emoji', text: '🎵' }),
-    h('div', { className: 'ey-state-text', text: '가사를 찾지 못했어요' }),
+    h('div', { className: 'ey-state-text', text: t('panels.empty.title') }),
     form.el,
     h('button', {
       className: 'ey-secondary-btn',
-      text: '상세 검색 (후보 선택·싱크 연결)',
+      text: t('panels.empty.detailedSearch'),
       on: { click: () => ctx.callbacks.onOpenSearch() },
     }),
     buildLyricsSearchLinks(song),
@@ -428,7 +426,7 @@ export function buildLoadingState(ctx: PanelContext, message: string): HTMLDivEl
     // 자동 검색을 기다릴 필요 없이 바로 수동 검색으로 전환
     h('button', {
       className: 'ey-secondary-btn',
-      text: '기다리지 않고 수동 검색',
+      text: t('panels.loading.manualSearch'),
       on: { click: () => ctx.callbacks.onOpenSearch() },
     }),
   );
@@ -446,7 +444,7 @@ export function buildErrorState(ctx: PanelContext, message: string, detail?: str
   if (detail) el.append(h('div', { className: 'ey-state-sub', text: detail }));
   el.append(h('button', {
     className: 'ey-primary-btn',
-    text: '다시 시도',
+    text: t('panels.error.retry'),
     on: { click: () => ctx.callbacks.onRetrySearch() },
   }));
   return el;
@@ -467,7 +465,7 @@ export function buildGeneratingState(pct: number, text: string): GeneratingState
     h('div', { className: 'ey-state-emoji', text: '✨' }),
     textEl,
     h('div', { className: 'ey-progress' }, bar),
-    h('div', { className: 'ey-state-sub', text: '계속 시청하셔도 돼요. 완료되면 자동으로 표시됩니다.' }),
+    h('div', { className: 'ey-state-sub', text: t('panels.generating.note') }),
   );
   return { el, bar, text: textEl };
 }
@@ -508,21 +506,21 @@ export function buildSearchSheet(
 ): SearchSheetRefs {
   const results = h('div', { className: 'ey-result-list' });
   const form = buildSearchForm(state, {
-    buttonLabel: '검색',
+    buttonLabel: t('panels.searchSheet.searchButton'),
     submitOnEnter: true,
     onSubmit: q => {
-      setListStatus(results, '검색 중…');
+      setListStatus(results, t('panels.searchSheet.searching'));
       ctx.callbacks.onCandidateSearch(q);
     },
   });
   const el = h('div', { className: 'ey-state ey-search-state' },
     h('button', {
       className: 'ey-secondary-btn ey-search-back',
-      text: '← 보던 가사로 돌아가기',
+      text: t('panels.searchSheet.back'),
       on: { click: () => opts.onBack() },
     }),
-    h('div', { className: 'ey-state-text', text: '가사 검색 — 결과에서 직접 선택할 수 있어요' }),
-    h('div', { className: 'ey-state-sub', text: '보카로 위키(발음·번역 포함) + LRCLIB(싱크 가사)를 함께 검색합니다' }),
+    h('div', { className: 'ey-state-text', text: t('panels.searchSheet.title') }),
+    h('div', { className: 'ey-state-sub', text: t('panels.searchSheet.sub') }),
   );
   // 후보 검색 자체는 서버가 없어도 된다 (LRCLIB은 확장이 직접 조회한다) — 그래서 잠그지
   // 않는다. 다만 위키 원제 매칭은 서버 인덱스를 쓰므로 결과가 줄어들 수 있음을 알린다.
@@ -530,7 +528,7 @@ export function buildSearchSheet(
   if (serverKnownBad(ctx.server)) {
     el.append(h('div', {
       className: 'ey-state-sub',
-      text: 'LRCLIB 검색은 그대로 되지만, 보카로 위키 원제 매칭과 싱크 생성은 서버가 필요해요.',
+      text: t('panels.searchSheet.serverBadNote'),
     }));
   }
   el.append(
@@ -552,7 +550,7 @@ export function renderCandidateList(
   listEl: HTMLElement, candidates: SearchCandidate[], onPick: (c: SearchCandidate) => void,
 ): void {
   if (candidates.length === 0) {
-    setListStatus(listEl, '결과가 없어요 — 제목을 줄이거나 원제(일본어)로 시도해 보세요');
+    setListStatus(listEl, t('panels.results.empty'));
     return;
   }
   const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
@@ -560,13 +558,13 @@ export function renderCandidateList(
     const isWiki = c.source === 'vocaro';
     const label = isWiki ? c.title : `${c.title}${c.artist ? ' — ' + c.artist : ''}`;
     const meta = isWiki
-      ? '발음·번역'
-      : `${c.synced ? '싱크' : '일반'}${c.duration > 0 ? ` · ${fmt(c.duration)}` : ''}`;
+      ? t('panels.results.pronTranslationMeta')
+      : `${c.synced ? t('panels.results.syncedMeta') : t('panels.results.plainMeta')}${c.duration > 0 ? ` · ${fmt(c.duration)}` : ''}`;
     const btn = h('button', {
       className: 'ey-result-item',
       on: { click: () => onPick(c) },
     },
-      h('span', { className: `ey-result-src${isWiki ? ' vocaro' : ''}`, text: isWiki ? '보카로 위키' : 'LRCLIB' }),
+      h('span', { className: `ey-result-src${isWiki ? ' vocaro' : ''}`, text: isWiki ? t('panels.results.vocaroLabel') : t('panels.results.lrclibLabel') }),
       h('span', { className: 'ey-result-title', text: label }),
       h('span', { className: 'ey-result-meta', text: meta }),
     );

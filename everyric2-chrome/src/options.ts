@@ -20,7 +20,26 @@ import {
   localTarget,
   originOfPattern,
 } from './lib/host-permissions';
+import { setUiLanguage, t } from './lib/i18n';
 import { getSettings } from './lib/settings';
+
+/**
+ * 정적 마크업(data-i18n[-html])을 t()로 치환 — chrome.i18n의 __MSG_key__ 자동 치환은
+ * manifest.json 필드에서만 동작하고 임의 HTML 본문에는 적용되지 않으므로, 이 스크립트
+ * 초기화 방식이 유일한 선택지다. data-i18n-html은 <code>/<strong>/<em> 같은 인라인
+ * 마크업이 섞인 문단용(내용은 전부 이 파일이 직접 쓰는 고정 문자열이라 innerHTML이 안전하다).
+ */
+function applyStaticI18n(): void {
+  document.title = t('options.pageTitle');
+  document.querySelectorAll<HTMLElement>('[data-i18n]').forEach(el => {
+    const key = el.dataset.i18n;
+    if (key) el.textContent = t(key);
+  });
+  document.querySelectorAll<HTMLElement>('[data-i18n-html]').forEach(el => {
+    const key = el.dataset.i18nHtml;
+    if (key) el.innerHTML = t(key);
+  });
+}
 
 const rowsEl = must<HTMLDivElement>('perm-rows');
 const grantBtn = must<HTMLButtonElement>('grant');
@@ -51,9 +70,13 @@ function setMessage(text: string, tone: 'plain' | 'bad' = 'plain'): void {
   messageEl.className = tone === 'bad' ? 'bad' : '';
 }
 
-/** 현재 설정된 서버가 로컬인지 + 그렇다면 어떤 패턴이 필요한지 */
+/** 현재 설정된 서버가 로컬인지 + 그렇다면 어떤 패턴이 필요한지.
+ *  uiLanguage도 매번 다시 읽어 t()에 반영한다 — 이 페이지는 content script와 별개
+ *  실행 컨텍스트라 설정 변경을 이벤트로 못 받으므로, render()가 불릴 때마다(초기 로드·
+ *  버튼 클릭 후·권한 변경 이벤트) 최신값으로 맞춘다. */
 async function currentTarget(): Promise<{ url: string; target: ReturnType<typeof localTarget> }> {
-  const { serverUrl } = await getSettings();
+  const { serverUrl, uiLanguage } = await getSettings();
+  setUiLanguage(uiLanguage);
   return { url: serverUrl, target: localTarget(serverUrl) };
 }
 
@@ -69,28 +92,27 @@ async function render(): Promise<void> {
   // ── 현재 서버 ──────────────────────────────────────────────────
   serverUrlEl.textContent = url;
   if (target === null) {
-    serverKindEl.textContent = '원격 서버';
+    serverKindEl.textContent = t('options.serverKind.remote');
     serverKindEl.className = 'badge off';
     serverNoteEl.className = 'note';
-    serverNoteEl.textContent = '지금 설정은 원격 서버라 이 페이지의 권한이 필요하지 않아요. '
-      + '서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다.';
+    serverNoteEl.textContent = t('options.serverNote.remote');
   } else if (target.pattern === null) {
     // 로컬인데 확장이 선언하지 않은 주소 — 여기서 허용할 방법이 없다. 조용히 두면 요청이
     // 계속 실패하는데 이유를 알 수 없으므로 사실대로 적는다.
-    serverKindEl.textContent = '허용 불가';
+    serverKindEl.textContent = t('options.serverKind.notAllowed');
     serverKindEl.className = 'badge off';
     serverNoteEl.className = 'note warn';
-    serverNoteEl.textContent = `${target.origin}은 확장이 허용할 수 있는 주소가 아니에요. `
-      + `허용 가능한 로컬 주소는 ${LOCAL_SERVER_ORIGINS.map(originOfPattern).join(', ')} 뿐이고, `
-      + '다른 포트나 주소를 쓰려면 확장을 다시 빌드해야 해요.';
+    serverNoteEl.textContent = t('options.serverNote.notAllowed', [
+      target.origin, LOCAL_SERVER_ORIGINS.map(originOfPattern).join(', '),
+    ]);
   } else {
     const granted = states.find(s => s.pattern === target.pattern)?.granted === true;
-    serverKindEl.textContent = granted ? '로컬 서버 · 허용됨' : '로컬 서버 · 권한 필요';
+    serverKindEl.textContent = granted ? t('options.serverKind.grantedLocal') : t('options.serverKind.needsPermLocal');
     serverKindEl.className = granted ? 'badge on' : 'badge need';
     serverNoteEl.className = 'note';
     serverNoteEl.textContent = granted
-      ? '이 주소로 요청을 보낼 수 있어요.'
-      : `아래에서 허용해야 이 주소로 요청을 보낼 수 있어요. (요청은 ${target.origin}으로 나가요)`;
+      ? t('options.serverNote.granted')
+      : t('options.serverNote.needsPerm', [target.origin]);
   }
 
   // ── 권한 목록 ──────────────────────────────────────────────────
@@ -106,13 +128,13 @@ async function render(): Promise<void> {
     if (target?.pattern === pattern) {
       const marker = document.createElement('span');
       marker.className = 'badge need';
-      marker.textContent = '지금 설정된 서버';
+      marker.textContent = t('options.currentServerMarker');
       row.append(marker);
     }
 
     const badge = document.createElement('span');
     badge.className = granted ? 'badge on' : 'badge off';
-    badge.textContent = granted ? '허용됨' : '허용되지 않음';
+    badge.textContent = granted ? t('options.badgeGranted') : t('options.badgeNotGranted');
     row.append(badge);
     return row;
   }));
@@ -127,10 +149,10 @@ async function render(): Promise<void> {
 
   grantBtn.hidden = pendingGrant.length === 0;
   grantBtn.textContent = target === null
-    ? '로컬 서버 접근 미리 허용'
-    : '로컬 서버 접근 허용';
+    ? t('options.grantButton.preemptive')
+    : t('options.grantButton.normal');
   revokeBtn.hidden = pendingRevoke.length === 0;
-  revokeBtn.textContent = pendingRevoke.length > 1 ? '권한 전부 철회' : '권한 철회';
+  revokeBtn.textContent = pendingRevoke.length > 1 ? t('options.revokeButton.all') : t('options.revokeButton.one');
 }
 
 grantBtn.addEventListener('click', () => {
@@ -139,15 +161,11 @@ grantBtn.addEventListener('click', () => {
   // 여기서 await를 끼우면 제스처가 만료된다 — 곧바로 부른다
   chrome.permissions.request({ origins })
     .then(granted => {
-      setMessage(granted
-        ? '허용됐어요. 열려 있는 유튜브 탭의 가사 패널이 자동으로 다시 확인해요.'
-        : '허용되지 않았어요. 자체 호스팅 서버를 쓰려면 이 권한이 필요하고, '
-          + '기본 서버(everyric.moref.co)를 쓰면 권한 없이 그대로 쓸 수 있어요.',
-        granted ? 'plain' : 'bad');
+      setMessage(granted ? t('options.grantResult.success') : t('options.grantResult.denied'), granted ? 'plain' : 'bad');
       void render();
     })
     .catch((error: unknown) => {
-      setMessage(`권한을 요청하지 못했어요 — ${error instanceof Error ? error.message : String(error)}`, 'bad');
+      setMessage(t('options.grantResult.error', [error instanceof Error ? error.message : String(error)]), 'bad');
       void render();
     });
 });
@@ -157,13 +175,11 @@ revokeBtn.addEventListener('click', () => {
   if (origins.length === 0) return;
   chrome.permissions.remove({ origins })
     .then(removed => {
-      setMessage(removed
-        ? '철회했어요. 로컬 서버로는 더 이상 요청을 보내지 않아요 — 가사 패널에는 권한이 필요하다는 안내가 다시 떠요.'
-        : '철회하지 못했어요.', removed ? 'plain' : 'bad');
+      setMessage(removed ? t('options.revokeResult.success') : t('options.revokeResult.failure'), removed ? 'plain' : 'bad');
       void render();
     })
     .catch((error: unknown) => {
-      setMessage(`철회하지 못했어요 — ${error instanceof Error ? error.message : String(error)}`, 'bad');
+      setMessage(t('options.revokeResult.error', [error instanceof Error ? error.message : String(error)]), 'bad');
       void render();
     });
 });
@@ -178,4 +194,13 @@ recheckBtn.addEventListener('click', () => {
 chrome.permissions.onAdded.addListener(() => void render());
 chrome.permissions.onRemoved.addListener(() => void render());
 
-void render();
+/** uiLanguage를 먼저 읽어 t()에 반영한 뒤 정적 마크업을 치환하고, 그다음 동적 렌더를 돈다 —
+ *  순서가 바뀌면 첫 페인트에서 정적 텍스트만 구언어로 잠깐 보일 수 있다. */
+async function init(): Promise<void> {
+  const { uiLanguage } = await getSettings();
+  setUiLanguage(uiLanguage);
+  applyStaticI18n();
+  await render();
+}
+
+void init();

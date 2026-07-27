@@ -1,6 +1,7 @@
 import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo, SongKey, SongTempo, SyncDebugMeta } from '../types';
 import type { MicSample } from '../lib/mic-pitch';
 import { resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
+import { t } from '../lib/i18n';
 import { unknownStatus } from '../lib/server-status';
 import type { ThemeName } from '../lib/theme';
 import { h, icon } from './dom';
@@ -193,8 +194,15 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 }
 
-// 계이름 (pitch class 0 = 도)
+// 계이름(고정도법 솔페지) — 한국어 UI의 익숙한 값을 폴백으로 두고, 실제로는 매 렌더마다
+// solfegeNames()가 t()로 다시 읽는다(언어별로 값이 다르므로 모듈 상수로 굳히지 않는다)
 const PITCH_NAMES_KO = ['도', '도#', '레', '레#', '미', '파', '파#', '솔', '솔#', '라', '라#', '시'];
+/** 카탈로그값(쉼표 12개 토큰)을 매 호출마다 분해 — t()가 배열을 못 돌려주는 messages.json
+ *  제약을 우회한다. 실패하면(분해 결과가 12개가 아니면) 한국어 폴백으로 안전하게 되돌아간다 */
+function solfegeNames(): string[] {
+  const names = t('pip.solfege.names').split(',');
+  return names.length === 12 ? names : PITCH_NAMES_KO;
+}
 // 사이드바 음정 라벨 (영문, 멜로다인식) — C4 = MIDI 60
 const PITCH_NAMES_EN = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
@@ -479,7 +487,7 @@ export class PipController {
     this.micOctave = opts.micOctave;
 
     const doc = win.document;
-    doc.title = 'Everyric 가사';
+    doc.title = t('pip.docTitle');
     const style = doc.createElement('style');
     style.textContent = cssText;
     doc.head.append(style);
@@ -507,7 +515,7 @@ export class PipController {
 
     this.playBtn = h('button', {
       className: 'ey-pip-play',
-      title: '재생/일시정지',
+      title: t('pip.controls.playPause'),
       on: { click: () => opts.onPlayPause() },
     }, icon(PLAY_SVG));
 
@@ -515,17 +523,17 @@ export class PipController {
     // 셀렉터가 안 맞으면 클릭이 false를 돌려주므로 그 자리에서 비활성으로 내린다.
     this.prevBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
-      title: '이전 곡',
+      title: t('pip.controls.prevTrack'),
       on: { click: () => { if (!playPrevious()) this.refreshPlayerControls(); } },
     }, icon(PREV_SVG));
     this.nextBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
-      title: '다음 곡',
+      title: t('pip.controls.nextTrack'),
       on: { click: () => { if (!playNext()) this.refreshPlayerControls(); } },
     }, icon(NEXT_SVG));
     this.playlistBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
-      title: '재생목록',
+      title: t('pip.controls.playlist'),
       on: {
         click: () => {
           this.playlistOpen = !this.playlistOpen;
@@ -538,24 +546,24 @@ export class PipController {
 
     this.muteBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
-      title: '음소거',
+      title: t('pip.controls.mute'),
       on: { click: () => opts.onMuteToggle() },
     }, icon(VOLUME_SVG));
 
     this.melodyBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
-      title: '멜로디 재생 (노트 신디사이즈)',
+      title: t('pip.controls.melody'),
       on: { click: () => opts.onMelodyToggle() },
     }, icon(NOTE_SVG));
     this.metroBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute',
-      title: '메트로놈',
+      title: t('pip.controls.metronome'),
       on: { click: () => opts.onMetronomeToggle() },
     }, icon(METRO_SVG));
     // 메트로놈 세부 조절 — 배속(½×/1×/2×)과 마디 시작 박(1~4박)을 창 안에서 바로 순환
     this.metroRateBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute ey-pip-metro-opt',
-      title: '메트로놈 배속 (½× → 1× → 2×)',
+      title: t('pip.controls.metronomeRate'),
       on: {
         click: () => {
           const next = this.metronomeRate === 1 ? 2 : this.metronomeRate === 2 ? 0.5 : 1;
@@ -566,7 +574,7 @@ export class PipController {
     });
     this.metroBeatBtn = h('button', {
       className: 'ey-pip-play ey-pip-mute ey-pip-metro-opt',
-      title: '마디 시작 박 선택 (강세·마디선이 함께 이동)',
+      title: t('pip.controls.metronomeBeat'),
       on: {
         click: () => {
           const next = (this.metronomeBeat + 1) % 4;
@@ -578,7 +586,7 @@ export class PipController {
     // 레인 표시 구간(마디) ±와 진행 방식 토글 — 설정 시트까지 안 가도 창 안에서 조절
     this.windowMinusBtn = h('button', {
       className: 'ey-pip-play ey-pip-metro-opt',
-      title: '표시 구간 절반으로 (마디 수 −)',
+      title: t('pip.controls.windowMinus'),
       on: {
         click: () => {
           const next = Math.max(0.5, this.pitchWindowMeasures / 2);
@@ -589,12 +597,12 @@ export class PipController {
     }, '−');
     this.windowLabelBtn = h('button', {
       className: 'ey-pip-play ey-pip-metro-opt ey-pip-window-label',
-      title: '레인 표시 구간 (한 화면에 보이는 마디 수)',
+      title: t('pip.controls.windowLabel'),
     });
     this.windowLabelBtn.disabled = true;
     this.windowPlusBtn = h('button', {
       className: 'ey-pip-play ey-pip-metro-opt',
-      title: '표시 구간 두 배로 (마디 수 +)',
+      title: t('pip.controls.windowPlus'),
       on: {
         click: () => {
           const next = Math.min(16, this.pitchWindowMeasures * 2);
@@ -605,7 +613,7 @@ export class PipController {
     }, '+');
     this.modeBtn = h('button', {
       className: 'ey-pip-play ey-pip-metro-opt',
-      title: '진행 방식 전환 — 고정 화면(플레이헤드 이동) ↔ 스크롤(플레이헤드 고정)',
+      title: t('pip.controls.modeToggle'),
       on: {
         click: () => {
           const next = this.pitchScrollMode === 'page' ? 'scroll' : 'page';
@@ -621,7 +629,7 @@ export class PipController {
 
     this.volumeSlider = h('input', {
       className: 'ey-pip-volume',
-      title: '볼륨',
+      title: t('pip.controls.volume'),
       attrs: { type: 'range', min: '0', max: '100', step: '1', value: '100' },
     });
     this.volumeSlider.addEventListener('input', () => {
@@ -633,7 +641,7 @@ export class PipController {
     this.progressEl = h('div', { className: 'ey-pip-progress-bar' });
     const progressWrap = h('div', {
       className: 'ey-pip-progress-wrap',
-      title: '클릭해서 이동',
+      title: t('pip.controls.progressSeek'),
       on: {
         click: (e: MouseEvent) => {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -660,19 +668,19 @@ export class PipController {
     this.videoOn = opts.showVideo;
     this.cornerKaraokeBtn = h('button', {
       className: 'ey-pip-mini',
-      title: '가라오케 음정 바 켜기/끄기',
+      title: t('pip.controls.karaokeToggle'),
       on: { click: () => opts.onKaraokeToggle(!this.pitchEnabled) },
     }, icon(LANE_SVG));
     this.cornerVideoBtn = h('button', {
       className: 'ey-pip-mini',
-      title: '영상 함께 표시 켜기/끄기',
+      title: t('pip.controls.videoToggle'),
       on: { click: () => opts.onVideoToggle(!this.videoOn) },
     }, icon(SCREEN_SVG));
     // 가사뷰/피치뷰 ↔ 가사 패널(검색·붙여넣기) 전환 — 패널에 보여줄 내용이 있고
     // 되돌아갈 가사도 있을 때만 노출된다 (syncCornerButtons)
     this.cornerPanelBtn = h('button', {
       className: 'ey-pip-mini',
-      title: '가사 찾기 패널 열기/닫기',
+      title: t('pip.controls.panelToggle'),
       on: { click: () => this.togglePanel() },
     }, icon(FIND_SVG));
     this.syncCornerButtons();
@@ -917,10 +925,12 @@ export class PipController {
   private updateWindowControls(): void {
     if (this.windowLabelBtn) {
       const m = this.pitchWindowMeasures;
-      this.windowLabelBtn.textContent = m === 0.5 ? '½마디' : `${m}마디`;
+      this.windowLabelBtn.textContent = m === 0.5
+        ? t('overlay.settings.pitchWindow.half')
+        : t('overlay.settings.pitchWindow.bars', [String(m)]);
     }
     if (this.modeBtn) {
-      this.modeBtn.textContent = this.pitchScrollMode === 'page' ? '고정' : '스크롤';
+      this.modeBtn.textContent = this.pitchScrollMode === 'page' ? t('pip.controls.modeFixed') : t('pip.controls.modeScroll');
     }
     if (this.windowMinusBtn) this.windowMinusBtn.disabled = this.pitchWindowMeasures <= 0.5;
     if (this.windowPlusBtn) this.windowPlusBtn.disabled = this.pitchWindowMeasures >= 16;
@@ -944,7 +954,7 @@ export class PipController {
     if (this.metroRateBtn) {
       this.metroRateBtn.textContent = rate === 0.5 ? '½×' : `${rate}×`;
     }
-    if (this.metroBeatBtn) this.metroBeatBtn.textContent = `${beat + 1}박`;
+    if (this.metroBeatBtn) this.metroBeatBtn.textContent = t('overlay.settings.metronomeBeat.n', [String(beat + 1)]);
   }
 
   /** 마이크 음정 옥타브 보정 즉시 반영 */
@@ -1125,7 +1135,7 @@ export class PipController {
   }
 
   /** 가사 검색 중 */
-  showPanelLoading(message = '가사 검색 중…'): void {
+  showPanelLoading(message = t('overlay.loading.default')): void {
     if (!this.win) return;
     this.setPanelContent(buildLoadingState(this.panelContext(), message));
   }
@@ -1143,8 +1153,8 @@ export class PipController {
     const plain = buildPlainLines(lines);
     this.setPanelContent(h('div', { className: 'ey-pip-panel-plain' },
       h('div', { className: 'ey-banner' },
-        h('span', { className: 'ey-banner-text', text: '타임싱크가 없는 가사예요' }),
-        ctx.makeGenerateButton('싱크 생성', () => ctx.callbacks.onGenerate(plainText)),
+        h('span', { className: 'ey-banner-text', text: t('overlay.plain.noTimesync') }),
+        ctx.makeGenerateButton(t('overlay.plain.generateSync'), () => ctx.callbacks.onGenerate(plainText)),
       ),
       plain.el,
     ));
@@ -1167,7 +1177,7 @@ export class PipController {
           h('div', { className: 'ey-divider' }),
           h('button', {
             className: 'ey-secondary-btn',
-            text: '자동 검색으로 되돌리기',
+            text: t('overlay.search.backToAuto'),
             on: { click: () => ctx.callbacks.onRetrySearch() },
           }),
         ],
@@ -1479,7 +1489,7 @@ export class PipController {
   private buildPitchDivider(onHeightChange: (px: number) => void): HTMLDivElement {
     const divider = h('div', {
       className: 'ey-pip-divider ey-pip-pitch-divider',
-      title: '드래그해서 가라오케 레인 높이 조절',
+      title: t('pip.controls.laneHeightDrag'),
     }, h('div', { className: 'ey-pip-divider-grip' }));
     let dragging = false;
     let startY = 0;
@@ -1612,7 +1622,7 @@ export class PipController {
     if (this.muteBtn && muted !== this.lastMuted) {
       this.lastMuted = muted;
       this.muteBtn.replaceChildren(icon(muted ? MUTED_SVG : VOLUME_SVG));
-      this.muteBtn.title = muted ? '음소거 해제' : '음소거';
+      this.muteBtn.title = muted ? t('pip.controls.unmute') : t('pip.controls.mute');
     }
   }
 
@@ -1767,6 +1777,7 @@ export class PipController {
     const vis = notes.filter(n => n.end > t0 - edgePad && n.start < t0 + W + edgePad);
     const noteH = Math.max(5, Math.min(13, semiPx * 1.6));
     const noteR = Math.min(noteH / 2, 4);
+    const solfege = solfegeNames();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const n of vis) {
@@ -1811,7 +1822,7 @@ export class PipController {
       if (w >= 14) {
         ctx.font = `bold ${namePx}px system-ui, sans-serif`;
         ctx.fillStyle = isCurrent ? colors.text : colors.dim;
-        ctx.fillText(PITCH_NAMES_KO[((n.midi % 12) + 12) % 12], lx, Math.max(namePx * 0.7, top - namePx * 0.7));
+        ctx.fillText(solfege[((n.midi % 12) + 12) % 12], lx, Math.max(namePx * 0.7, top - namePx * 0.7));
       }
       // 발음 — 계이름처럼 노트 바로 아래에 부착 (설정 pitchPronPosition === 'note'일 때만;
       // 'bottom'이면 collectPitchData가 채워둔 n.pron은 무시하고 하단 폴백 줄만 사용)
@@ -1930,7 +1941,7 @@ export class PipController {
     // ── 곡 키·BPM 라벨 (좌상단) — 서버 멜로디 분석이 추정한 키
     if (this.songKey || this.tempo) {
       const parts: string[] = [];
-      if (this.songKey) parts.push(`키 ${this.songKey.name}`);
+      if (this.songKey) parts.push(t('pip.songKeyLabel', [this.songKey.name]));
       if (this.tempo) parts.push(`${Math.round(this.tempo.bpm)}BPM`);
       ctx.font = `${Math.max(9, Math.round(10 * fs))}px ui-monospace, monospace`;
       ctx.textAlign = 'left';
@@ -2161,9 +2172,9 @@ export class PipController {
       ctx.font = '9px ui-monospace, monospace';
       ctx.textBaseline = 'middle';
       ctx.globalAlpha = 0.9;
-      if (drewWord) { ctx.fillStyle = TIMING_WORD; ctx.fillText('원문', 4, wordY); }
-      if (drewHeard) { ctx.fillStyle = TIMING_HEARD; ctx.fillText('들림', 4, heardY); }
-      if (drewPron) { ctx.fillStyle = TIMING_PRON; ctx.fillText('발음', 4, pronY); }
+      if (drewWord) { ctx.fillStyle = TIMING_WORD; ctx.fillText(t('pip.debug.laneOriginal'), 4, wordY); }
+      if (drewHeard) { ctx.fillStyle = TIMING_HEARD; ctx.fillText(t('pip.debug.laneHeard'), 4, heardY); }
+      if (drewPron) { ctx.fillStyle = TIMING_PRON; ctx.fillText(t('pip.debug.lanePron'), 4, pronY); }
       ctx.globalAlpha = 1;
     }
 
@@ -2216,15 +2227,17 @@ export class PipController {
       const s = this.confStats;
       const at = this.debugMeta?.alignment_text;
       const parts: { text: string; color: string }[] = [
-        { text: '정렬 ', color: '#868e96' },
-        { text: `좋음${Math.round(s.ok * 100)}%`, color: CONF_COLOR_OK },
-        { text: ` 보통${Math.round(s.mid * 100)}%`, color: CONF_COLOR_MID },
-        { text: ` 낮음${Math.round(s.low * 100)}%`, color: CONF_COLOR_LOW },
+        { text: t('pip.debug.alignPrefix'), color: '#868e96' },
+        { text: t('pip.debug.gradeOk', [String(Math.round(s.ok * 100))]), color: CONF_COLOR_OK },
+        { text: t('pip.debug.gradeMid', [String(Math.round(s.mid * 100))]), color: CONF_COLOR_MID },
+        { text: t('pip.debug.gradeLow', [String(Math.round(s.low * 100))]), color: CONF_COLOR_LOW },
       ];
       if (at) {
         // 어떤 텍스트로 CTC 전사했는지: 독음 = 한국어 발음표기, 원문 = 일/영 등 원어 그대로
         parts.push({
-          text: at === 'pronunciation' ? ' · 전사:독음(한국어 발음)' : ' · 전사:원문(원어)',
+          text: t('pip.debug.alignmentTextPrefix', [
+            at === 'pronunciation' ? t('overlay.debug.alignmentPronunciation') : t('overlay.debug.alignmentOriginal'),
+          ]),
           color: '#868e96',
         });
       }
@@ -2233,13 +2246,15 @@ export class PipController {
         // 자막 골격이 타이밍을 교체했다 — 고스트 라벨(scaffold)과 같은 노랑으로 묶는다
         const src = sc.sources ?? {};
         parts.push({
-          text: ` · 자막골격 ${sc.moved ?? 0}줄(고정${src.caption ?? 0}·보간${src.interp ?? 0}·유지${src.kept ?? 0})`,
+          text: t('pip.debug.scaffoldApplied', [
+            String(sc.moved ?? 0), String(src.caption ?? 0), String(src.interp ?? 0), String(src.kept ?? 0),
+          ]),
           color: FIX_COLORS.scaffold,
         });
       } else if (sc?.skipped && sc.skipped !== 'not_collapsed') {
         // 붕괴인데 골격을 못 쓴 이유(자막 없음·매칭 미달)는 진단 가치가 있어 표시한다.
         // not_collapsed(정상 곡)는 소음이라 숨긴다.
-        parts.push({ text: ` · 자막골격 안 씀:${sc.skipped}`, color: '#868e96' });
+        parts.push({ text: t('pip.debug.scaffoldSkipped', [sc.skipped]), color: '#868e96' });
       }
       ctx.font = '10px ui-monospace, monospace';
       ctx.textAlign = 'left';
@@ -2290,7 +2305,7 @@ export class PipController {
   }
 
   private buildDivider(win: Window, onRatioChange: (ratio: number) => void): HTMLDivElement {
-    const divider = h('div', { className: 'ey-pip-divider', title: '드래그해서 영상/가사 비율 조절' },
+    const divider = h('div', { className: 'ey-pip-divider', title: t('pip.controls.videoRatioDrag') },
       h('div', { className: 'ey-pip-divider-grip' }));
     let dragging = false;
     divider.addEventListener('pointerdown', (e: PointerEvent) => {

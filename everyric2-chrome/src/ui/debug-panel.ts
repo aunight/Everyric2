@@ -1,4 +1,5 @@
 import type { LyricLine, SyncDebugMeta } from '../types';
+import { t } from '../lib/i18n';
 import { h } from './dom';
 
 /**
@@ -11,9 +12,9 @@ import { h } from './dom';
 /** 3색 정렬 신뢰도 등급 — pip.ts confBucketColor·overlay.css .ey-conf-*와 같은 경계값(재사용) */
 function confGrade(conf: number | undefined): { cls: string; label: string } | null {
   if (conf == null) return null;
-  if (conf < 1e-4) return { cls: 'ey-conf-low', label: '낮음' };
-  if (conf < 2e-2) return { cls: 'ey-conf-mid', label: '보통' };
-  return { cls: 'ey-conf-ok', label: '좋음' };
+  if (conf < 1e-4) return { cls: 'ey-conf-low', label: t('debugPanel.confLow') };
+  if (conf < 2e-2) return { cls: 'ey-conf-mid', label: t('debugPanel.confMid') };
+  return { cls: 'ey-conf-ok', label: t('debugPanel.confOk') };
 }
 
 /** updateDebug의 시각 표기(초 2자리)와 같은 형식으로 통일 */
@@ -29,11 +30,14 @@ function scaffoldSummary(meta: SyncDebugMeta | null | undefined): string | null 
     const src = sc.sources ?? {};
     const total = (src.caption ?? 0) + (src.interp ?? 0) + (src.kept ?? 0);
     const matchPct = total > 0 ? Math.round(((src.caption ?? 0) / total) * 100) : 0;
-    return `자막 스캐폴드 적용됨 — ${sc.moved ?? 0}줄 이동 (자막고정 ${matchPct}% · 고정${src.caption ?? 0}·보간${src.interp ?? 0}·유지${src.kept ?? 0})`;
+    return t('debugPanel.scaffoldApplied', [
+      String(sc.moved ?? 0), String(matchPct),
+      String(src.caption ?? 0), String(src.interp ?? 0), String(src.kept ?? 0),
+    ]);
   }
   // not_collapsed(정상 곡이라 애초에 시도조차 안 함)는 소음이라 생략 — pip.ts 디버그 오버레이와 같은 판단
   if (sc.skipped && sc.skipped !== 'not_collapsed') {
-    return `자막 스캐폴드 안 씀 — ${sc.skipped}`;
+    return t('debugPanel.scaffoldSkipped', [sc.skipped]);
   }
   return null;
 }
@@ -59,7 +63,7 @@ export function buildDebugPanel(
   }
 
   if (lines.length === 0) {
-    el.append(h('div', { className: 'ey-debug-panel-empty', text: '표시할 라인이 없어요' }));
+    el.append(h('div', { className: 'ey-debug-panel-empty', text: t('debugPanel.empty') }));
     return { el };
   }
 
@@ -77,7 +81,7 @@ export function buildDebugPanel(
       h('div', { className: 'ey-debug-row-orig', text: line.text }));
     // heard(CTC가 실제로 들은 것) — 원문과 구분되게 흐린 색으로, 있을 때만
     if (dbg?.heard) {
-      textCol.append(h('div', { className: 'ey-debug-row-heard', text: `들림: ${dbg.heard}` }));
+      textCol.append(h('div', { className: 'ey-debug-row-heard', text: t('debugPanel.heardPrefix', [dbg.heard]) }));
     }
     // fixes 라벨 + 심판 개입(⚖) — 한 줄에 이어 붙인다(있는 것만)
     const labels: string[] = [];
@@ -93,7 +97,7 @@ export function buildDebugPanel(
     const row = h('button', {
       className: 'ey-debug-row',
       attrs: { type: 'button' },
-      title: '클릭해서 이 구간으로 이동',
+      title: t('debugPanel.seekTitle'),
       on: {
         click: () => {
           if (line.time !== null) onSeek(line.time);

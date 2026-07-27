@@ -1,5 +1,6 @@
 import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncDebugMeta, SyncListItem } from '../types';
 import { resolveScript, resolvedPronSegments, resolvedPronunciation } from '../lib/lang';
+import { t } from '../lib/i18n';
 import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
 import { resolveTheme } from '../lib/theme';
 import { buildDebugPanel } from './debug-panel';
@@ -190,21 +191,21 @@ export class LyricsOverlay {
     style.textContent = cssText;
     shadow.append(style);
 
-    this.songTitleEl = h('div', { className: 'ey-song-title', text: '노래 인식 중…' });
+    this.songTitleEl = h('div', { className: 'ey-song-title', text: t('overlay.detecting') });
     this.songArtistEl = h('div', { className: 'ey-song-artist' });
 
-    this.pipBtn = this.headerButton(ICONS.pip, 'PiP 창으로 보기', () => this.callbacks.onPipToggle());
+    this.pipBtn = this.headerButton(ICONS.pip, t('overlay.header.pip'), () => this.callbacks.onPipToggle());
     this.pipBtn.style.display = 'none';
-    this.regenBtn = this.headerButton(ICONS.refresh, '싱크 다시 생성 (서버 캐시 무시)', () => {
-      if (window.confirm('서버 싱크를 다시 생성할까요?\n1분 정도 걸리고, 완료될 때까지 기존 가사는 계속 표시됩니다.')) {
+    this.regenBtn = this.headerButton(ICONS.refresh, t('overlay.header.regen'), () => {
+      if (window.confirm(t('overlay.header.regenConfirm'))) {
         this.callbacks.onRegenerate();
       }
     });
     this.regenBtn.style.display = 'none';
-    const searchBtn = this.headerButton(ICONS.search, '가사 다시 검색 (다른 결과 선택)', () => this.openSearch());
-    const gearBtn = this.headerButton(ICONS.gear, '설정', () => this.toggleSettings());
-    this.collapseBtn = this.headerButton(ICONS.collapse, '접기', () => this.setCollapsed(!this.geometry.collapsed));
-    const closeBtn = this.headerButton(ICONS.close, '닫기 (툴바 아이콘으로 다시 열기)', () => this.setVisible(false));
+    const searchBtn = this.headerButton(ICONS.search, t('overlay.header.search'), () => this.openSearch());
+    const gearBtn = this.headerButton(ICONS.gear, t('overlay.header.settings'), () => this.toggleSettings());
+    this.collapseBtn = this.headerButton(ICONS.collapse, t('overlay.header.collapse'), () => this.setCollapsed(!this.geometry.collapsed));
+    const closeBtn = this.headerButton(ICONS.close, t('overlay.header.close'), () => this.setVisible(false));
 
     this.header = h('div', { className: 'ey-header' },
       h('div', { className: 'ey-header-left' },
@@ -226,7 +227,7 @@ export class LyricsOverlay {
     this.genList = h('div', { className: 'ey-gen-list' });
     this.genList.style.display = 'none';
     this.genChip.style.cursor = 'pointer';
-    this.genChip.title = '클릭하면 내 생성 대기열 목록을 펼쳐요';
+    this.genChip.title = t('overlay.genChip.title');
     this.genChip.addEventListener('click', () => {
       this.genListOpen = !this.genListOpen;
       this.renderGenList();
@@ -257,7 +258,7 @@ export class LyricsOverlay {
     this.resumeChip = h('button', {
       className: 'ey-resume-chip',
       on: { click: () => this.resumeAutoScroll() },
-    }, icon(ICONS.down), '현재 가사로');
+    }, icon(ICONS.down), t('overlay.resumeChip'));
     this.resumeChip.style.display = 'none';
 
     this.sourceBadge = h('span', {
@@ -274,23 +275,23 @@ export class LyricsOverlay {
       this.sourceBadge,
       this.trStatusEl,
       h('div', { className: 'ey-offset' },
-        h('span', { className: 'ey-offset-caption', text: '싱크' }),
-        this.footerButton('−0.1', '가사를 0.1초 당기기', () => this.changeOffset(-0.1)),
+        h('span', { className: 'ey-offset-caption', text: t('overlay.footer.syncCaption') }),
+        this.footerButton('−0.1', t('overlay.footer.pullEarlier'), () => this.changeOffset(-0.1)),
         this.offsetLabel,
-        this.footerButton('+0.1', '가사를 0.1초 늦추기', () => this.changeOffset(0.1)),
-        this.footerButton('리셋', '오프셋 초기화', () => this.changeOffset(null)),
+        this.footerButton('+0.1', t('overlay.footer.pushLater'), () => this.changeOffset(0.1)),
+        this.footerButton(t('overlay.footer.resetLabel'), t('overlay.footer.resetTitle'), () => this.changeOffset(null)),
       ),
     );
     this.footer.style.display = 'none';
 
-    this.debugEl = h('div', { className: 'ey-debug', text: 'debug: 대기 중…' });
+    this.debugEl = h('div', { className: 'ey-debug', text: t('overlay.debug.waiting') });
 
     // «전체» — 곡 전체 디버그 패널(원문 vs heard 전수 대비) 토글. debugStrip과 함께
     // settings.debugInfo에 따라서만 보이고 숨는다(라인 유무는 패널 안에서 안내)
     this.debugToggleBtn = h('button', {
       className: 'ey-debug-toggle',
-      text: '전체',
-      title: '곡 전체 디버그 패널 — 원문 vs heard 전수 대비, 클릭해서 시크',
+      text: t('overlay.debug.toggleAll'),
+      title: t('overlay.debug.toggleAllTitle'),
       attrs: { type: 'button' },
       on: { click: () => this.toggleDebugPanel() },
     });
@@ -356,7 +357,7 @@ export class LyricsOverlay {
     };
   }
 
-  showLoading(message = '가사 검색 중…'): void {
+  showLoading(message = t('overlay.loading.default')): void {
     this.stateKind = 'loading';
     this.resetBody();
     this.body.append(buildLoadingState(this.panelContext(), message));
@@ -381,8 +382,8 @@ export class LyricsOverlay {
       const text = plainText ?? lines.map(l => l.text).join('\n');
       if (generateBlocked) this.showBanner(generateBlocked);
       else {
-        this.showBanner('AI 전사로 가라오케(음정·발음)를 만들 수 있어요',
-          this.makeGenerateButton('AI 전사 생성', () => this.callbacks.onGenerate(text)));
+        this.showBanner(t('overlay.banner.aiKaraoke'),
+          this.makeGenerateButton(t('overlay.banner.aiTranscribe'), () => this.callbacks.onGenerate(text)));
       }
     }
 
@@ -392,7 +393,7 @@ export class LyricsOverlay {
     lines.forEach((line, index) => {
       const el = h('div', {
         className: 'ey-line',
-        title: '클릭해서 이 부분으로 이동',
+        title: t('overlay.line.seekTitle'),
         // dir=auto — RTL(아랍어·히브리어) 가사가 문장 방향대로 정렬되게
         attrs: { dir: 'auto' },
         on: {
@@ -453,8 +454,8 @@ export class LyricsOverlay {
     this.resetBody();
     this.plainTextForGenerate = plainText;
 
-    const generateBtn = this.makeGenerateButton('싱크 생성', () => this.callbacks.onGenerate(this.plainTextForGenerate));
-    this.showBanner('타임싱크가 없는 가사예요', generateBtn);
+    const generateBtn = this.makeGenerateButton(t('overlay.plain.generateSync'), () => this.callbacks.onGenerate(this.plainTextForGenerate));
+    this.showBanner(t('overlay.plain.noTimesync'), generateBtn);
 
     this.lines = lines;
     const plain = buildPlainLines(lines);
@@ -490,16 +491,16 @@ export class LyricsOverlay {
           h('div', { className: 'ey-divider' }),
           h('button', {
             className: 'ey-secondary-btn',
-            text: '자동 검색으로 되돌리기',
+            text: t('overlay.search.backToAuto'),
             on: { click: () => this.callbacks.onRetrySearch() },
           }),
           h('button', {
             className: 'ey-secondary-btn',
-            text: '이 영상 싱크 초기화 (서버 저장 삭제)',
-            attrs: { title: '잘못 붙여넣은 가사로 만든 싱크를 완전히 지우고 처음부터 다시 시작합니다' },
+            text: t('overlay.search.resetSync'),
+            attrs: { title: t('overlay.search.resetSyncTitle') },
             on: {
               click: () => {
-                if (window.confirm('이 영상의 서버 싱크(정렬·발음·번역 저장본)를 모두 삭제할까요?\n삭제 후 자동 검색이 다시 실행되고, 가사를 새로 붙여넣을 수 있어요.')) {
+                if (window.confirm(t('overlay.search.resetSyncConfirm'))) {
                   this.callbacks.onResetSync();
                 }
               },
@@ -517,12 +518,12 @@ export class LyricsOverlay {
   private buildLinkSection(): HTMLDivElement {
     const srcInput = h('input', {
       className: 'ey-input',
-      attrs: { placeholder: '원본 영상 URL 또는 ID (전사가 이미 있는 영상)' },
+      attrs: { placeholder: t('overlay.link.srcPlaceholder') },
     });
     this.linkSrcInput = srcInput;
     const offsetInput = h('input', {
       className: 'ey-input ey-input-narrow',
-      attrs: { type: 'number', step: '0.1', placeholder: '오프셋(초)', title: '이 영상이 원본보다 늦게 시작하면 +, 빠르면 -' },
+      attrs: { type: 'number', step: '0.1', placeholder: t('overlay.link.offsetPlaceholder'), title: t('overlay.link.offsetTitle') },
     });
     offsetInput.value = this.linkedInfo ? String(this.linkedInfo.offsetSec) : '0';
     // 배속이 다른 커버(nightcore 등)는 고정 오프셋만으론 뒤로 갈수록 밀린다 — 서버가
@@ -530,15 +531,15 @@ export class LyricsOverlay {
     const rateInput = h('input', {
       className: 'ey-input ey-input-narrow',
       attrs: {
-        type: 'number', step: '0.01', min: '0.5', max: '2', placeholder: '배속',
-        title: '원곡 대비 재생 배속 — nightcore≈1.25, 같은 속도면 1',
+        type: 'number', step: '0.01', min: '0.5', max: '2', placeholder: t('overlay.link.ratePlaceholder'),
+        title: t('overlay.link.rateTitle'),
       },
     });
     rateInput.value = this.linkedInfo?.rate ? String(this.linkedInfo.rate) : '1';
     this.linkListEl = h('div', { className: 'ey-result-list' });
     const filterInput = h('input', {
       className: 'ey-input',
-      attrs: { placeholder: '저장 싱크 검색 — 가사 첫 줄·영상 ID·출처' },
+      attrs: { placeholder: t('overlay.link.filterPlaceholder') },
       on: { input: () => this.renderSyncList() },
     });
     filterInput.style.display = 'none'; // 목록을 불러온 뒤에만 노출
@@ -547,33 +548,37 @@ export class LyricsOverlay {
     const doLink = () => {
       const src = parseVideoId(srcInput.value.trim());
       if (!src) {
-        this.setLinkStatus('영상 URL 또는 11자리 ID를 입력해 주세요');
+        this.setLinkStatus(t('overlay.link.needVideoId'));
         return;
       }
       const offset = Number(offsetInput.value) || 0;
       const rate = Math.min(2, Math.max(0.5, Number(rateInput.value) || 1));
-      this.setLinkStatus('연결 중…');
+      this.setLinkStatus(t('overlay.link.connecting'));
       this.callbacks.onLinkSync(src, offset, rate);
     };
 
     const section = h('div', { className: 'ey-link-section' },
-      h('div', { className: 'ey-state-text', text: '다른 영상의 싱크 연결 (inst·커버용)' }),
+      h('div', { className: 'ey-state-text', text: t('overlay.link.sectionTitle') }),
     );
     if (this.linkedInfo) {
       const rateBadge = this.linkedInfo.rate && this.linkedInfo.rate !== 1
         ? ` ×${this.linkedInfo.rate}` : '';
       // 검증된 자동 연결과 검증 없는 수동 연결을 구분해 말한다 — 코퍼스에 검증 없는
       // 링크가 섞여 있어서, 가사가 어긋날 때 이 표시가 원인 판단의 첫 단서가 된다
-      const verifyBadge = this.linkedInfo.verified === true ? ' · 검증됨'
-        : this.linkedInfo.verified === false ? ' · 검증 없음' : '';
+      const verifyBadge = this.linkedInfo.verified === true ? t('overlay.link.verifiedBadge')
+        : this.linkedInfo.verified === false ? t('overlay.link.unverifiedBadge') : '';
       section.append(h('div', { className: 'ey-link-current' },
         h('span', {
-          text: `현재 ${this.linkedInfo.sourceVideoId}에 연결됨 (${this.linkedInfo.offsetSec >= 0 ? '+' : ''}${this.linkedInfo.offsetSec}s${rateBadge})${verifyBadge}`,
+          text: t('overlay.link.currentStatus', [
+            this.linkedInfo.sourceVideoId,
+            `${this.linkedInfo.offsetSec >= 0 ? '+' : ''}${this.linkedInfo.offsetSec}s${rateBadge}`,
+            verifyBadge,
+          ]),
           attrs: { title: this.describeLink(this.linkedInfo) },
         }),
         h('button', {
           className: 'ey-secondary-btn',
-          text: '링크 해제',
+          text: t('overlay.link.unlink'),
           on: { click: () => this.callbacks.onUnlinkSync() },
         }),
       ));
@@ -583,14 +588,14 @@ export class LyricsOverlay {
         srcInput,
         offsetInput,
         rateInput,
-        h('button', { className: 'ey-primary-btn', text: '연결', on: { click: doLink } }),
+        h('button', { className: 'ey-primary-btn', text: t('overlay.link.connect'), on: { click: doLink } }),
       ),
       h('button', {
         className: 'ey-secondary-btn',
-        text: '서버에 저장된 싱크 목록에서 고르기',
+        text: t('overlay.link.pickFromList'),
         on: {
           click: () => {
-            this.setLinkStatus('목록 불러오는 중…');
+            this.setLinkStatus(t('overlay.link.loadingList'));
             this.callbacks.onRequestSyncList();
           },
         },
@@ -610,7 +615,7 @@ export class LyricsOverlay {
       this.linkFilterInput.value = '';
     }
     if (items.length === 0) {
-      this.setLinkStatus('서버에 저장된 싱크가 없어요');
+      this.setLinkStatus(t('overlay.link.noSavedSyncs'));
       return;
     }
     this.renderSyncList();
@@ -629,18 +634,18 @@ export class LyricsOverlay {
       : this.syncListItems;
     if (items.length === 0) {
       this.linkListEl.replaceChildren(
-        h('div', { className: 'ey-state-sub', text: '검색과 일치하는 싱크가 없어요' }));
+        h('div', { className: 'ey-state-sub', text: t('overlay.link.noFilterMatch') }));
       return;
     }
     const hint = h('div', {
       className: 'ey-state-sub',
-      text: '항목을 클릭하면 원본 칸에 채워져요 — 오프셋 확인 후 \'연결\'을 누르세요',
+      text: t('overlay.link.pickHint'),
     });
     this.linkListEl.replaceChildren(hint, ...items.map(it => {
       const btn = h('button', { className: 'ey-result-item' },
         h('span', { className: 'ey-result-src', text: it.video_id }),
-        h('span', { className: 'ey-result-title', text: it.first_line || '(첫 줄 없음)' }),
-        h('span', { className: 'ey-result-meta', text: `${it.line_count}줄${it.attribution_name ? ' · ' + it.attribution_name : ''}` }),
+        h('span', { className: 'ey-result-title', text: it.first_line || t('overlay.link.noFirstLine') }),
+        h('span', { className: 'ey-result-meta', text: t('overlay.link.lineCountMeta', [String(it.line_count)]) + (it.attribution_name ? ' · ' + it.attribution_name : '') }),
       );
       btn.addEventListener('click', () => {
         if (this.linkSrcInput) this.linkSrcInput.value = it.video_id;
@@ -671,7 +676,7 @@ export class LyricsOverlay {
 
   showGenerating(progress: number, label?: string): void {
     const pct = Math.max(0, Math.min(100, Math.round(progress)));
-    const text = label ?? `싱크 생성 중… ${pct}%`;
+    const text = label ?? t('overlay.generating.default', [String(pct)]);
     if (this.stateKind === 'generating' && this.progressBar && this.progressText) {
       this.progressBar.style.width = `${pct}%`;
       this.progressText.textContent = text;
@@ -708,7 +713,7 @@ export class LyricsOverlay {
     // 빈 상태·오류 화면에도 붙여넣기 칸이 열려 있다(panels.buildEmptyState는 펼친 채로 만든다) —
     // 타이핑한 본문이 있으면 그것이 이 화면에서 가장 값진 것이다
     return [...this.body.querySelectorAll<HTMLTextAreaElement>('textarea')]
-      .some(t => t.value.trim().length > 0);
+      .some(ta => ta.value.trim().length > 0);
   }
 
   showPipPlaceholder(): void {
@@ -717,8 +722,8 @@ export class LyricsOverlay {
     this.body.append(
       h('div', { className: 'ey-state' },
         h('div', { className: 'ey-state-emoji', text: '🪟' }),
-        h('div', { className: 'ey-state-text', text: 'PiP 창에서 가사를 표시하고 있어요' }),
-        h('button', { className: 'ey-primary-btn', text: '패널로 되돌리기', on: { click: () => this.callbacks.onPipToggle() } }),
+        h('div', { className: 'ey-state-text', text: t('overlay.pip.placeholder') }),
+        h('button', { className: 'ey-primary-btn', text: t('overlay.pip.backToPanel'), on: { click: () => this.callbacks.onPipToggle() } }),
       ),
     );
   }
@@ -799,7 +804,7 @@ export class LyricsOverlay {
       this.songTitleEl.title = song.title;
       this.songArtistEl.textContent = song.artist ?? '';
     } else {
-      this.songTitleEl.textContent = '노래 인식 중…';
+      this.songTitleEl.textContent = t('overlay.detecting');
       this.songTitleEl.title = '';
       this.songArtistEl.textContent = '';
     }
@@ -831,7 +836,7 @@ export class LyricsOverlay {
 
     if (this.settingsDot) {
       this.applyDotClasses(this.settingsDot, status);
-      this.settingsDot.title = `서버 연결 상태 — ${statusLine(status)}`;
+      this.settingsDot.title = t('overlay.settings.serverStatusTitle', [statusLine(status)]);
     }
     // 설정 시트가 열린 채로 상태가 바뀔 수 있다 (URL을 고치면 곧바로 재확인이 돌아온다)
     if (this.settingsPermBtn) {
@@ -855,7 +860,7 @@ export class LyricsOverlay {
 
   /** 서버가 필요한 헤더 버튼(재생성) 잠금 — 표시 여부는 기존 로직 그대로 */
   private applyRegenGate(): void {
-    applyServerGate(this.regenBtn, this.serverStatus, '싱크 다시 생성 (서버 캐시 무시)');
+    applyServerGate(this.regenBtn, this.serverStatus, t('overlay.header.regen'));
   }
 
   private renderServerBar(): void {
@@ -910,13 +915,13 @@ export class LyricsOverlay {
     this.warnBar.replaceChildren(
       h('span', {
         className: 'ey-warn-text',
-        text: `⚠️ 전사가 부정확할 수 있어요 (정렬 신뢰도 ${fmtConf(score)})`,
-        attrs: { title: '전사·발음 정렬의 평균 신뢰도가 낮아요. 가사 원문이 정확한지 확인하거나 재생성을 시도해 보세요.' },
+        text: `⚠️ ${t('overlay.warn.text', [fmtConf(score)])}`,
+        attrs: { title: t('overlay.warn.title') },
       }),
       h('button', {
         className: 'ey-warn-close',
         text: '×',
-        title: '이 경고 닫기 (설정에서 끌 수도 있어요)',
+        title: t('overlay.warn.close'),
         on: { click: () => { this.warnBar.style.display = 'none'; } },
       }),
     );
@@ -942,11 +947,11 @@ export class LyricsOverlay {
       this.genChip.append(h('button', {
         className: 'ey-gen-chip-cancel',
         text: '×',
-        title: '전사 취소',
+        title: t('overlay.genChip.cancel'),
         on: {
           click: (e) => {
             e.stopPropagation(); // 칩의 대기열 목록 토글로 새지 않게
-            if (window.confirm('진행 중인 전사를 취소할까요?')) this.callbacks.onCancelGenerate();
+            if (window.confirm(t('overlay.genChip.cancelConfirm'))) this.callbacks.onCancelGenerate();
           },
         },
       }));
@@ -1003,7 +1008,7 @@ export class LyricsOverlay {
       h('div', { className: `ey-gen-list-row${it.isCurrent ? ' current' : ''}` },
         h('span', {
           className: 'ey-gen-list-title',
-          text: it.isCurrent ? `${it.title} (현재 영상)` : it.title,
+          text: it.isCurrent ? t('overlay.genList.currentVideo', [it.title]) : it.title,
           title: it.title,
         }),
         h('span', { className: 'ey-gen-list-state', text: it.state }),
@@ -1013,25 +1018,31 @@ export class LyricsOverlay {
 
   updateDebug(info: DebugInfo): void {
     if (!this.settings.debugInfo) return;
-    const t = info.time === null ? '-' : `${info.time.toFixed(2)}s`;
+    const timeStr = info.time === null ? '-' : `${info.time.toFixed(2)}s`;
     const off = `${info.offsetSec > 0 ? '+' : ''}${info.offsetSec.toFixed(1)}`;
     const line = info.lineCount > 0 ? `${info.lineIndex + 1}/${info.lineCount}` : '-';
     const video = info.videoInfo === 'none' ? 'none' : `${info.videoBound ? 'OK' : 'MISMATCH'}(${info.videoInfo})`;
     const g = info.confGrades;
     const diag = [
       // 이 싱크가 언제 만들어졌는가 — 수정 배포 후에도 옛 싱크는 그대로라 판단 기준이 된다
-      info.syncCreated ? `생성=${info.syncCreated}` : null,
+      info.syncCreated ? t('overlay.debug.created', [info.syncCreated]) : null,
       // 사람이 읽는 등급 분포 (글자 색과 동일 기준: 좋음=초록, 보통=노랑, 낮음=빨강)
-      g ? `정렬 좋음${Math.round(g.ok * 100)}%·보통${Math.round(g.mid * 100)}%·낮음${Math.round(g.low * 100)}%` : null,
+      g ? t('overlay.debug.grades', [
+        String(Math.round(g.ok * 100)), String(Math.round(g.mid * 100)), String(Math.round(g.low * 100)),
+      ]) : null,
       info.quality != null ? `conf=${fmtConf(info.quality)}` : null,
       info.qualityMed != null ? `med=${fmtConf(info.qualityMed)}` : null,
-      info.alignmentText ? `전사텍스트=${info.alignmentText === 'pronunciation' ? '독음(한국어 발음)' : '원문(원어)'}` : null,
+      info.alignmentText
+        ? t('overlay.debug.alignmentText', [
+          info.alignmentText === 'pronunciation' ? t('overlay.debug.alignmentPronunciation') : t('overlay.debug.alignmentOriginal'),
+        ])
+        : null,
       info.zone ? `zone=${info.zone}` : null,
       info.lineDebug,
     ].filter(Boolean).join(' ');
     this.debugEl.textContent =
       `vid=${info.videoId ?? '-'} src=${info.source}${info.synced ? '/sync' : '/plain'} line=${line} pip=${info.pipOpen ? 'Y' : 'N'}\n`
-      + `t=${t} off=${off} video=${video} eng=${info.engineRunning ? 'Y' : 'N'}${info.jobStatus ? ` ${info.jobStatus}` : ''}`
+      + `t=${timeStr} off=${off} video=${video} eng=${info.engineRunning ? 'Y' : 'N'}${info.jobStatus ? ` ${info.jobStatus}` : ''}`
       + (diag ? `\n${diag}` : '');
   }
 
@@ -1128,8 +1139,8 @@ export class LyricsOverlay {
 
   private setSourceBadge(source: LyricsSource, synced: boolean): void {
     const base = source === 'everyric' ? 'Everyric'
-      : source === 'vocaro' ? '보카로 가사 위키'
-      : source === 'caption' ? '유튜브 자막'
+      : source === 'vocaro' ? t('overlay.source.vocaro')
+      : source === 'caption' ? t('overlay.source.caption')
       : 'LRCLIB';
     // 가사 원출처(위키 등)를 병기 — 전사는 서버가 했어도 가사의 출처는 따로 표기
     const extra = this.attributionName && this.attributionName !== base ? ` · ${this.attributionName}` : '';
@@ -1141,8 +1152,8 @@ export class LyricsOverlay {
       : '';
     this.sourceBadge.textContent = base + extra + link;
     // 출처 상세: 무엇을 어디서 가져왔는지 — 클릭 전에 툴팁으로도 확인 가능
-    const kind = synced ? '싱크 가사' : '일반 가사';
-    this.sourceBadge.title = this.sourceUrl ? `${kind} · 출처 페이지 열기\n${this.sourceUrl}` : kind;
+    const kind = synced ? t('overlay.source.syncedLyrics') : t('overlay.source.plainLyrics');
+    this.sourceBadge.title = this.sourceUrl ? `${kind} · ${t('overlay.source.openPage')}\n${this.sourceUrl}` : kind;
     if (this.linkedInfo) this.sourceBadge.title += `\n${this.describeLink(this.linkedInfo)}`;
     this.sourceBadge.classList.toggle('everyric', source === 'everyric');
   }
@@ -1154,11 +1165,11 @@ export class LyricsOverlay {
    * (검증됐다고 잘못 말하면 어긋난 싱크를 신뢰하게 된다).
    */
   private describeLink(info: { sourceVideoId: string; verified?: boolean }): string {
-    if (info.verified === true) return `${info.sourceVideoId} 싱크를 빌려옴 · 반주 대조로 검증된 자동 연결`;
+    if (info.verified === true) return t('overlay.link.describeVerified', [info.sourceVideoId]);
     if (info.verified === false) {
-      return `${info.sourceVideoId} 싱크를 빌려옴 · 검증 없는 수동 연결 — 어긋나면 오프셋을 조정하거나 해제하세요`;
+      return t('overlay.link.describeUnverified', [info.sourceVideoId]);
     }
-    return `${info.sourceVideoId} 싱크를 빌려옴 · 검증 여부 알 수 없음(구버전 서버)`;
+    return t('overlay.link.describeUnknown', [info.sourceVideoId]);
   }
 
   /** 가사 원출처 표기 (이름+링크). show* 호출 전에 설정해야 배지에 반영된다. */
@@ -1171,7 +1182,7 @@ export class LyricsOverlay {
   setSourceUrl(url: string | null): void {
     this.sourceUrl = url;
     this.sourceBadge.classList.toggle('link', url !== null);
-    if (url) this.sourceBadge.title = '출처 페이지 열기';
+    if (url) this.sourceBadge.title = t('overlay.source.openPage');
   }
 
   private changeOffset(delta: number | null): void {
@@ -1245,12 +1256,12 @@ export class LyricsOverlay {
       this.callbacks.onSettingsChange({ autoSearchShorts: autoSearchShorts.checked }));
 
     const fontSelect = this.buildSelect(
-      [['small', '작게'], ['medium', '보통'], ['large', '크게']],
+      [['small', t('overlay.settings.fontSize.small')], ['medium', t('overlay.settings.fontSize.medium')], ['large', t('overlay.settings.fontSize.large')]],
       this.settings.fontSize,
       v => this.callbacks.onSettingsChange({ fontSize: v as Settings['fontSize'] }),
     );
     const themeSelect = this.buildSelect(
-      [['auto', '자동'], ['dark', '다크'], ['light', '라이트']],
+      [['auto', t('overlay.settings.optAuto')], ['dark', t('overlay.settings.theme.dark')], ['light', t('overlay.settings.theme.light')]],
       this.settings.theme,
       v => this.callbacks.onSettingsChange({ theme: v as Settings['theme'] }),
     );
@@ -1261,16 +1272,26 @@ export class LyricsOverlay {
       this.callbacks.onSettingsChange({ showTranslation: showTranslation.checked }));
 
     const langSelect = this.buildSelect(
+      // 언어 이름은 각 언어 자신의 표기로 고정 — uiLanguage가 바뀌어도 번역하지 않는다
+      // (사용자가 어느 표시 언어에서도 자기 언어를 바로 찾을 수 있어야 하는 표준 관례)
       [['ko', '한국어'], ['en', 'English'], ['ja', '日本語'], ['zh', '中文']],
       this.settings.translationLanguage,
       v => this.callbacks.onSettingsChange({ translationLanguage: v }),
+    );
+
+    // 확장 UI 표시 언어 — 지금은 값만 저장한다(실제 반영은 다음 i18n 태스크에서: chrome.i18n은
+    // 브라우저 로케일에 고정되므로 이 값이 있어야 사용자가 직접 오버라이드할 수 있다)
+    const uiLangSelect = this.buildSelect(
+      [['auto', t('overlay.settings.optAuto')], ['ko', '한국어'], ['en', 'English'], ['ja', '日本語']],
+      this.settings.uiLanguage,
+      v => this.callbacks.onSettingsChange({ uiLanguage: v as Settings['uiLanguage'] }),
     );
 
     // 발음 표기 방식 — '자동'이면 번역 언어 기준으로 hangul/romaji/kana 중 골라진다
     // (lib/lang.ts resolveScript). 서버가 표기별 발음(pron dict)을 아직 안 주므로 지금은
     // hangul(한글 독음) 외의 선택은 화면상 차이가 없다 — 표기가 배포되면 그대로 반영된다.
     const pronScriptSelect = this.buildSelect(
-      [['auto', '자동'], ['hangul', '한글'], ['romaji', '로마자'], ['kana', '가나']],
+      [['auto', t('overlay.settings.optAuto')], ['hangul', t('overlay.settings.pronScript.hangul')], ['romaji', t('overlay.settings.pronScript.romaji')], ['kana', t('overlay.settings.pronScript.kana')]],
       this.settings.pronunciationScript,
       v => this.callbacks.onSettingsChange({ pronunciationScript: v as Settings['pronunciationScript'] }),
     );
@@ -1281,7 +1302,7 @@ export class LyricsOverlay {
       this.callbacks.onSettingsChange({ showPronunciation: showPronunciation.checked }));
 
     const sourcePriority = this.buildSelect(
-      [['vocaro', '보카로 위키 우선'], ['lrclib', 'LRCLIB 우선']],
+      [['vocaro', t('overlay.settings.sourcePriority.vocaro')], ['lrclib', t('overlay.settings.sourcePriority.lrclib')]],
       this.settings.lyricsSourcePriority,
       v => this.callbacks.onSettingsChange({ lyricsSourcePriority: v as Settings['lyricsSourcePriority'] }),
     );
@@ -1302,19 +1323,23 @@ export class LyricsOverlay {
       this.callbacks.onSettingsChange({ pitchGuide: pitchGuide.checked }));
 
     const pitchWindow = this.buildSelect(
-      [['0.5', '½마디'], ['1', '1마디'], ['2', '2마디'], ['4', '4마디'], ['8', '8마디']],
+      [
+        ['0.5', t('overlay.settings.pitchWindow.half')], ['1', t('overlay.settings.pitchWindow.bars', ['1'])],
+        ['2', t('overlay.settings.pitchWindow.bars', ['2'])], ['4', t('overlay.settings.pitchWindow.bars', ['4'])],
+        ['8', t('overlay.settings.pitchWindow.bars', ['8'])],
+      ],
       String(this.settings.pitchWindowMeasures),
       v => this.callbacks.onSettingsChange({ pitchWindowMeasures: Number(v) }),
     );
 
     const pitchMode = this.buildSelect(
-      [['page', '고정 화면·헤드 이동'], ['scroll', '스크롤·헤드 고정']],
+      [['page', t('overlay.settings.pitchMode.page')], ['scroll', t('overlay.settings.pitchMode.scroll')]],
       this.settings.pitchScrollMode,
       v => this.callbacks.onSettingsChange({ pitchScrollMode: v as Settings['pitchScrollMode'] }),
     );
 
     const pitchFont = this.buildSelect(
-      [['1', '보통'], ['1.2', '크게'], ['1.45', '아주 크게'], ['0.85', '작게']],
+      [['1', t('overlay.settings.pitchFont.normal')], ['1.2', t('overlay.settings.pitchFont.large')], ['1.45', t('overlay.settings.pitchFont.xlarge')], ['0.85', t('overlay.settings.pitchFont.small')]],
       String(this.settings.pitchFontScale),
       v => this.callbacks.onSettingsChange({ pitchFontScale: Number(v) }),
     );
@@ -1330,7 +1355,7 @@ export class LyricsOverlay {
       this.callbacks.onSettingsChange({ pitchF0Curve: pitchF0Curve.checked }));
 
     const pitchPronPosition = this.buildSelect(
-      [['note', '노트 위'], ['bottom', '화면 하단']],
+      [['note', t('overlay.settings.pronPosition.note')], ['bottom', t('overlay.settings.pronPosition.bottom')]],
       this.settings.pitchPronPosition,
       v => this.callbacks.onSettingsChange({ pitchPronPosition: v as Settings['pitchPronPosition'] }),
     );
@@ -1349,12 +1374,18 @@ export class LyricsOverlay {
     const metronomeVolume = this.buildRange(this.settings.metronomeVolume, v =>
       this.callbacks.onSettingsChange({ metronomeVolume: v }));
     const metronomeRate = this.buildSelect(
-      [['0.5', '½× (2분음표)'], ['1', '1× (4분음표)'], ['2', '2× (8분음표)']],
+      [
+        ['0.5', t('overlay.settings.metronomeRate.half')], ['1', t('overlay.settings.metronomeRate.one')],
+        ['2', t('overlay.settings.metronomeRate.two')],
+      ],
       String(this.settings.metronomeRate),
       v => this.callbacks.onSettingsChange({ metronomeRate: Number(v) }),
     );
     const metronomeBeat = this.buildSelect(
-      [['0', '1박'], ['1', '2박'], ['2', '3박'], ['3', '4박']],
+      [
+        ['0', t('overlay.settings.metronomeBeat.n', ['1'])], ['1', t('overlay.settings.metronomeBeat.n', ['2'])],
+        ['2', t('overlay.settings.metronomeBeat.n', ['3'])], ['3', t('overlay.settings.metronomeBeat.n', ['4'])],
+      ],
       String(this.settings.metronomeBeat),
       v => this.callbacks.onSettingsChange({ metronomeBeat: Number(v) }),
     );
@@ -1364,7 +1395,11 @@ export class LyricsOverlay {
     micPitch.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ micPitch: micPitch.checked }));
     const micOctave = this.buildSelect(
-      [['-2', '-2옥타브'], ['-1', '-1옥타브'], ['0', '보정 없음'], ['1', '+1옥타브'], ['2', '+2옥타브']],
+      [
+        ['-2', t('overlay.settings.micOctave.n', ['-2'])], ['-1', t('overlay.settings.micOctave.n', ['-1'])],
+        ['0', t('overlay.settings.micOctave.none')], ['1', t('overlay.settings.micOctave.n', ['+1'])],
+        ['2', t('overlay.settings.micOctave.n', ['+2'])],
+      ],
       String(this.settings.micOctave),
       v => this.callbacks.onSettingsChange({ micOctave: Number(v) }),
     );
@@ -1399,7 +1434,7 @@ export class LyricsOverlay {
       if (url) this.callbacks.onSettingsChange({ serverUrl: url });
     });
     // 점 색만으론 "왜 빨간지"를 알 수 없다 — 사유를 툴팁으로 붙이고, 인증 실패는 따로 표시
-    const dot = h('span', { className: 'ey-dot', title: `서버 연결 상태 — ${statusLine(this.serverStatus)}` });
+    const dot = h('span', { className: 'ey-dot', title: t('overlay.settings.serverStatusTitle', [statusLine(this.serverStatus)]) });
     this.applyDotClasses(dot, this.serverStatus);
     this.settingsDot = dot;
     // 서버가 정상이 아니면 설정 안에서도 사유를 글자로 남긴다 (색맹·툴팁 미표시 환경 대비)
@@ -1420,72 +1455,73 @@ export class LyricsOverlay {
      */
     const permBtn = h('button', {
       className: 'ey-secondary-btn ey-settings-perm-btn',
-      text: '권한 설정 열기',
-      attrs: { title: '자체 호스팅 서버 접근을 허용하는 페이지를 새 탭에서 엽니다' },
+      text: t('panels.serverBar.openPermissions'),
+      attrs: { title: t('overlay.settings.permBtnTitle') },
       on: { click: () => this.callbacks.onOpenPermissions() },
     });
     this.settingsPermBtn = permBtn;
     permBtn.style.display = needsHostPermission(this.serverStatus) ? '' : 'none';
 
-    const apiKeyInput = h('input', { className: 'ey-input', attrs: { type: 'password', placeholder: '(선택) 서버 API 키' } });
+    const apiKeyInput = h('input', { className: 'ey-input', attrs: { type: 'password', placeholder: t('overlay.settings.apiKeyPlaceholder') } });
     apiKeyInput.value = this.settings.apiKey;
     apiKeyInput.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ apiKey: apiKeyInput.value.trim() }));
 
     return h('div', { className: 'ey-settings' },
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '자동 가사 검색 (음악 영상만)', attrs: { title: '유튜브 음악 메타·채널·제목으로 음악 영상을 판별해 자동으로 가사창을 엽니다. 꺼도 툴바 아이콘으로 수동으로 열 수 있어요.' } }), autoSearch),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '쇼츠에서도 자동 검색', attrs: { title: '기본은 꺼짐 — 쇼츠에서는 가사창이 자동으로 열리지 않아요. 툴바 아이콘으로 수동으로는 언제든 열 수 있어요.' } }), autoSearchShorts),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '폰트 크기' }), fontSelect),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '테마' }), themeSelect),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 번역 표시' }), showTranslation),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '번역 언어' }), langSelect),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '발음 표기 방식' }), pronScriptSelect),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '발음 표기 표시 (있을 때)' }), showPronunciation),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 소스 우선순위' }), sourcePriority),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: 'PiP 중에도 패널 가사 유지' }), pipKeepPanel),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: 'PiP에 영상 함께 표시' }), pipShowVideo),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '가라오케 음정 바 (BETA · PiP)' }), pitchGuide),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 바 표시 구간' }), pitchWindow),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 바 진행 방식' }), pitchMode),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 바 글자 크기' }), pitchFont),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '가사 시작 카운트다운' }), pitchCountdown),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '음정 원본 곡선(f0) 표시', attrs: { title: '음정 모델이 추출한 원본 멜로디 곡선을 레인에 파란 선으로 표시합니다. 디버그 모드와 무관하게 켜고 끌 수 있어요.' } }), pitchF0Curve),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '발음 표기 위치', attrs: { title: '음절 타이밍이 있는 곡에서 발음 표기를 어디에 표시할지 고릅니다. 노트 위 = 각 노트 바로 아래 부착, 화면 하단 = 진행률 그라데이션으로 하단 중앙 표시.' } }), pitchPronPosition),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.autoSearch'), attrs: { title: t('overlay.settings.row.autoSearchTitle') } }), autoSearch),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.autoSearchShorts'), attrs: { title: t('overlay.settings.row.autoSearchShortsTitle') } }), autoSearchShorts),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.fontSize') }), fontSelect),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.theme') }), themeSelect),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.showTranslation') }), showTranslation),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.translationLanguage') }), langSelect),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.uiLanguage') }), uiLangSelect),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pronScript') }), pronScriptSelect),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.showPronunciation') }), showPronunciation),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.sourcePriority') }), sourcePriority),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pipKeepPanel') }), pipKeepPanel),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pipShowVideo') }), pipShowVideo),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchGuide') }), pitchGuide),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchWindow') }), pitchWindow),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchMode') }), pitchMode),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchFont') }), pitchFont),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchCountdown') }), pitchCountdown),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pitchF0Curve'), attrs: { title: t('overlay.settings.row.pitchF0CurveTitle') } }), pitchF0Curve),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.pronPosition'), attrs: { title: t('overlay.settings.row.pronPositionTitle') } }), pitchPronPosition),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '멜로디 재생 (가라오케 창)', attrs: { title: '전사된 노트를 신디사이즈로 재생합니다. 가라오케 창이 열려 있을 때만 소리가 나요.' } }),
+        h('label', { text: t('overlay.settings.row.melodyPlayback'), attrs: { title: t('overlay.settings.row.melodyPlaybackTitle') } }),
         h('span', { className: 'ey-settings-inline' }, melodyVolume, melodyPlayback)),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '메트로놈', attrs: { title: '서버가 추정한 BPM에 맞춰 박자를 칩니다 (4/4 가정, 4박마다 강세).' } }),
+        h('label', { text: t('overlay.settings.row.metronome'), attrs: { title: t('overlay.settings.row.metronomeTitle') } }),
         h('span', { className: 'ey-settings-inline' }, metronomeVolume, metronome)),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '메트로놈 배속', attrs: { title: '느리게 느껴지는 곡은 2×(8분음표), 너무 빠른 곡은 ½×로. 가라오케 창 안 버튼으로도 바꿀 수 있어요.' } }), metronomeRate),
+        h('label', { text: t('overlay.settings.row.metronomeRate'), attrs: { title: t('overlay.settings.row.metronomeRateTitle') } }), metronomeRate),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '마디 시작 박', attrs: { title: '곡의 첫 강세가 안 맞을 때 마디 시작 박을 옮깁니다. 메트로놈 강세와 레인 마디선이 함께 이동해요.' } }), metronomeBeat),
+        h('label', { text: t('overlay.settings.row.metronomeBeat'), attrs: { title: t('overlay.settings.row.metronomeBeatTitle') } }), metronomeBeat),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '가라오케 오디오 출력 기기', attrs: { title: '멜로디·메트로놈만 이 기기로 나갑니다. 영상 소리는 기존 출력 그대로.' } }), audioOut),
+        h('label', { text: t('overlay.settings.row.audioOut'), attrs: { title: t('overlay.settings.row.audioOutTitle') } }), audioOut),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '마이크 음정 표시 (레인)', attrs: { title: '마이크로 부른 음정을 가라오케 레인에 청록 궤적으로 표시합니다. 켜면 마이크 권한을 요청해요.' } }), micPitch),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '마이크 기기' }), micDevice),
+        h('label', { text: t('overlay.settings.row.micPitch'), attrs: { title: t('overlay.settings.row.micPitchTitle') } }), micPitch),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.micDevice') }), micDevice),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '마이크 옥타브 보정', attrs: { title: '마이크 궤적이 노트보다 한 옥타브 위/아래로 그려지면 여기서 보정하세요.' } }), micOctave),
-      h('div', { className: 'ey-settings-note', text: '기기 이름은 마이크 권한을 한 번 허용해야 표시돼요' }),
+        h('label', { text: t('overlay.settings.row.micOctave'), attrs: { title: t('overlay.settings.row.micOctaveTitle') } }), micOctave),
+      h('div', { className: 'ey-settings-note', text: t('overlay.settings.deviceNote') }),
       h('div', { className: 'ey-settings-row ey-settings-col' },
-        h('label', {}, '싱크 서버 URL ', dot),
+        h('label', {}, t('overlay.settings.serverUrlLabel'), dot),
         serverInput,
       ),
       h('div', { className: 'ey-settings-row ey-settings-col' },
-        h('label', { text: 'API 키' }),
+        h('label', { text: t('overlay.settings.apiKeyLabel') }),
         apiKeyInput,
       ),
       serverNote,
       permBtn,
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '낮은 정렬 신뢰도 경고', attrs: { title: '전사 신뢰도가 매우 낮은 곡에서 가사창 상단에 경고 바를 띄웁니다.' } }), lowConfWarning),
+        h('label', { text: t('overlay.settings.row.lowConfWarning'), attrs: { title: t('overlay.settings.row.lowConfWarningTitle') } }), lowConfWarning),
       h('div', { className: 'ey-settings-row' },
-        h('label', { text: '전사 완료 알림', attrs: { title: '대기열에 넣은 전사가 끝나면 브라우저 알림으로 알려줍니다. 다른 탭에 있어도 확인할 수 있어요.' } }), notifyOnComplete),
-      h('div', { className: 'ey-settings-row' }, h('label', { text: '디버그 정보 표시' }), debugInfo),
-      h('div', { className: 'ey-settings-note', text: '싱크 생성·번역은 Everyric 서버가 필요해요' }),
-      h('button', { className: 'ey-secondary-btn', text: '닫기', on: { click: () => this.closeSettings() } }),
+        h('label', { text: t('overlay.settings.row.notifyOnComplete'), attrs: { title: t('overlay.settings.row.notifyOnCompleteTitle') } }), notifyOnComplete),
+      h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.debugInfo') }), debugInfo),
+      h('div', { className: 'ey-settings-note', text: t('overlay.settings.serverRequiredNote') }),
+      h('button', { className: 'ey-secondary-btn', text: t('overlay.settings.closeButton'), on: { click: () => this.closeSettings() } }),
     );
   }
 
@@ -1504,7 +1540,7 @@ export class LyricsOverlay {
       sel.replaceChildren(h('option', { text: defLabel, attrs: { value: '' } }));
       devices.forEach((d, i) => {
         if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') return;
-        sel.append(h('option', { text: d.label || `기기 ${i + 1}`, attrs: { value: d.deviceId } }));
+        sel.append(h('option', { text: d.label || t('overlay.settings.deviceN', [String(i + 1)]), attrs: { value: d.deviceId } }));
       });
       sel.value = Array.from(sel.options).some(o => o.value === cur) ? cur : '';
     };
@@ -1514,8 +1550,8 @@ export class LyricsOverlay {
     } catch {
       /* 권한 API 불가 환경 — 기본 항목만 표시 */
     }
-    fill(outSel, devices.filter(d => d.kind === 'audiooutput'), '기본 출력', this.settings.audioOutputId);
-    fill(inSel, devices.filter(d => d.kind === 'audioinput'), '기본 마이크', this.settings.micDeviceId);
+    fill(outSel, devices.filter(d => d.kind === 'audiooutput'), t('overlay.settings.defaultOutput'), this.settings.audioOutputId);
+    fill(inSel, devices.filter(d => d.kind === 'audioinput'), t('overlay.settings.defaultMic'), this.settings.micDeviceId);
   }
 
   private buildSelect(options: [string, string][], value: string, onChange: (v: string) => void): HTMLSelectElement {
@@ -1550,7 +1586,7 @@ export class LyricsOverlay {
     this.panel.classList.toggle('collapsed', g.collapsed);
     this.panel.style.height = g.collapsed ? 'auto' : `${g.height}px`;
     this.collapseBtn.replaceChildren(icon(g.collapsed ? ICONS.expand : ICONS.collapse));
-    this.collapseBtn.title = g.collapsed ? '펼치기' : '접기';
+    this.collapseBtn.title = g.collapsed ? t('overlay.header.expand') : t('overlay.header.collapse');
     requestAnimationFrame(() => {
       this.applyingGeometry = false;
     });

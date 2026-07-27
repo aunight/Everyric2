@@ -116,52 +116,52 @@
 </head>
 <body>
 <main>
-  <h1>Everyric 권한 설정</h1>
-  <p class="sub">자체 호스팅(로컬) 싱크 서버에 접근할 권한을 여기서 허용하거나 철회합니다.</p>
+  <h1 data-i18n="options.pageTitle">Everyric 권한 설정</h1>
+  <p class="sub" data-i18n="options.subtitle">자체 호스팅(로컬) 싱크 서버에 접근할 권한을 여기서 허용하거나 철회합니다.</p>
 
-  <p>
+  <p data-i18n-html="options.intro1">
     Everyric은 기본적으로 <code>https://everyric.moref.co</code> 싱크 서버를 씁니다. 그 서버 접근은
     설치할 때 이미 허용돼 있어 <strong>여기서 할 일이 없습니다</strong>.
   </p>
-  <p>
+  <p data-i18n-html="options.intro2">
     이 페이지는 서버를 <strong>직접 돌려서 쓰는 경우</strong>에만 필요합니다. 그런 로컬 서버 주소는
     자체 호스팅하는 소수만 쓰므로, 설치할 때 모두에게 권한을 요구하지 않고 필요한 사람이 직접
     허용하도록 <em>선택적 권한</em>으로 두었습니다. 허용하면 확장이 그 주소로 가사·싱크 요청을
     보낼 수 있게 되고, 철회하면 즉시 보낼 수 없게 됩니다.
   </p>
 
-  <h2>현재 싱크 서버</h2>
+  <h2 data-i18n="options.currentServerHeading">현재 싱크 서버</h2>
   <div class="card">
     <div class="row">
-      <span class="grow"><code id="server-url">불러오는 중…</code></span>
-      <span id="server-kind" class="badge off">확인 중</span>
+      <span class="grow"><code id="server-url" data-i18n="options.serverUrlLoading">불러오는 중…</code></span>
+      <span id="server-kind" class="badge off" data-i18n="options.serverKindChecking">확인 중</span>
     </div>
-    <p class="note" id="server-note">
+    <p class="note" id="server-note" data-i18n="options.serverNoteDefault">
       서버 주소는 유튜브 가사 패널의 설정(⚙)에서 바꿉니다 — 이 페이지에서는 권한만 다룹니다.
     </p>
   </div>
 
-  <h2>로컬 서버 접근 권한</h2>
+  <h2 data-i18n="options.permHeading">로컬 서버 접근 권한</h2>
   <div class="card wide" id="perm-rows"></div>
   <div class="actions">
-    <button id="grant" class="primary" type="button" hidden>허용</button>
-    <button id="revoke" type="button" hidden>철회</button>
-    <button id="recheck" type="button">상태 다시 확인</button>
+    <button id="grant" class="primary" type="button" hidden data-i18n="options.grantButtonDefault">허용</button>
+    <button id="revoke" type="button" hidden data-i18n="options.revokeButtonDefault">철회</button>
+    <button id="recheck" type="button" data-i18n="options.recheckButton">상태 다시 확인</button>
   </div>
   <div id="message" role="status" aria-live="polite"></div>
 
-  <h2>알아 두면 좋은 것</h2>
+  <h2 data-i18n="options.tipsHeading">알아 두면 좋은 것</h2>
   <ul>
-    <li>허용은 한 번만 하면 유지됩니다. 확장을 지우면 함께 사라집니다.</li>
-    <li>
+    <li data-i18n="options.tip1">허용은 한 번만 하면 유지됩니다. 확장을 지우면 함께 사라집니다.</li>
+    <li data-i18n="options.tip2">
       확장 업데이트로 이 권한이 회수돼 자체 호스팅 서버가 갑자기 연결되지 않을 수 있습니다.
       그때는 여기서 다시 허용하면 됩니다.
     </li>
-    <li>
+    <li data-i18n-html="options.tip3">
       <code>chrome://extensions</code>의 Everyric 세부정보에서도 사이트 접근 권한을 확인·변경할 수
       있습니다. 거기서 바꾼 내용도 이 페이지에 그대로 나타납니다.
     </li>
-    <li>포트가 다른 로컬 서버나 제3의 서버 주소는 확장을 다시 빌드해야 쓸 수 있습니다.</li>
+    <li data-i18n="options.tip4">포트가 다른 로컬 서버나 제3의 서버 주소는 확장을 다시 빌드해야 쓸 수 있습니다.</li>
   </ul>
 </main>
 <script type="module" src="./options.ts"></script>
