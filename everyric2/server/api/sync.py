@@ -245,6 +245,11 @@ class Attribution(BaseModel):
 
     name: str
     url: str | None = None
+    # "CC BY-SA 4.0" 등 라이선스 문구 — miraheze(vocaloidlyrics.miraheze.org) 어댑터가 싣는다.
+    license: str | None = None
+    # 'vocaro' | 'miraheze' 등 — 확장이 attribution.name 정규식 대신 이 필드로 출처를 가른다
+    # (구싱크에는 없다 — 그 경우 확장은 이름 문자열 폴백 판정을 유지한다).
+    source_id: str | None = None
 
 
 class GenerateRequest(BaseModel):

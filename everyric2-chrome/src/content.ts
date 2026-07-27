@@ -34,12 +34,14 @@ import type {
   ServerStatus,
   Settings,
   SongInfo,
+  SourceAttribution,
   SyncListItem,
   TranslateResult,
   TranslatedLine,
 } from './types';
 import { affectsServerStatus, failureToStatus, serverKnownBad, statusLine, unknownStatus } from './lib/server-status';
 import { resolveTheme } from './lib/theme';
+import type { SourceResult } from './lib/sources';
 import type { VocaroLine, VocaroResult } from './lib/vocaro';
 
 let settings: Settings;
@@ -458,6 +460,7 @@ function cleanupForPage(): void {
     pip.setTempo(null);
     pip.setKey(null);
     pip.setDebugMeta(null);
+    overlay?.setDebugMeta(null);
     pip.setGenerationChip(null);
     pip.showPanelEmpty(null);
     // 미러를 **반드시** 다시 붙인다 — 미러는 captureStream()이라 영상이 바뀌면 이전 트랙이
@@ -1012,13 +1015,25 @@ async function enrichFromVocaro(videoId: string, data: LyricsData): Promise<void
   }
 }
 
+/**
+ * 이 데이터의 사람 번역이 지금 보는 번역 언어와 같은 언어인가 — 같으면 지우지도, LLM으로
+ * 다시 받지도 않는다(clearTranslations·loadTranslations가 공유하는 가드).
+ *
+ * vocaro는 한국어 전용, miraheze는 영어 전용이다 — attribution.sourceId로 실제 출처를
+ * 가른다(구데이터 vocaro 채택분은 attribution이 없으므로 source==='vocaro' 폴백을
+ * 유지한다 — adoptVocaroResult는 손대지 않았다). miraheze 조건이 없으면 다른 언어를 보는
+ * 사용자에게까지 vocaro/miraheze 가드가 걸려 영영 자기 언어 번역을 받지 못한다.
+ */
+function hasMatchingHumanTranslation(data: LyricsData): boolean {
+  if (data.attribution?.sourceId === 'miraheze') return settings.translationLanguage === 'en';
+  return settings.translationLanguage === 'ko' && (data.source === 'vocaro' || Boolean(data.humanTranslated));
+}
+
 function clearTranslations(): void {
   overlay?.setTranslationStatus(null);
   if (!currentData) return;
-  // 사람 번역(위키 등)은 가사 자체의 일부 — 지우지 않는다. 단, 그 사람 번역은 지금 ko
-  // 전용이므로(vocaro/humanTranslated 소스가 실제로 한국어일 때만) 다른 번역 언어를 보는
-  // 사용자에게까지 이 가드를 적용하면 그 사용자는 영영 자기 언어 번역을 받지 못한다.
-  if (settings.translationLanguage === 'ko' && (currentData.source === 'vocaro' || currentData.humanTranslated)) return;
+  // 사람 번역(위키 등)은 가사 자체의 일부 — 지우지 않는다(내 번역 언어와 같은 위키일 때만).
+  if (hasMatchingHumanTranslation(currentData)) return;
   for (const line of currentData.lines) delete line.translation;
   overlay?.refreshTranslations();
   pip.refresh();
@@ -1028,9 +1043,9 @@ async function loadTranslations(): Promise<void> {
   const data = currentData;
   const videoId = currentVideoId;
   if (!data || !videoId || !settings.showTranslation) return;
-  // 위키 사람 번역은 지금 ko 전용이다 — 다른 언어를 보는 사용자에게는 발동하지 않는다
+  // 위키 사람 번역(내 번역 언어와 같을 때만)이 있으면 발동하지 않는다
   // (clearTranslations의 같은 가드와 규칙을 맞춘다)
-  if (settings.translationLanguage === 'ko' && (data.source === 'vocaro' || data.humanTranslated)) return;
+  if (hasMatchingHumanTranslation(data)) return;
   // 서버 싱크에 번역·발음이 이미 저장돼 있으면(생성 시 LLM 메타 병합) LLM 재호출 생략.
   // 단, 발음이 기대되는 원문(일본어 등 CJK)인데 발음이 하나도 없으면 — 번역만 저장된
   // 낡은 싱크 — 발음까지 다시 받아온다 (그냥 반환하면 발음이 영영 채워지지 않는다)
@@ -1347,14 +1362,9 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   if (data?.synced) keptLyrics = null; // 새 싱크가 생겼으니 초기화 보관본은 낡았다
   currentSourceUrl = null;
   if (!data) {
-    const vocaro = await sendToBackground<VocaroResult | null>({
-      type: 'VOCARO_LOOKUP',
-      payload: { title: song.title },
-    });
-    if (seq !== searchSeq || videoId !== currentVideoId) return;
-    if (vocaro.data && vocaro.data.lines.length > 0) {
-      data = adoptVocaroResult(videoId, vocaro.data);
-    }
+    const wiki = await lookupWikiSources(videoId, seq, song.title);
+    if (wiki.stale) return;
+    data = wiki.data;
   }
   // 위키 우선 모드에서 위키까지 미스면 후순위 LRCLIB 시도
   if (!data && wikiFirst) {
@@ -1406,6 +1416,90 @@ function adoptVocaroResult(videoId: string, vocaro: VocaroResult): LyricsData {
       .then(() => pruneVocaroRefs());
   } catch { /* 저장 실패는 무시 — 세션 내 캐시로도 동작 */ }
   return { source: 'vocaro', synced: false, lines, plainText: lines.map(l => l.text).join('\n') };
+}
+
+/** SourceResult(위키 등 소스 어댑터 조회 결과)의 출처 표기 — 소스별 사람이 읽는 이름. */
+function attributionFromSource(result: SourceResult): SourceAttribution {
+  const name = result.sourceId === 'miraheze'
+    ? `${result.pageTitle} — VocaloidLyrics Wiki`
+    : '보카로 가사 위키';
+  return { name, url: result.pageUrl, license: result.license, sourceId: result.sourceId };
+}
+
+/**
+ * SourceResult를 LyricsData로 — vocaro **외** 소스(miraheze 등) 채택 경로.
+ *
+ * vocaro 직접 조회는 재입힘 캐시(lastVocaro/vocaroRef)가 딸린 ``adoptVocaroResult``를
+ * 그대로 쓴다(건드리지 않는다 — 그 경로는 그대로 신뢰). ``source``를 여기서도 'vocaro'로
+ * 두는 이유: LyricsSource 타입은 오버레이 배지 등 손대지 않는 파일이 이미 소비하고 있어
+ * 새 값을 추가하면 그 파일들이 모르는 값으로 새어 배지가 깨진다(LRCLIB로 오표시) — 대신
+ * ``attribution.sourceId``로 실제 출처를 구분한다(정확한 이름·라이선스는 attribution에
+ * 있으므로 배지 옆에 그대로 병기된다).
+ *
+ * ``pronLang``이 'hangul'이 아니면(로마자 등) 레거시 ``pronunciation`` 필드는 비운다 —
+ * 그 필드는 한글 전용 계약이다(LyricLine 문서). 대신 ``pron[script]`` 딕셔너리에 실어
+ * lib/lang.ts의 resolvedPronunciation이 사용자의 script 설정과 일치할 때만 보여주게 한다
+ * (한글을 기대하는 사용자에게 로마자가 새지 않는다). 이 설계 덕에 생성 시 line_meta도
+ * 자동으로 올바르게 비워진다 — handleGenerate가 읽는 것은 이 pronunciation 필드다.
+ */
+function adoptSourceResult(result: SourceResult): LyricsData {
+  const pronKey = result.pronLang;
+  const lines: LyricLine[] = result.lines.map(l => ({
+    time: null,
+    endTime: null,
+    text: l.text,
+    translation: l.translation,
+    pronunciation: pronKey === 'hangul' ? l.pronunciation : undefined,
+    pron: pronKey && pronKey !== 'hangul' && l.pronunciation ? { [pronKey]: l.pronunciation } : undefined,
+  }));
+  currentSourceUrl = result.pageUrl;
+  return {
+    source: 'vocaro',
+    synced: false,
+    lines,
+    plainText: lines.map(l => l.text).join('\n'),
+    attribution: attributionFromSource(result),
+  };
+}
+
+/**
+ * 위키 소스 체인 — vocaro·miraheze를 우선순위대로 시도해 첫 성공을 채택한다.
+ *
+ * 우선순위는 번역 언어 기준: ko면 vocaro(한글 발음·한국어 번역)를 먼저, 아니면
+ * miraheze(로마자 발음·영어 번역)를 먼저 — 사용자 언어와 같은 위키를 우선한다.
+ *
+ * 두 소스 다 순차 호출이라 지연이 있다 — searchLyrics 스스로도 매 await 뒤에 최신
+ * 검색인지 확인하지만, 여기 안에서도 각 조회 뒤에 확인해 자리를 옮긴 사용자에게 갈 늦은
+ * 응답을 조기에 끊는다. ``stale``이 true면 호출부는 즉시 return해야 한다(그 자리에서
+ * 이어 쓰면 낡은 seq의 부작용 — LRCLIB 폴백·applyLyricsData 등 — 이 새 검색 위에 겹친다).
+ */
+async function lookupWikiSources(
+  videoId: string, seq: number, title: string,
+): Promise<{ stale: true } | { stale: false; data: LyricsData | null }> {
+  const order: ('vocaro' | 'miraheze')[] =
+    settings.translationLanguage === 'ko' ? ['vocaro', 'miraheze'] : ['miraheze', 'vocaro'];
+  for (const src of order) {
+    if (src === 'vocaro') {
+      const vocaro = await sendToBackground<VocaroResult | null>({
+        type: 'VOCARO_LOOKUP',
+        payload: { title },
+      });
+      if (seq !== searchSeq || videoId !== currentVideoId) return { stale: true };
+      if (vocaro.data && vocaro.data.lines.length > 0) {
+        return { stale: false, data: adoptVocaroResult(videoId, vocaro.data) };
+      }
+    } else {
+      const miraheze = await sendToBackground<SourceResult | null>({
+        type: 'MIRAHEZE_LOOKUP',
+        payload: { title },
+      });
+      if (seq !== searchSeq || videoId !== currentVideoId) return { stale: true };
+      if (miraheze.data && miraheze.data.lines.length > 0) {
+        return { stale: false, data: adoptSourceResult(miraheze.data) };
+      }
+    }
+  }
+  return { stale: false, data: null };
 }
 
 /** vocaroRef가 시청 이력만큼 무한히 쌓이지 않게 오래된 것부터 정리.
@@ -1580,6 +1674,7 @@ function applyLyricsData(data: LyricsData | null): void {
       pip.setTempo(data.tempo ?? null);
       pip.setKey(data.key ?? null);
       pip.setDebugMeta(data.debugMeta ?? null);
+      panel.setDebugMeta(data.debugMeta ?? null);
       pip.setShowF0(settings.pitchF0Curve);
       pip.setLines(data.lines);
       // 노트·템포는 위에서 이미 이 곡 값으로 맞췄다 (분기마다 갱신하던 것을 한곳으로 모았다)
@@ -1809,14 +1904,18 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }))
         : undefined;
 
-    // 위키 출처는 싱크에 영구 저장돼 조회 시 푸터에 병기된다 (CC BY 표기).
-    // 붙여넣기 경로는 사용자가 적어 넣은 출처를 그대로 싣는다 (선택 입력 — 나중에
-    // 어디서 온 가사인지 추적할 수 있어 삭제 요청 대응이 쉬워진다)
-    const attribution = currentData?.source === 'vocaro'
-      ? { name: '보카로 가사 위키', url: currentSourceUrl }
-      : attributionName?.trim()
-        ? { name: attributionName.trim(), url: null }
-        : undefined;
+    // 위키 출처는 싱크에 영구 저장돼 조회 시 푸터에 병기된다 (라이선스 표기).
+    // currentData.attribution이 있으면(miraheze 등 SourceResult 채택분) 그 값을 그대로
+    // 쓴다 — 없는데 source==='vocaro'면 진짜 vocaro 직접 조회다(adoptVocaroResult는
+    // attribution을 안 채운다, applyLyricsData의 같은 폴백과 규칙을 맞춘다). 붙여넣기
+    // 경로는 사용자가 적어 넣은 출처를 그대로 싣는다 (선택 입력 — 나중에 어디서 온
+    // 가사인지 추적할 수 있어 삭제 요청 대응이 쉬워진다)
+    const attribution: SourceAttribution | undefined = currentData?.attribution
+      ?? (currentData?.source === 'vocaro'
+        ? { name: '보카로 가사 위키', url: currentSourceUrl }
+        : attributionName?.trim()
+          ? { name: attributionName.trim(), url: null }
+          : undefined);
 
     // 위키 발음이 없으면(수동 붙여넣기·LRCLIB 등) LLM 번역·한글 독음을 먼저 받아
     // line_meta로 넘긴다 — 서버가 독음(ko) 정렬 경로를 타고 발음/번역도 싱크에 저장된다.
@@ -1920,15 +2019,28 @@ async function handleRegenerate(): Promise<void> {
     const texts = data.lines.map(l => l.text);
     let lineMeta: { text: string; pronunciation?: string; translation?: string }[] = [];
     // 재생성은 everyric 싱크에서만 호출되므로(위 가드) 위키 여부는 출처 표기로만 알 수 있다 —
-    // 위키 가사로 만든 싱크는 attribution에 '보카로 가사 위키'가 새겨져 내려온다
-    const fromWiki = /위키/.test(data.attribution?.name ?? '');
+    // 위키 가사로 만든 싱크는 attribution에 그 이름이 새겨져 내려온다. sourceId가 있으면
+    // (miraheze 이후 생성분) 그 값으로, 없으면(구싱크 — attribution에 sourceId가 없던 시절)
+    // 이름 문자열 정규식으로 판별한다 — 구데이터 폴백을 OR로 유지한다.
+    const fromWiki = Boolean(data.attribution?.sourceId) || /위키/.test(data.attribution?.name ?? '');
     if (fromWiki && currentSong) {
-      const wiki = await sendToBackground<VocaroResult | null>({
-        type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
-      });
-      lineMeta = (wiki.data?.lines ?? [])
-        .filter(l => l.pronunciation || l.translation)
-        .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }));
+      if (data.attribution?.sourceId === 'miraheze') {
+        const wiki = await sendToBackground<SourceResult | null>({
+          type: 'MIRAHEZE_LOOKUP', payload: { title: currentSong.title },
+        });
+        // miraheze 발음은 로마자다 — 서버 독음(ko) 정렬 입력에 로마자를 넣으면 정렬이
+        // 붕괴한다(라틴 정렬 실측) — pronunciation은 절대 싣지 않는다, 번역만 넘긴다.
+        lineMeta = (wiki.data?.lines ?? [])
+          .filter(l => l.translation)
+          .map(l => ({ text: l.text, translation: l.translation }));
+      } else {
+        const wiki = await sendToBackground<VocaroResult | null>({
+          type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
+        });
+        lineMeta = (wiki.data?.lines ?? [])
+          .filter(l => l.pronunciation || l.translation)
+          .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }));
+      }
     }
     if (lineMeta.length === 0 && expectsPronunciation(texts)) {
       // 세션 번역 캐시도 비운다 — 안 비우면 이 영상의 낡은 응답이 그대로 다시 실린다
@@ -2348,6 +2460,7 @@ async function handlePipToggle(): Promise<void> {
   pip.setTempo(currentData.tempo ?? null);
   pip.setKey(currentData.key ?? null);
   pip.setDebugMeta(currentData.debugMeta ?? null);
+  panel.setDebugMeta(currentData.debugMeta ?? null);
   pip.setShowF0(settings.pitchF0Curve);
   pip.setLines(currentData.lines);
   karaokeAudio.setNotes(collectMelodyNotes(currentData.lines));

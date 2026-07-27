@@ -6,9 +6,12 @@
 // - 라이선스: 위키 편집 콘텐츠는 CC BY 4.0(출처 표기 필요), 인용된 원문 가사의
 //   저작권은 원저작자에게 있음 — UI에서 출처 페이지 링크를 항상 노출한다.
 
+import type { SourceResult } from './sources';
+
 const BASE = 'http://vocaro.wikidot.com';
 const FETCH_TIMEOUT_MS = 4000;
 const INDEX_TTL_MS = 24 * 60 * 60 * 1000;
+const LICENSE = 'CC BY 4.0'; // 위키 편집 콘텐츠 라이선스 — 파일 상단 주석 참고
 
 export interface VocaroLine {
   text: string;
@@ -22,6 +25,26 @@ export interface VocaroResult {
   /** 위키 페이지 슬러그 — videoId별로 저장해두면 재방문 시 발음/번역을 다시 입힐 수 있다 */
   slug: string;
   lines: VocaroLine[];
+}
+
+/**
+ * ``VocaroResult``를 소스 공통 계약(``SourceResult``)으로 어댑트한다.
+ *
+ * 기존 반환 타입·호출부(``vocaroLookup``/``fetchSongPage``)는 그대로 둔다 — slug 같은
+ * vocaro 전용 필드(재방문 시 재조회용)를 잃지 않기 위해서다. 이 함수는 miraheze 등
+ * 다른 소스와 같은 모양으로 다뤄야 하는 자리(소스 체인·attribution 생성)에서만 쓰는
+ * 점진 전환용 어댑터다.
+ */
+export function vocaroToSourceResult(r: VocaroResult): SourceResult {
+  return {
+    sourceId: 'vocaro',
+    pageUrl: r.pageUrl,
+    pageTitle: r.pageTitle,
+    lines: r.lines,
+    pronLang: 'hangul',
+    translationLang: 'ko',
+    license: LICENSE,
+  };
 }
 
 interface IndexEntry {

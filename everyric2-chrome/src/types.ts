@@ -169,6 +169,11 @@ export interface EveryricSegment {
 export interface SourceAttribution {
   name: string;
   url?: string | null;
+  /** "CC BY-SA 4.0" 등 — 라이선스별 표기 문구 분기·서버 왕복(sync.py Attribution)에 쓴다 */
+  license?: string;
+  /** 'vocaro' | 'miraheze' 등 — data.source 문자열 하드코딩 판정을 이 필드로 대체해 간다
+   *  (구버전 attribution엔 없다 — 그 경우는 폴백 판정을 유지해야 한다) */
+  sourceId?: string;
 }
 
 /** 서버(librosa)가 추정한 곡 템포 — 레인의 마디 단위 고정 창과 비트/마디 격자용 */
@@ -565,6 +570,7 @@ export type BgRequest =
   | { type: 'OPEN_OPTIONS' }
   | { type: 'VOCARO_LOOKUP'; payload: { title: string } }
   | { type: 'VOCARO_PAGE'; payload: { slug: string } }
+  | { type: 'MIRAHEZE_LOOKUP'; payload: { title: string } }
   | { type: 'YT_CAPTION_TEXT'; payload: { videoId: string; lang: string; auto: boolean } }
   | { type: 'GENERATE_FROM_CAPTION'; payload: { videoId: string } };
 

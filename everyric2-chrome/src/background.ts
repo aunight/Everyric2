@@ -1,13 +1,38 @@
 import { fetchFromLrclib, getLrclibById, searchTracksLrclib } from './lib/lrclib';
 import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLinkCandidates, generateSync, generateSyncFromCaption, getJobStatus, getLinkJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
+import { mirahezeLookup } from './lib/miraheze';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
 import { getSettings } from './lib/settings';
-import type { BgRequest, ContentMessage, LRCLibTrack, LyricsData, MessageResponse, SearchCandidate, SongInfo } from './types';
+import type { BgRequest, ContentMessage, LRCLibTrack, LyricsData, MessageResponse, SearchCandidate, SongInfo, SourceAttribution } from './types';
 
 async function getServerConfig(): Promise<ServerConfig> {
   const { serverUrl, apiKey } = await getSettings();
   return { serverUrl, apiKey };
+}
+
+/**
+ * SourceAttribution(확장 내부, camelCase)을 서버 요청 바디 모양(snake_case)으로.
+ *
+ * ``license``는 이름이 같아 그대로 통과하지만 ``sourceId``→``source_id``는 명시적 변환이
+ * 필요하다 — everyric-api.ts의 request()가 payload를 그대로 JSON.stringify하고, 서버
+ * pydantic Attribution 모델엔 캐멀케이스 별칭이 없어(다른 모델도 전부 그렇다) 낯선 키를
+ * 조용히 버린다. generateSync 등의 매개변수 타입은 여전히 SourceAttribution이라(이
+ * 함수의 반환값도 그 타입으로 캐스트한다 — everyric-api.ts 타입 변경은 이 작업 범위 밖).
+ */
+function toWireAttribution(a: SourceAttribution | undefined): SourceAttribution | undefined {
+  if (!a) return a;
+  const wire: Record<string, unknown> = { name: a.name, url: a.url };
+  if (a.license) wire.license = a.license;
+  if (a.sourceId) wire.source_id = a.sourceId;
+  return wire as unknown as SourceAttribution;
+}
+
+/** 서버 응답의 attribution(snake_case dict 그대로 온다)을 확장 내부 표기로 — 위 함수의 역. */
+function fromWireAttribution(raw: SourceAttribution | null | undefined): SourceAttribution | undefined {
+  if (!raw) return undefined;
+  const wireRaw = raw as SourceAttribution & { source_id?: string | null };
+  return { name: raw.name, url: raw.url, license: raw.license ?? undefined, sourceId: raw.sourceId ?? wireRaw.source_id ?? undefined };
 }
 
 /**
@@ -120,7 +145,7 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         language: message.payload.language,
         line_meta: message.payload.lineMeta,
         line_meta_pending: message.payload.lineMetaPending,
-        attribution: message.payload.attribution,
+        attribution: toWireAttribution(message.payload.attribution),
         title: message.payload.title,
         artist: message.payload.artist,
         target_lang: message.payload.targetLang,
@@ -131,7 +156,7 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       const server = await getServerConfig();
       return call('attach_line_meta_failed', sink => attachLineMeta(server, message.payload.jobId, {
         line_meta: message.payload.lineMeta,
-        attribution: message.payload.attribution,
+        attribution: toWireAttribution(message.payload.attribution),
         title: message.payload.title,
         artist: message.payload.artist,
       }, sink));
@@ -143,7 +168,7 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
         video_id: message.payload.videoId,
         lyrics: message.payload.lyrics,
         line_meta: message.payload.lineMeta,
-        attribution: message.payload.attribution,
+        attribution: toWireAttribution(message.payload.attribution),
         title: message.payload.title,
         artist: message.payload.artist,
       }, sink));
@@ -217,6 +242,10 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       // 일본어 원제는 클라이언트의 한국어 독음 인덱스로 못 찾는다 — 서버 원제 인덱스 폴백
       const matched = await vocaroMatch(await getServerConfig(), message.payload.title);
       return { data: matched?.found && matched.slug ? await fetchSongPage(matched.slug) : null };
+    }
+
+    case 'MIRAHEZE_LOOKUP': {
+      return { data: await mirahezeLookup(message.payload.title) };
     }
 
     case 'SYNC_LINK': {
@@ -326,7 +355,7 @@ async function fetchLyricsChain(
         // content.ts의 translationLangMatches 가드가 예전 규칙으로 동작한다
         translationLang: sync.translation_lang ?? undefined,
         debugMeta: sync.debug ?? undefined,
-        attribution: sync.attribution ?? undefined,
+        attribution: fromWireAttribution(sync.attribution),
         tempo: sync.tempo ?? undefined,
         key: sync.key ?? undefined,
         qualityScore: sync.quality_score ?? undefined,
