@@ -51,7 +51,11 @@ try {
 }
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'everyric-e2e-ml-'));
-const channel = process.env.EVERYRIC_E2E_CHANNEL ?? ''; // 기본 번들 Chromium — real-e2e.mjs 주석 참조
+// headless에서 channel을 안 주면 Playwright가 chromium_headless_shell을 쓰는데 그 바이너리는
+// 확장을 지원하지 않는다(실측: chrome-extension:// ERR_ABORTED) — 'chromium'을 명시해야
+// 풀 크로뮴의 신형 headless로 뜬다. 프로브가 통과하고 본 하네스만 죽던 차이가 이것.
+const channel = process.env.EVERYRIC_E2E_CHANNEL
+  ?? (process.env.EVERYRIC_E2E_HEADLESS === '1' ? 'chromium' : '');
 const ctx = await chromium.launchPersistentContext(userDataDir, {
   ignoreDefaultArgs: ['--disable-extensions'],
   ...(channel ? { channel } : {}),
@@ -89,8 +93,30 @@ const readLines = () => {
   };
 };
 
+// MV3 SW는 기동 직후 idle로 잠들 수 있어 waitForEvent 한 방은 레이스가 있다(실측:
+// 프로브는 통과, 본 하네스는 45s 타임아웃). 폴링하다 안 뜨면 확장 페이지를 열어
+// 깨운다 — 언팩 확장 ID는 절대경로 해시라 같은 dist면 고정이다.
+const KNOWN_EXT_ID = 'pkhjekjjpccigehfkljffncdhnhfmoob';
+async function acquireServiceWorker() {
+  for (let i = 0; i < 15; i++) {
+    const sw = ctx.serviceWorkers()[0];
+    if (sw) return sw;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  const waker = await ctx.newPage();
+  await waker.goto(`chrome-extension://${KNOWN_EXT_ID}/src/options.html`, { timeout: 15000 })
+    .catch(e => console.log('waker goto:', String(e).slice(0, 80)));
+  for (let i = 0; i < 15; i++) {
+    const sw = ctx.serviceWorkers()[0];
+    if (sw) { await waker.close(); return sw; }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  await waker.close();
+  return ctx.waitForEvent('serviceworker', { timeout: 15000 });
+}
+
 try {
-  const sw = ctx.serviceWorkers()[0] ?? await ctx.waitForEvent('serviceworker', { timeout: 45000 });
+  const sw = await acquireServiceWorker();
   console.log('extension loaded:', sw.url());
   const extId = new URL(sw.url()).host;
   await setSettings(sw, {
@@ -108,7 +134,22 @@ try {
   console.log('navigating to', syncedUrl, '(ko)');
   await page.goto(syncedUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForSelector('#everyric-root', { state: 'attached', timeout: 30000 });
-  const ko = await page.waitForFunction(readLines, null, { timeout: 90000, polling: 1000 }).then(h => h.jsonValue());
+  const ko = await page.waitForFunction(readLines, null, { timeout: 90000, polling: 1000 }).then(h => h.jsonValue())
+    .catch(async e => {
+      // 실패 시 패널 상태를 덤프한다 — 유튜브 봇 월·서버 오류·검색 스톨을 가른다
+      const st = await page.evaluate(() => {
+        const root = document.getElementById('everyric-root')?.shadowRoot;
+        return {
+          state: root?.querySelector('.ey-state-text')?.textContent ?? null,
+          banner: root?.querySelector('.ey-banner')?.textContent ?? null,
+          rootText: (root?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 200),
+          pageTitle: document.title.slice(0, 80),
+        };
+      }).catch(() => null);
+      console.log('KO-0 진단 덤프:', JSON.stringify(st));
+      await page.screenshot({ path: resolve(__dirname, '../e2e-ml-fail.png') }).catch(() => {});
+      throw e;
+    });
   check(ko.lines > 10, 'KO-0 싱크 라인 렌더', ko.lines);
   check(ko.pron > 10 && new RegExp(HAS_HANGUL).test(ko.pronSample), 'KO-0 한글 발음 렌더', ko.pronSample.slice(0, 40));
   check(ko.tr > 10 && ko.trSamples.some(t => new RegExp(HAS_HANGUL).test(t)), 'KO-0 한국어 번역 렌더', ko.trSamples[0]?.slice(0, 40));
