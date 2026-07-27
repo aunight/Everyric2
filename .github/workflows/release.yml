@@ -26,6 +26,10 @@ jobs:
           cache-dependency-path: everyric2-ae/package-lock.json
       - run: npm ci
       - run: npm run build
+      # 임베디드 Python을 ZXP에 넣는다. 이 스텝이 없으면 build-zxp가 경고만 남기고 런타임
+      # 없는 ZXP를 만들어, 사용자는 첫 실행 때 uv로 python을 따로 받게 된다.
+      - name: Build embedded Python runtime
+        run: npm run build:runtime
       - name: Prepare signing certificate
         shell: pwsh
         env:
