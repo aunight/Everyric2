@@ -14,6 +14,7 @@ from everyric2.server import title_match
 # 임포트하지 않으므로 순환이 없다 — 요청마다 함수 내 임포트를 반복하지 않게 최상위로 둔다.
 from everyric2.server.api.worker import reclaim_expired_leases
 from everyric2.server.db.connection import get_session
+from everyric2.server.db.models import SyncResult
 from everyric2.server.db.repository import (
     ActionLogRepository,
     JobRepository,
@@ -452,10 +453,11 @@ def _shift_sync_timestamps(
 ) -> dict[str, Any]:
     """소스 싱크의 모든 시간 필드를 t/rate + offset으로 사상한 깊은 복사본을 만든다.
 
-    세그먼트 start/end·words·notes·pron_segments, extra.debug의 vad_regions/star_spans/
-    f0_curve.t0, tempo.beat_offset, 세그먼트 debug.orig까지 함께 옮긴다. attribution 등
-    시간이 아닌 필드는 그대로 둔다. offset은 음수(소스가 링크 영상보다 늦게 시작)도 된다.
-    rate≠1이면 BPM(rate배)과 f0_curve 샘플 간격(dt/rate)도 함께 보정한다."""
+    세그먼트 start/end·words·notes·pron_segments·pron_segs(표기별), extra.debug의
+    vad_regions/star_spans/f0_curve.t0, tempo.beat_offset, 세그먼트 debug.orig·
+    debug.heard_spans까지 함께 옮긴다. attribution 등 시간이 아닌 필드는 그대로 둔다.
+    offset은 음수(소스가 링크 영상보다 늦게 시작)도 된다. rate≠1이면 BPM(rate배)과
+    f0_curve 샘플 간격(dt/rate)도 함께 보정한다."""
     data = copy.deepcopy(timestamps)
     rate = rate if rate and rate > 0 else 1.0
 
@@ -482,9 +484,30 @@ def _shift_sync_timestamps(
                 p["start"] = sh(p["start"])
             if p.get("end") is not None:
                 p["end"] = sh(p["end"])
+        # 표기별 발음 음절 스팬 — {"hangul": [...], "romaji": [...], "kana": [...]}.
+        # pron_segments(레거시 한글 전용)와 같은 수식으로, 표기마다 따로 옮긴다.
+        pron_segs = seg.get("pron_segs")
+        if isinstance(pron_segs, dict):
+            for script_spans in pron_segs.values():
+                for p in script_spans or []:
+                    if p.get("start") is not None:
+                        p["start"] = sh(p["start"])
+                    if p.get("end") is not None:
+                        p["end"] = sh(p["end"])
         dbg = seg.get("debug")
-        if isinstance(dbg, dict) and isinstance(dbg.get("orig"), list) and len(dbg["orig"]) == 2:
-            dbg["orig"] = [sh(dbg["orig"][0]), sh(dbg["orig"][1])]
+        if isinstance(dbg, dict):
+            if isinstance(dbg.get("orig"), list) and len(dbg["orig"]) == 2:
+                dbg["orig"] = [sh(dbg["orig"][0]), sh(dbg["orig"][1])]
+            # heard_spans: [[글자, 시각], ...] — CTC가 들은 글자별 시각(디버그 스트립용).
+            # 두 번째 원소만 시간이다.
+            heard_spans = dbg.get("heard_spans")
+            if isinstance(heard_spans, list):
+                dbg["heard_spans"] = [
+                    [span[0], sh(span[1])]
+                    if isinstance(span, (list, tuple)) and len(span) >= 2
+                    else span
+                    for span in heard_spans
+                ]
 
     debug = data.get("debug")
     if isinstance(debug, dict):
@@ -591,6 +614,7 @@ async def _apply_translation_lang(
     resp: "SyncLookupResponse",
     lang: str | None,
     background_tasks: BackgroundTasks,
+    link_source_video_id: str | None = None,
 ) -> "SyncLookupResponse":
     """조회 응답에 available_langs를 채우고, lang이 있으면 세그먼트 translation을 그
     언어로 맞춘다.
@@ -601,6 +625,15 @@ async def _apply_translation_lang(
     URL 경로의 값(자기 싱크든 링크로 빌린 싱크든)을 쓴다 — TranslationLayer는 (video_id,
     fingerprint, target_lang) 키라 보는 영상 기준으로 일관되게 조회해야 POST
     /api/translate의 persist=true 저장과 같은 키로 맞아떨어진다.
+
+    link_source_video_id: 이 조회가 SyncLink로 빌려온 싱크일 때만 준다(자기 싱크 조회는
+    None). 가사(따라서 fingerprint)가 원곡과 같으므로, **커버 자신의 video_id로 레이어가
+    하나도 안 잡히면** 원곡의 video_id로 1회 폴백 조회한다(available_langs·lang 조회
+    둘 다) — 안 그러면 원곡에 이미 있는 en 등 비ko 레이어를 커버 시청자는 영원히 못 본다
+    (레이어 키가 video_id라 가사가 같아도 커버·원곡이 서로 다른 레이어로 격리되는 것이
+    원인). **저장은 폴백하지 않는다** — ko 백필(`_schedule_ko_backfill_if_needed`)이
+    새로 레이어를 만들 때는 여전히 보는 영상(커버) 기준을 지킨다(기존 원칙 불변, 아래
+    호출부 참고).
 
     세그먼트는 원본 result.timestamps의 리스트를 직접 건드리지 않도록 얕은 복사본을
     만들어 교체한다 — JSON 컬럼은 재할당해야 변경이 감지되므로(다른 곳의 동일 주석 참고)
@@ -613,7 +646,10 @@ async def _apply_translation_lang(
     fingerprint = lines_fingerprint([seg.get("text", "") or "" for seg in segments])
     has_legacy_translation = any((seg.get("translation") or "").strip() for seg in segments)
 
-    layer_langs = await TranslationLayerRepository(session).list_layer_langs(video_id, fingerprint)
+    repo = TranslationLayerRepository(session)
+    layer_langs = await repo.list_layer_langs(video_id, fingerprint)
+    if not layer_langs and link_source_video_id:
+        layer_langs = await repo.list_layer_langs(link_source_video_id, fingerprint)
     available = set(layer_langs)
     if has_legacy_translation:
         available.add("ko")
@@ -623,7 +659,9 @@ async def _apply_translation_lang(
         resp.timestamps = segments
         return resp
 
-    layer = await TranslationLayerRepository(session).get_layer(video_id, fingerprint, lang)
+    layer = await repo.get_layer(video_id, fingerprint, lang)
+    if layer is None and link_source_video_id:
+        layer = await repo.get_layer(link_source_video_id, fingerprint, lang)
     if layer is not None:
         # merge_line_meta(worker.py)와 같은 색인 규칙 — 값이 있는 첫 항목을 채택한다
         by_text: dict[str, str] = {}
@@ -654,6 +692,89 @@ async def _apply_translation_lang(
         resp.translation_lang = None
     resp.timestamps = segments
     return resp
+
+
+async def _persist_pron_variants(sync_id: str, attached_segments: list[dict[str, Any]]) -> None:
+    """`worker.attach_pron_variants` 결과를 SyncResult 행에 기회적으로 저장한다.
+
+    BackgroundTasks로 스케줄되므로 요청 세션이 아니라 독립된 세션을 새로 연다 —
+    translate.py의 `_persist_translation_layer`·이 파일의 `_persist_legacy_ko_layer`와
+    같은 동기↔비동기 브리지 뒤 저장 패턴이다.
+
+    행을 **다시 읽어** 그 시점의 세그먼트와 인덱스로 맞춰(요청 시점 스냅샷이 아니라) pron/
+    pron_segs가 **아직 없는** 세그에만 병합한다 — 그 사이 다른 변경(번역 병합 등)이 있어도
+    그 필드는 건드리지 않고, 이미 누군가 채웠으면 (멱등) 다시 쓰지 않는다. 세그 수가
+    그 사이 달라졌으면(재생성 등) 인덱스 대응을 신뢰할 수 없어 통째로 포기한다 — 다음
+    조회가 다시 시도한다. 실패해도 이미 나간 응답에는 영향이 없으므로 로그만 남기고 삼킨다.
+    """
+    try:
+        async with get_session() as session:
+            result = await session.get(SyncResult, sync_id)
+            if result is None:
+                return
+            current = dict(result.timestamps or {})
+            current_segments = list(current.get("segments", []) or [])
+            if len(current_segments) != len(attached_segments):
+                return
+            changed = False
+            new_segments = []
+            for cur, attached in zip(current_segments, attached_segments):
+                cur = dict(cur)
+                if not cur.get("pron") and attached.get("pron"):
+                    cur["pron"] = attached["pron"]
+                    if attached.get("pron_segs"):
+                        cur["pron_segs"] = attached["pron_segs"]
+                    changed = True
+                new_segments.append(cur)
+            if not changed:
+                return
+            current["segments"] = new_segments
+            result.timestamps = current  # JSON 컬럼 재할당 — 변경 감지 트리거
+    except Exception:
+        logger.exception("Failed to persist lazily attached pron variants for sync %s", sync_id)
+
+
+async def _lazy_attach_pron_variants(
+    sync_id: str, resp: "SyncLookupResponse", background_tasks: BackgroundTasks
+) -> None:
+    """구세대 싱크(표기별 발음 `pron` dict가 생기기 전에 만들어진 SyncResult)를 조회하는
+    김에 `worker.attach_pron_variants`로 채워 넣는다 — 재생성 없이도 romaji·가나 표기가
+    생긴다. 결정론 렌더(LLM 호출 없음)라 세그 수가 많은 곡도 비용이 낮다.
+
+    **순서 의존— S5의 merge 가드(비한글 발음이 legacy `pronunciation`에 박히는 것을 막는
+    `merge_line_meta` 가드, 커밋 ea145c0) 이후에만 안전하다.** 그 가드가 없으면 line_meta로
+    들어온 romaji/가나 발음이 오염된 채로 `seg["pronunciation"]`(한글 전용 계약)에 박히고,
+    그 위에 `attach_pron_variants`가 `pron["hangul"]`에 그 오염값을 얹어 **재생성 전까지
+    지워지지 않는 영구 고착**을 만든다(감사 치명 #1 서버 잔여). 이 함수는 그 가드가 이미
+    있다는 전제로 호출돼야 한다.
+
+    fugashi(형태소 분석기)가 없는 배포는 통째로 건너뛴다 — 폴백(pykakasi) 독음은 ja 표기
+    신뢰도가 낮은데, 여기서 만든 값은 DB에 영구 저장되므로(재생성 전까지 안 지워짐) 저품질
+    값이 고착되면 안 된다.
+
+    자기 싱크 조회 전용이다 — 링크로 빌려온 싱크(SyncLink 경유)는 세그가 시프트된
+    사본이라 부르지 않는다(원곡을 직접 조회하면 원곡 행에 붙고, 그 뒤로는 `_shift_sync_
+    timestamps`가 시프트해 커버 조회에도 자연히 실린다). 응답에는 즉시 반영하고(재조회
+    없이 이번 요청부터 표기가 보이게), DB 저장은 BackgroundTasks로 미룬다(응답 지연
+    방지 — translate persist·ko 백필과 같은 패턴).
+    """
+    from everyric2.text.ja_reading import reading_source
+
+    if reading_source() != "fugashi":
+        return
+    segments = resp.timestamps or []
+    if not any(not seg.get("pron") for seg in segments):
+        return  # 전부 이미 표기가 있다 — 할 일 없음
+
+    from everyric2.server.worker import attach_pron_variants
+
+    for seg in segments:
+        try:
+            attach_pron_variants(seg)
+        except Exception:
+            logger.exception("Lazy pron attach failed for a segment; leaving it as-is")
+
+    background_tasks.add_task(_persist_pron_variants, sync_id, segments)
 
 
 @router.post("/link", response_model=SyncLinkResponse)
@@ -936,14 +1057,20 @@ async def get_sync(
                 await repo.set_title_if_missing(result, title, artist)
                 resp = _build_sync_response(result, result.timestamps)
                 resp.user_offset = user_offset
-                return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
+                resp = await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
+                # 자기 싱크 조회에서만 부른다 — 구세대 싱크에 pron dict를 기회적으로
+                # 채운다(감사 #3, S5 merge 가드 이후 전제 — _lazy_attach_pron_variants 참고)
+                await _lazy_attach_pron_variants(result.id, resp, background_tasks)
+                return resp
         else:
             results = await repo.get_by_video(video_id)
             if results:
                 await repo.set_title_if_missing(results[0], title, artist)
                 resp = _build_sync_response(results[0], results[0].timestamps)
                 resp.user_offset = user_offset
-                return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
+                resp = await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
+                await _lazy_attach_pron_variants(results[0].id, resp, background_tasks)
+                return resp
 
         # 자기 싱크가 없고 링크가 있으면 source 싱크를 offset 적용해 빌려 온다
         link = await SyncLinkRepository(session).get(video_id)
@@ -968,8 +1095,13 @@ async def get_sync(
                 resp.user_offset = user_offset
                 # lang 레이어는 보는 영상(video_id) 기준으로 조회한다 — source_video_id가
                 # 아니다. POST /api/translate persist=true도 항상 요청받은 video_id로
-                # 저장하므로, 조회도 같은 키를 써야 서로 맞아떨어진다.
-                return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
+                # 저장하므로, 조회도 같은 키를 써야 서로 맞아떨어진다. 다만 커버 자신의
+                # 레이어가 하나도 없으면 가사가 같은 원곡(source_video_id)으로 1회
+                # 폴백한다 — 안 그러면 원곡에만 있는 비ko 레이어를 커버 시청자가 영원히
+                # 못 본다(_apply_translation_lang의 link_source_video_id 주석 참고).
+                return await _apply_translation_lang(
+                    session, video_id, resp, lang, background_tasks, link.source_video_id
+                )
 
         return SyncLookupResponse(found=False, user_offset=user_offset)
 

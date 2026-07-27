@@ -97,6 +97,16 @@ async def _persist_translation_layer(
     쓸 수 없다. 이 리포의 기존 브리지 패턴(sync.py의 background_tasks.add_task)을 그대로
     따른다 — 핸들러는 결과를 즉시 반환하고, 저장은 응답 이후 이벤트 루프에서 처리된다.
     실패해도 번역 응답 자체는 이미 나갔으므로 로그만 남기고 삼킨다.
+
+    **빈 번역 라인은 저장하지 않는다** — worker.translation_layer_lines와 같은 규칙
+    (텍스트·번역이 둘 다 있어야 남긴다). upsert_layer는 (video_id, fingerprint,
+    target_lang) 레이어를 통째로 교체한다("부분 병합은 하지 않는다" — 리포지토리
+    docstring 참고). 부분 실패 후 재시도나 저품질 응답이 빈 번역으로 돌아왔을 때 그걸
+    그대로 저장하면, 이전에 성공적으로 저장된 완전한 레이어가 빈 값으로 통째로
+    덮인다 — 그래서 **필터링 후 남는 줄이 하나도 없으면 저장 자체를 건너뛴다**(기존
+    레이어를 손대지 않고 그대로 둔다). fingerprint는 필터링 전 texts 전체로 계산한다 —
+    조회(`_apply_translation_lang`)가 세그먼트 원문 전체로 지문을 만들어 찾으므로, 여기서
+    부분집합으로 계산하면 저장은 되는데 못 찾는 레이어가 된다.
     """
     from everyric2.server.db.connection import get_session
     from everyric2.server.db.repository import TranslationLayerRepository
@@ -104,7 +114,18 @@ async def _persist_translation_layer(
 
     try:
         fingerprint = lines_fingerprint(texts)
-        lines = [{"text": t, "translation": tr} for t, tr in zip(texts, translations)]
+        lines = [
+            {"text": t, "translation": tr}
+            for t, tr in zip(texts, translations)
+            if (t or "").strip() and (tr or "").strip()
+        ]
+        if not lines:
+            logger.info(
+                "No non-blank translation lines to persist for video %s (%s); skipping",
+                video_id,
+                target_lang,
+            )
+            return
         async with get_session() as session:
             await TranslationLayerRepository(session).upsert_layer(
                 video_id, fingerprint, target_lang, lines=lines, attribution=None, origin="llm"

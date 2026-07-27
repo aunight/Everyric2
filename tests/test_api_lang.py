@@ -35,7 +35,7 @@ from everyric2.server.api.sync import (
 )
 from everyric2.server.api.translate import TranslateRequest, translate_lyrics
 from everyric2.server.db import connection as db_conn
-from everyric2.server.db.models import Base
+from everyric2.server.db.models import Base, SyncResult
 from everyric2.server.db.repository import SyncRepository, TranslationLayerRepository
 from everyric2.server.text_fingerprint import lines_fingerprint
 
@@ -127,6 +127,29 @@ class _FakeLyricsTranslator:
 
 def _patch_translator(monkeypatch):
     monkeypatch.setattr(translate_api, "LyricsTranslator", _FakeLyricsTranslator)
+
+
+def _blankable_translator(blank_indices: set[int]):
+    """지정한 인덱스의 라인만(또는 전부) 빈 번역으로 돌려주는 LyricsTranslator 대역 —
+    부분/전체 번역 실패 재현용(#5 감사 항목)."""
+
+    class _Inner:
+        def translate(self, text, source_lang, target_lang, context=None):
+            originals = text.split("\n")
+            lines = [
+                _FakeLine(o, "" if i in blank_indices else f"[{target_lang}] {o}")
+                for i, o in enumerate(originals)
+            ]
+            return _FakeResult(lines, source_lang, target_lang)
+
+    class _Translator:
+        def __init__(self, settings=None, log_label=None):
+            self._translator = _Inner()
+
+        def translate_with_pronunciation(self, text, source_lang, target_lang, context=None):
+            return self._translator.translate(text, source_lang, target_lang, context)
+
+    return _Translator
 
 
 # ── (1) lang 없이 조회 = 기존 응답 그대로 ─────────────────────────────
@@ -1020,5 +1043,540 @@ def test_save_translation_layer_404_when_no_sync():
             assert exc.value.status_code == 404
 
     asyncio.run(body())
+
+
+# ── 감사 #5: 빈 번역 persist가 좋은 레이어를 파괴하면 안 된다 ────────────────
+
+
+def test_translate_persist_filters_blank_translation_lines(monkeypatch):
+    # 부분 실패 — 둘째 줄만 빈 번역으로 돌아왔다. 저장되는 lines에서 그 줄은 빠져야 한다
+    # (worker.translation_layer_lines와 같은 규칙: 텍스트·번역이 둘 다 있어야 남긴다).
+    monkeypatch.setattr(translate_api, "LyricsTranslator", _blankable_translator({1}))
+
+    async def body():
+        async with _env() as sm:
+            bg = BackgroundTasks()
+            translate_lyrics(
+                TranslateRequest(
+                    text="\n".join(LINES),
+                    source_lang="ko",
+                    target_lang="en",
+                    video_id=VIDEO,
+                    persist=True,
+                ),
+                bg,
+            )
+            await _run_background(bg)
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                assert layer is not None
+                assert layer.lines == [{"text": "첫 줄", "translation": "[en] 첫 줄"}]
+
+    asyncio.run(body())
+
+
+def test_translate_persist_all_blank_does_not_destroy_existing_layer(monkeypatch):
+    """재현: 전체 실패(또는 재시도 후에도 전부 빈 값) 응답을 persist=true로 부르면,
+    필터링 후 남는 줄이 0이라 저장 자체를 건너뛰어야 한다 — 기존의 완전한 레이어가
+    빈 값으로 통째로 덮이면 안 된다(upsert_layer는 부분 병합 없이 전체 교체이므로,
+    걸러내지 않고 그대로 저장하면 기존 좋은 데이터가 사라진다)."""
+    monkeypatch.setattr(translate_api, "LyricsTranslator", _blankable_translator({0, 1}))
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[
+                        {"text": "첫 줄", "translation": "Good existing first"},
+                        {"text": "둘째 줄", "translation": "Good existing second"},
+                    ],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            translate_lyrics(
+                TranslateRequest(
+                    text="\n".join(LINES),
+                    source_lang="ko",
+                    target_lang="en",
+                    video_id=VIDEO,
+                    persist=True,
+                ),
+                bg,
+            )
+            await _run_background(bg)
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                # 저장을 건너뛰었으므로 기존 값 그대로다
+                assert layer.lines == [
+                    {"text": "첫 줄", "translation": "Good existing first"},
+                    {"text": "둘째 줄", "translation": "Good existing second"},
+                ]
+
+    asyncio.run(body())
+
+
+def test_translate_persist_keeps_fingerprint_over_full_text_when_filtering(monkeypatch):
+    # 필터링된 부분집합이 아니라 texts 전체로 지문을 계산해야 조회가 찾을 수 있다
+    monkeypatch.setattr(translate_api, "LyricsTranslator", _blankable_translator({0}))
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            bg = BackgroundTasks()
+            translate_lyrics(
+                TranslateRequest(
+                    text="\n".join(LINES),
+                    source_lang="ko",
+                    target_lang="en",
+                    video_id=VIDEO,
+                    persist=True,
+                ),
+                bg,
+            )
+            await _run_background(bg)
+
+            # lang= 조회는 세그먼트 원문 전체(2줄)로 지문을 만든다 — 저장 쪽이 필터링된
+            # 1줄만으로 지문을 계산했다면 여기서 못 찾는다
+            resp = await get_sync(VIDEO, lang="en")
+            assert resp.translation_lang == "en"
+            assert resp.timestamps[1]["translation"] == "[en] 둘째 줄"
+
+    asyncio.run(body())
+
+
+# ── 감사 #6: SyncLink 커버가 원곡의 비ko 레이어를 볼 수 있어야 한다 ─────────────
+
+
+def test_linked_video_falls_back_to_source_layer_when_cover_has_none():
+    """원곡에만 en 레이어가 있으면, 커버(자기 레이어 없음) lang=en 조회가 그걸 받는다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01", lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    "SRCSRCSRC01",
+                    FP,
+                    "en",
+                    lines=[
+                        {"text": "첫 줄", "translation": "Original's English"},
+                        {"text": "둘째 줄", "translation": "Second"},
+                    ],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=5.0
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01", lang="en")
+            assert resp.translation_lang == "en"
+            assert [seg["translation"] for seg in resp.timestamps] == [
+                "Original's English",
+                "Second",
+            ]
+            assert "en" in resp.available_langs
+
+    asyncio.run(body())
+
+
+def test_linked_video_prefers_its_own_layer_over_source_fallback():
+    # 커버 자신의 레이어가 있으면 그걸 쓴다 — 폴백은 "미스"일 때만
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01", lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    "SRCSRCSRC01",
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "Source English"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    "DSTDSTDST01",
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "Cover's own English"}],
+                    attribution=None,
+                    origin="caption",
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=0.0
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01", lang="en")
+            assert resp.timestamps[0]["translation"] == "Cover's own English"
+
+    asyncio.run(body())
+
+
+def test_linked_video_available_langs_falls_back_to_source():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01", lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    "SRCSRCSRC01",
+                    FP,
+                    "ja",
+                    lines=[{"text": "첫 줄", "translation": "最初"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=0.0
+                )
+            )
+
+            # lang 미지정 조회도 available_langs는 폴백을 포함해 채운다
+            resp = await get_sync("DSTDSTDST01")
+            assert resp.available_langs == ["ja"]
+
+    asyncio.run(body())
+
+
+def test_linked_video_available_langs_does_not_merge_when_cover_has_its_own():
+    # 커버가 자기 레이어를 하나라도 가지면(예: en) "미스"가 아니므로 폴백하지 않는다 —
+    # 원곡의 다른 언어(ja)는 안 섞인다(1회 폴백 = on-miss 폴백이지 합집합이 아니다)
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01", lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    "SRCSRCSRC01",
+                    FP,
+                    "ja",
+                    lines=[{"text": "첫 줄", "translation": "最初"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    "DSTDSTDST01",
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "First"}],
+                    attribution=None,
+                    origin="caption",
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=0.0
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01")
+            assert resp.available_langs == ["en"]
+
+    asyncio.run(body())
+
+
+def test_own_sync_lookup_does_not_fall_back_to_anything():
+    # 자기 싱크가 있는 영상은 link_source_video_id가 None이라 폴백 자체가 없다 — 회귀 방지
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO, lang="en")
+            assert resp.translation_lang is None
+            assert resp.available_langs == []
+
+    asyncio.run(body())
+
+
+# ── 감사 #7·#10: 링크 시프트가 pron_segs·heard_spans도 옮겨야 한다 ─────────────
+
+
+def _segment_with_pron_and_heard(**overrides) -> dict:
+    seg = {
+        "text": "テスト",
+        "start": 2.0,
+        "end": 4.0,
+        "pron_segs": {
+            "romaji": [
+                {"text": "te", "start": 2.0, "end": 3.0},
+                {"text": "su", "start": 3.0, "end": 4.0},
+            ],
+            "kana": [{"text": "テ", "start": 2.0, "end": 3.0}],
+        },
+        "debug": {"heard_spans": [["テ", 2.0], ["ス", 3.0]]},
+    }
+    seg.update(overrides)
+    return seg
+
+
+def test_link_shift_applies_to_pron_segs_and_heard_spans():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01",
+                    lyrics_hash="h1",
+                    timestamps=[_segment_with_pron_and_heard()],
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=10.0
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01")
+            seg = resp.timestamps[0]
+            assert seg["pron_segs"]["romaji"] == [
+                {"text": "te", "start": 12.0, "end": 13.0},
+                {"text": "su", "start": 13.0, "end": 14.0},
+            ]
+            assert seg["pron_segs"]["kana"] == [{"text": "テ", "start": 12.0, "end": 13.0}]
+            assert seg["debug"]["heard_spans"] == [["テ", 12.0], ["ス", 13.0]]
+
+    asyncio.run(body())
+
+
+def test_link_shift_with_rate_applies_to_pron_segs_and_heard_spans():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01",
+                    lyrics_hash="h1",
+                    timestamps=[_segment_with_pron_and_heard()],
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01",
+                    source_video_id="SRCSRCSRC01",
+                    offset_sec=1.0,
+                    rate=2.0,
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01")
+            seg = resp.timestamps[0]
+            # sh(t) = t/rate + offset — pron_segments·words와 동일 수식
+            assert seg["pron_segs"]["romaji"][0]["start"] == 2.0  # 2.0/2.0 + 1.0
+            assert seg["pron_segs"]["romaji"][0]["end"] == 2.5  # 3.0/2.0 + 1.0
+            assert seg["debug"]["heard_spans"][0] == ["テ", 2.0]
+            assert seg["debug"]["heard_spans"][1] == ["ス", 2.5]
+
+    asyncio.run(body())
+
+
+def test_link_shift_pron_segs_and_heard_spans_are_optional():
+    # 두 필드가 없는 세그먼트(구형 싱크)에서 시프트가 예외 없이 통과해야 한다
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01",
+                    lyrics_hash="h1",
+                    timestamps=[{"text": "가사", "start": 1.0, "end": 2.0}],
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=5.0
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01")
+            assert resp.timestamps[0]["start"] == 6.0
+
+    asyncio.run(body())
+
+
+# ── 감사 #3: 구세대 싱크(pron dict 없음)를 조회 시 기회적으로 채운다 ────────────
+#
+# **순서 의존**: S5의 merge 가드(비한글 발음이 legacy pronunciation에 박히는 것을 막는
+# merge_line_meta 가드, 커밋 ea145c0)가 이미 마스터에 있다는 전제로만 안전하다 — 이
+# 스위트를 실행하는 시점에는 그 가드가 이미 커밋돼 있음을 확인했다(worker.py 상태로
+# 검증). 그 가드 없이 이 기능만 먼저 배포되면, 오염된(비한글) line_meta 발음이 legacy
+# seg["pronunciation"]에 박힌 채 attach_pron_variants가 그 값을 pron.hangul에 영구
+# 고착시킬 수 있다(감사 치명 #1 서버 잔여).
+
+
+def _legacy_ja_segment() -> dict:
+    # 구세대 싱크의 특징: 기존 hangul 독음(pronunciation)은 있지만 표기별 pron dict가
+    # pron dict 기능이 생기기 전에 만들어져 없다.
+    return {"text": "元気", "start": 0.0, "end": 1.0, "pronunciation": "겐키"}
+
+
+def test_lazy_attach_fills_pron_dict_and_reflects_in_the_immediate_response():
+    from everyric2.text.pron_style import romaji_line
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=[_legacy_ja_segment()]
+                )
+                await s.commit()
+
+            # 재조회 없이 이번 응답부터 즉시 반영된다
+            resp = await get_sync(VIDEO)
+            seg = resp.timestamps[0]
+            assert seg["pron"]["hangul"] == "겐키"
+            assert seg["pron"]["romaji"] == romaji_line("元気")[0]
+            assert "kana" in seg["pron"]
+
+    asyncio.run(body())
+
+
+def test_lazy_attach_persists_to_the_row_via_background_task():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                sync = await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=[_legacy_ja_segment()]
+                )
+                sync_id = sync.id
+                await s.commit()
+
+            bg = BackgroundTasks()
+            await get_sync(VIDEO, background_tasks=bg)
+            await _run_background(bg)
+
+            async with sm() as s:
+                stored = await s.get(SyncResult, sync_id)
+                stored_seg = stored.timestamps["segments"][0]
+                assert stored_seg["pron"]["hangul"] == "겐키"
+                assert "romaji" in stored_seg["pron"]
+
+            # 저장 후 재조회에도 그대로 남아 있다(재계산 없이 저장분을 그대로 서빙)
+            resp = await get_sync(VIDEO)
+            assert resp.timestamps[0]["pron"]["hangul"] == "겐키"
+
+    asyncio.run(body())
+
+
+def test_lazy_attach_is_idempotent_and_does_not_recompute_existing_pron():
+    # 이미 pron이 있는 세그는(예: 심판 판정을 반영해 직렬화 때 만든 값) 손대지 않는다
+    async def body():
+        async with _env() as sm:
+            seg = _legacy_ja_segment()
+            seg["pron"] = {"hangul": "겐키", "romaji": "already there"}
+            async with sm() as s:
+                await SyncRepository(s).create(video_id=VIDEO, lyrics_hash="h1", timestamps=[seg])
+                await s.commit()
+
+            resp = await get_sync(VIDEO)
+            assert resp.timestamps[0]["pron"] == {"hangul": "겐키", "romaji": "already there"}
+
+    asyncio.run(body())
+
+
+def test_lazy_attach_skips_entirely_without_fugashi(monkeypatch):
+    # fugashi 미가용(pykakasi 폴백)이면 통째로 건너뛴다 — 저품질 값이 DB에 영구 고착되지
+    # 않게 한다. 지역 임포트라 원본(everyric2.text.ja_reading)을 패치해야 한다.
+    monkeypatch.setattr("everyric2.text.ja_reading.reading_source", lambda: "pykakasi")
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=[_legacy_ja_segment()]
+                )
+                await s.commit()
+
+            resp = await get_sync(VIDEO)
+            assert "pron" not in resp.timestamps[0]
+
+    asyncio.run(body())
+
+
+def test_lazy_attach_does_not_apply_to_linked_lookup():
+    # 링크로 빌려온 싱크는 시프트된 사본이라 lazy attach를 부르지 않는다 — 원곡을 직접
+    # 조회하면 원곡 행에 붙고, 그 뒤로는 시프트(#7)가 커버 조회에도 자연히 실어 준다.
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01", lyrics_hash="h1", timestamps=[_legacy_ja_segment()]
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=5.0
+                )
+            )
+
+            resp = await get_sync("DSTDSTDST01")
+            assert "pron" not in resp.timestamps[0]
+
+    asyncio.run(body())
+
+
+def test_lazy_attach_persist_gives_up_if_segment_count_changed_meanwhile():
+    # 백그라운드 실행 전에 행의 세그 구성이 바뀌면(재생성 등) 인덱스 대응을 신뢰할 수
+    # 없어 포기한다 — 엉뚱한 세그에 값을 붙이는 사고보다 다음 조회에 다시 시도하는 편이 낫다
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                sync = await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=[_legacy_ja_segment()]
+                )
+                sync_id = sync.id
+                await s.commit()
+
+            bg = BackgroundTasks()
+            await get_sync(VIDEO, background_tasks=bg)
+
+            async with sm() as s:
+                stored = await s.get(SyncResult, sync_id)
+                updated = dict(stored.timestamps)
+                updated["segments"] = [_legacy_ja_segment(), _legacy_ja_segment()]
+                stored.timestamps = updated
+                await s.commit()
+
+            await _run_background(bg)  # 예외 없이 통과해야 한다
+
+            async with sm() as s:
+                stored = await s.get(SyncResult, sync_id)
+                assert len(stored.timestamps["segments"]) == 2
+                assert "pron" not in stored.timestamps["segments"][0]
 
     asyncio.run(body())
