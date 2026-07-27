@@ -9,7 +9,8 @@
 
   "host_permissions": [
     "https://everyric.moref.co/*",
-    "http://vocaro.wikidot.com/*"
+    "http://vocaro.wikidot.com/*",
+    "https://vocaloidlyrics.miraheze.org/*"
   ],
 
   "optional_host_permissions": [
