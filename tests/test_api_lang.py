@@ -14,18 +14,24 @@
 import asyncio
 import contextlib
 
-from fastapi import BackgroundTasks
+import pytest
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from everyric2.config.settings import get_settings
 from everyric2.server.api import translate as translate_api
 from everyric2.server.api.sync import (
+    Attribution,
     RegenerateRequest,
+    SaveTranslationLayerRequest,
+    SaveTranslationLayerResponse,
     SyncLinkRequest,
+    TranslationLayerLine,
     create_sync_link,
     get_sync,
     regenerate_sync,
+    save_translation_layer,
 )
 from everyric2.server.api.translate import TranslateRequest, translate_lyrics
 from everyric2.server.db import connection as db_conn
@@ -674,5 +680,345 @@ def test_available_langs_is_none_when_sync_not_found():
             resp = await get_sync("NOSYNCNOS01")
             assert resp.found is False
             assert resp.available_langs is None
+
+    asyncio.run(body())
+
+
+# ── POST /{video_id}/translations — 완성된 싱크에 이미 확보한 번역 직접 저장 ──────
+
+
+def _layer_lines(pairs: list[tuple[str, str]]) -> list[TranslationLayerLine]:
+    return [TranslationLayerLine(text=t, translation=tr) for t, tr in pairs]
+
+
+def test_save_translation_layer_then_lang_lookup_reflects_it():
+    """정상 저장 → lang 조회에 그대로 반영된다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            resp = await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines([("첫 줄", "First line"), ("둘째 줄", "Second line")]),
+                    origin="caption",
+                ),
+            )
+            assert resp == SaveTranslationLayerResponse(
+                saved=True, matched=2, total=2, target_lang="en"
+            )
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                assert layer is not None
+                assert layer.origin == "caption"
+                assert layer.lines == [
+                    {"text": "첫 줄", "translation": "First line"},
+                    {"text": "둘째 줄", "translation": "Second line"},
+                ]
+
+            lookup = await get_sync(VIDEO, lang="en")
+            assert lookup.translation_lang == "en"
+            assert [seg["translation"] for seg in lookup.timestamps] == [
+                "First line",
+                "Second line",
+            ]
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_stores_attribution():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines([("첫 줄", "First line"), ("둘째 줄", "Second line")]),
+                    origin="wiki",
+                    attribution=Attribution(
+                        name="테스트 위키", url="https://example.test", license="CC BY-SA 4.0"
+                    ),
+                ),
+            )
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                assert layer.attribution == {
+                    "name": "테스트 위키",
+                    "url": "https://example.test",
+                    "license": "CC BY-SA 4.0",
+                    "source_id": None,
+                }
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_rejects_low_match_rate():
+    """lines의 text가 세그 원문과 절반 미만 일치하면 422 — 엉뚱한 가사 방지."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await save_translation_layer(
+                    VIDEO,
+                    SaveTranslationLayerRequest(
+                        target_lang="en",
+                        # 2줄 중 1줄만 이 영상의 가사와 일치 — 50% 미만이 아니라 정확히
+                        # 50%면 통과해야 하므로, 3줄 중 1줄(약 33%)로 명백히 미달시킨다
+                        lines=_layer_lines(
+                            [
+                                ("첫 줄", "First line"),
+                                ("전혀 다른 곡의 가사", "Wrong song"),
+                                ("이것도 다른 곡", "Also wrong"),
+                            ]
+                        ),
+                        origin="caption",
+                    ),
+                )
+            assert exc.value.status_code == 422
+
+            async with sm() as s:
+                assert await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en") is None
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_accepts_exactly_half_match_rate():
+    # "절반 이상"은 정확히 50%도 포함한다(경계값)
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            resp = await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines([("첫 줄", "First line"), ("전혀 다른 가사", "Wrong")]),
+                    origin="caption",
+                ),
+            )
+            assert resp.saved is True
+            assert (resp.matched, resp.total) == (1, 2)
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_rejects_unknown_origin():
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await s.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await save_translation_layer(
+                    VIDEO,
+                    SaveTranslationLayerRequest(
+                        target_lang="en",
+                        lines=_layer_lines([("첫 줄", "First line"), ("둘째 줄", "Second")]),
+                        origin="llm",  # 화이트리스트 밖 — 이 엔드포인트는 llm을 못 만든다
+                    ),
+                )
+            assert exc.value.status_code == 422
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_overwrites_llm_layer_with_caption():
+    """기존 레이어가 origin="llm"이면 caption이 교체할 수 있다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "machine translated"}],
+                    attribution=None,
+                    origin="llm",
+                )
+                await s.commit()
+
+            resp = await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines([("첫 줄", "human caption"), ("둘째 줄", "second line")]),
+                    origin="caption",
+                ),
+            )
+            assert resp.saved is True
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                assert layer.origin == "caption"
+                assert layer.lines[0]["translation"] == "human caption"
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_re_updates_same_origin():
+    """기존이 caption이고 새 요청도 caption이면(재수집·정정 등) 교체된다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "old caption text"}],
+                    attribution=None,
+                    origin="caption",
+                )
+                await s.commit()
+
+            resp = await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines(
+                        [("첫 줄", "corrected caption text"), ("둘째 줄", "second line")]
+                    ),
+                    origin="caption",
+                ),
+            )
+            assert resp.saved is True
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                assert layer.lines[0]["translation"] == "corrected caption text"
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_refuses_to_overwrite_a_different_human_origin():
+    """기존이 "wiki"인데 "caption"으로 요청 — 사람이 확인한 위키 번역을 자동 자막이
+    덮어쓰면 안 된다. 에러가 아니라 saved=false로 조용히 거절한다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id=VIDEO, lyrics_hash="h1", timestamps=_seed_segments(["", ""])
+                )
+                await TranslationLayerRepository(s).upsert_layer(
+                    VIDEO,
+                    FP,
+                    "en",
+                    lines=[{"text": "첫 줄", "translation": "trusted wiki translation"}],
+                    attribution={"name": "위키", "url": None, "license": None, "source_id": "wiki"},
+                    origin="wiki",
+                )
+                await s.commit()
+
+            resp = await save_translation_layer(
+                VIDEO,
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines([("첫 줄", "auto caption text"), ("둘째 줄", "second")]),
+                    origin="caption",
+                ),
+            )
+            assert resp.saved is False
+            assert (resp.matched, resp.total) == (2, 2)  # 매칭률 계산은 그대로 응답에 실린다
+
+            async with sm() as s:
+                layer = await TranslationLayerRepository(s).get_layer(VIDEO, FP, "en")
+                assert layer.origin == "wiki"  # 안 바뀜
+                assert layer.lines[0]["translation"] == "trusted wiki translation"
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_uses_requested_video_id_not_source_for_linked_video():
+    """링크로 빌려온 영상도 요청받은 video_id를 레이어 키로 쓴다 — source_video_id가 아니다."""
+
+    async def body():
+        async with _env() as sm:
+            async with sm() as s:
+                await SyncRepository(s).create(
+                    video_id="SRCSRCSRC01",
+                    lyrics_hash="h1",
+                    timestamps=_seed_segments(["", ""]),
+                )
+                await s.commit()
+
+            await create_sync_link(
+                SyncLinkRequest(
+                    video_id="DSTDSTDST01", source_video_id="SRCSRCSRC01", offset_sec=5.0
+                )
+            )
+
+            resp = await save_translation_layer(
+                "DSTDSTDST01",
+                SaveTranslationLayerRequest(
+                    target_lang="en",
+                    lines=_layer_lines([("첫 줄", "First"), ("둘째 줄", "Second")]),
+                    origin="caption",
+                ),
+            )
+            assert resp.saved is True
+
+            async with sm() as s:
+                repo = TranslationLayerRepository(s)
+                assert await repo.get_layer("DSTDSTDST01", FP, "en") is not None
+                assert await repo.get_layer("SRCSRCSRC01", FP, "en") is None
+
+            lookup = await get_sync("DSTDSTDST01", lang="en")
+            assert lookup.linked is not None
+            assert lookup.translation_lang == "en"
+            assert [seg["translation"] for seg in lookup.timestamps] == ["First", "Second"]
+
+    asyncio.run(body())
+
+
+def test_save_translation_layer_404_when_no_sync():
+    async def body():
+        async with _env():
+            with pytest.raises(HTTPException) as exc:
+                await save_translation_layer(
+                    "NOSYNCNOS01",
+                    SaveTranslationLayerRequest(
+                        target_lang="en",
+                        lines=_layer_lines([("첫 줄", "First"), ("둘째 줄", "Second")]),
+                        origin="caption",
+                    ),
+                )
+            assert exc.value.status_code == 404
+
+    asyncio.run(body())
 
     asyncio.run(body())

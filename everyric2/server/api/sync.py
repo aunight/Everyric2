@@ -256,6 +256,66 @@ class Attribution(BaseModel):
     source_id: str | None = None
 
 
+# ── 완성된 싱크에 이미 확보한 번역을 직접 저장 (POST /{video_id}/translations) ──────
+
+# "llm"은 일부러 뺐다 — 그 origin은 POST /api/translate persist=true 전용이다(그쪽만
+# 서버가 실제로 번역을 만든다). 이 엔드포인트는 **이미 존재하는** 사람 번역 텍스트를
+# 그대로 옮기는 경로라 llm을 자처할 수 없다.
+_TRANSLATION_LAYER_ORIGINS = ("caption", "wiki", "manual")
+
+# 가사 하한(_validate_lyrics)과 같은 이유의 상한 — /api/translate의 400줄/1000자 관례를
+# 그대로 따른다(TranslateRequest 검사 참고).
+_MAX_TRANSLATION_LAYER_LINES = 400
+_MAX_TRANSLATION_LAYER_LINE_CHARS = 1000
+
+# lines의 text가 그 영상 최신 싱크의 세그 원문과 이 비율 미만으로 일치하면 저장을 거절한다
+# — 엉뚱한 곡·다른 버전 가사에 번역이 붙는 사고를 막는다("절반 이상" 일치를 요구).
+_MIN_TRANSLATION_LAYER_MATCH_RATIO = 0.5
+
+
+class TranslationLayerLine(BaseModel):
+    text: str
+    translation: str
+
+
+class SaveTranslationLayerRequest(BaseModel):
+    target_lang: str = Field(max_length=8)
+    lines: list[TranslationLayerLine]
+    origin: str
+    attribution: Attribution | None = None
+
+
+class SaveTranslationLayerResponse(BaseModel):
+    saved: bool
+    matched: int
+    total: int
+    target_lang: str
+
+
+def _validate_translation_layer_request(request: "SaveTranslationLayerRequest") -> None:
+    """origin 화이트리스트 + 라인 상한 — 본문 검증. 매칭률 검사는 세그 원문이 있어야
+    가능해 핸들러(세션 진입 후)에서 별도로 한다."""
+    if request.origin not in _TRANSLATION_LAYER_ORIGINS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"origin은 {_TRANSLATION_LAYER_ORIGINS} 중 하나여야 해요 (받은 값: {request.origin!r})",
+        )
+    if not request.lines:
+        raise HTTPException(status_code=422, detail="lines가 비어 있어요")
+    if len(request.lines) > _MAX_TRANSLATION_LAYER_LINES or any(
+        len(ln.text) > _MAX_TRANSLATION_LAYER_LINE_CHARS
+        or len(ln.translation) > _MAX_TRANSLATION_LAYER_LINE_CHARS
+        for ln in request.lines
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"라인이 너무 많거나 길어요 — 최대 {_MAX_TRANSLATION_LAYER_LINES}줄, "
+                f"줄당 {_MAX_TRANSLATION_LAYER_LINE_CHARS}자까지 지원해요."
+            ),
+        )
+
+
 class GenerateRequest(BaseModel):
     video_id: str = Field(pattern=_VIDEO_ID_PATTERN)
     lyrics: str
@@ -912,6 +972,80 @@ async def get_sync(
                 return await _apply_translation_lang(session, video_id, resp, lang, background_tasks)
 
         return SyncLookupResponse(found=False, user_offset=user_offset)
+
+
+@router.post("/{video_id}/translations", response_model=SaveTranslationLayerResponse)
+async def save_translation_layer(video_id: str, request: SaveTranslationLayerRequest):
+    """완성된 싱크에 **이미 확보한** 번역(수동자막·위키 사람 번역 등)을 레이어로 직접 저장한다.
+
+    다른 두 저장 경로와의 차이: `POST /api/translate`(persist=true)는 서버가 새로 번역해
+    origin="llm"으로 저장하고, `POST /jobs/{job_id}/line-meta`는 진행 중인 생성 잡 전용
+    (job_id 필수)이다. 이 엔드포인트는 **완성된 싱크를 보는 중(잡이 없음)**에 확장이 이미
+    가진 번역 텍스트를 그대로 옮긴다 — 재번역도, 워커 개입도 없다.
+
+    엉뚱한 가사(다른 곡·다른 버전)에 번역이 잘못 붙는 사고를 막기 위해 lines의 text가 이
+    영상의 **최신** 싱크 세그먼트 원문과 normalize_line 기준으로 절반 이상 일치해야
+    저장한다 — 미달이면 422와 함께 실제 매칭률을 알린다.
+
+    기존 레이어가 있으면 그 origin이 이번 요청과 같거나("caption"을 다시 "caption"으로
+    갱신 등) 기존이 "llm"일 때만 교체한다. 그 외(예: 기존이 "wiki"인데 "caption"으로
+    요청)는 **에러가 아니라 saved=false로 조용히 거절**한다 — 사람이 확인한 위키 번역을
+    자동 자막이 덮어쓰지 못하게 한다("llm"은 이 엔드포인트가 절대 만들지 않는 origin이라
+    /api/translate persist 결과를 밀어내는 경로만 여기 남는다).
+
+    링크로 빌려온 영상(자기 싱크가 없고 SyncLink만 있는 경우)도 지원한다 — 세그먼트는
+    링크 소스에서 가져오되(매칭·지문 계산용), 레이어는 **요청받은 video_id**를 키로 쓴다
+    (source_video_id 아님) — GET 조회·POST /api/translate persist와 같은 키 관례를
+    지켜야 서로 찾아진다. 우선순위는 get_sync와 동일하게 자기 싱크 > 링크."""
+    _validate_video_id(video_id)
+    _validate_translation_layer_request(request)
+
+    async with get_session() as session:
+        sync_repo = SyncRepository(session)
+        own = await sync_repo.get_by_video(video_id)
+        if own:
+            segments = (own[0].timestamps or {}).get("segments", []) or []
+        else:
+            link = await SyncLinkRepository(session).get(video_id)
+            source_syncs = (
+                await sync_repo.get_by_video(link.source_video_id) if link else None
+            )
+            if not source_syncs:
+                raise HTTPException(status_code=404, detail="이 영상의 싱크를 찾을 수 없어요")
+            segments = (source_syncs[0].timestamps or {}).get("segments", []) or []
+        seg_keys = {normalize_line(seg.get("text", "") or "") for seg in segments}
+        seg_keys.discard("")
+
+        total = len(request.lines)
+        matched = sum(1 for line in request.lines if normalize_line(line.text) in seg_keys)
+        if total == 0 or matched / total < _MIN_TRANSLATION_LAYER_MATCH_RATIO:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"저장하려는 번역 라인이 이 영상의 가사와 거의 안 맞아요 "
+                    f"({matched}/{total}줄 일치) — 다른 곡·다른 버전 가사가 아닌지 확인해 주세요."
+                ),
+            )
+
+        fingerprint = lines_fingerprint([seg.get("text", "") or "" for seg in segments])
+        repo = TranslationLayerRepository(session)
+        existing = await repo.get_layer(video_id, fingerprint, request.target_lang)
+        if existing is not None and existing.origin not in (request.origin, "llm"):
+            return SaveTranslationLayerResponse(
+                saved=False, matched=matched, total=total, target_lang=request.target_lang
+            )
+
+        await repo.upsert_layer(
+            video_id,
+            fingerprint,
+            request.target_lang,
+            lines=[{"text": ln.text, "translation": ln.translation} for ln in request.lines],
+            attribution=request.attribution.model_dump() if request.attribution else None,
+            origin=request.origin,
+        )
+        return SaveTranslationLayerResponse(
+            saved=True, matched=matched, total=total, target_lang=request.target_lang
+        )
 
 
 @router.delete("/{video_id}")
