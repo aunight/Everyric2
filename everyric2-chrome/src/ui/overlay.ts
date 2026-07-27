@@ -1,7 +1,8 @@
-import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncListItem } from '../types';
+import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SyncDebugMeta, SyncListItem } from '../types';
 import { resolveScript, resolvedPronSegments, resolvedPronunciation } from '../lib/lang';
 import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
 import { resolveTheme } from '../lib/theme';
+import { buildDebugPanel } from './debug-panel';
 import { h, icon, ICONS } from './dom';
 import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
 import {
@@ -88,6 +89,16 @@ export class LyricsOverlay {
   private body: HTMLDivElement;
   private footer: HTMLDivElement;
   private debugEl: HTMLDivElement;
+  /** debugEl(텍스트) + «전체» 토글 버튼을 담는 줄 — debugEl 단독이 아니라 이 줄 전체가
+   *  settings.debugInfo를 따라 켜지고 꺼진다 */
+  private debugStrip: HTMLDivElement;
+  private debugToggleBtn: HTMLButtonElement;
+  /** 곡 전체 디버그 패널(원문 vs heard 전수 대비) — 토글로 열고 닫는다 */
+  private debugPanelEl: HTMLDivElement;
+  private debugPanelOpen = false;
+  /** 곡 단위 정렬 진단(자막 스캐폴드 등) — content가 setDebugMeta로 밀어넣는다.
+   *  아직 아무도 안 채우면 null로 남고, 패널은 곡 전체 요약 줄만 생략한 채 정상 동작한다 */
+  private debugMeta: SyncDebugMeta | null = null;
   private banner: HTMLDivElement;
   private resumeChip: HTMLButtonElement;
   private genChip: HTMLDivElement;
@@ -273,11 +284,25 @@ export class LyricsOverlay {
     this.footer.style.display = 'none';
 
     this.debugEl = h('div', { className: 'ey-debug', text: 'debug: 대기 중…' });
-    this.debugEl.style.display = 'none';
+
+    // «전체» — 곡 전체 디버그 패널(원문 vs heard 전수 대비) 토글. debugStrip과 함께
+    // settings.debugInfo에 따라서만 보이고 숨는다(라인 유무는 패널 안에서 안내)
+    this.debugToggleBtn = h('button', {
+      className: 'ey-debug-toggle',
+      text: '전체',
+      title: '곡 전체 디버그 패널 — 원문 vs heard 전수 대비, 클릭해서 시크',
+      attrs: { type: 'button' },
+      on: { click: () => this.toggleDebugPanel() },
+    });
+    this.debugStrip = h('div', { className: 'ey-debug-strip' }, this.debugEl, this.debugToggleBtn);
+    this.debugStrip.style.display = 'none';
+
+    this.debugPanelEl = h('div', { className: 'ey-debug-panel-wrap' });
+    this.debugPanelEl.style.display = 'none';
 
     this.panel = h('div', { className: 'ey-panel' },
       this.header, this.serverBar, this.banner, this.genChip, this.genList, this.noticeChip,
-      this.warnBar, this.body, this.resumeChip, this.footer, this.debugEl,
+      this.warnBar, this.body, this.resumeChip, this.footer, this.debugStrip, this.debugPanelEl,
     );
     // 패널 안 타이핑(검색창·가사 붙여넣기)이 유튜브 전역 단축키(스페이스=재생/정지,
     // 방향키=시킹 등)로 새지 않도록 키 이벤트를 패널에서 끊는다
@@ -1010,6 +1035,39 @@ export class LyricsOverlay {
       + (diag ? `\n${diag}` : '');
   }
 
+  /** 곡 단위 정렬 진단(자막 스캐폴드 등) — 디버그 패널 머리 요약줄이 이걸 읽는다.
+   *  content가 아직 이 메서드를 안 부르면 null로 남고, 패널은 요약줄만 생략한 채 동작한다. */
+  setDebugMeta(meta: SyncDebugMeta | null): void {
+    this.debugMeta = meta;
+    if (this.debugPanelOpen) this.renderDebugPanel(); // 열려 있으면 요약줄도 즉시 갱신
+  }
+
+  private toggleDebugPanel(): void {
+    this.debugPanelOpen = !this.debugPanelOpen;
+    this.renderDebugPanel();
+  }
+
+  private closeDebugPanel(): void {
+    if (!this.debugPanelOpen) return;
+    this.debugPanelOpen = false;
+    this.renderDebugPanel();
+  }
+
+  private renderDebugPanel(): void {
+    this.debugToggleBtn.classList.toggle('active', this.debugPanelOpen);
+    if (!this.debugPanelOpen) {
+      this.debugPanelEl.style.display = 'none';
+      this.debugPanelEl.replaceChildren();
+      return;
+    }
+    // SEEK_INTO_LINE_SEC 보정은 여기서 적용 — debug-panel.ts는 line.time을 그대로 받는
+    // "UI만" 모듈이라 이 보정을 모른다(라인 목록의 클릭 시크와 같은 이유·같은 값)
+    const { el } = buildDebugPanel(this.lines, this.debugMeta,
+      time => this.callbacks.onSeek(time + SEEK_INTO_LINE_SEC));
+    this.debugPanelEl.replaceChildren(el);
+    this.debugPanelEl.style.display = '';
+  }
+
   applySettings(settings: Settings): void {
     this.settings = settings;
     this.panel.classList.remove('ey-fs-small', 'ey-fs-medium', 'ey-fs-large');
@@ -1017,7 +1075,8 @@ export class LyricsOverlay {
     // 테마 판정은 lib/theme.ts 한 곳에서만 — PiP도 content가 같은 값을 받아 칠한다
     this.panel.classList.toggle('ey-light', resolveTheme(settings) === 'light');
     // 오프셋은 영상별 상태(setOffsetValue로 주입) — 전역 설정으로 되돌리지 않는다
-    this.debugEl.style.display = settings.debugInfo ? '' : 'none';
+    this.debugStrip.style.display = settings.debugInfo ? '' : 'none';
+    if (!settings.debugInfo) this.closeDebugPanel(); // 버튼이 숨는데 패널만 열려 남으면 안 된다
     this.panel.classList.toggle('ey-hide-pron', !settings.showPronunciation);
     // 디버그 모드에서 글자별 CTC 신뢰도를 색으로 표시
     this.panel.classList.toggle('ey-show-conf', settings.debugInfo);
@@ -1058,6 +1117,7 @@ export class LyricsOverlay {
     this.progressText = null;
     this.searchResultsEl = null;
     this.closeSettings();
+    this.closeDebugPanel(); // 곡이 바뀌면 이전 곡의 디버그 패널(원문·heard·시크 대상)이 남으면 안 된다
   }
 
   private showBanner(text: string, action?: HTMLElement): void {

@@ -94,7 +94,8 @@
 .ey-panel.collapsed .ey-footer,
 .ey-panel.collapsed .ey-resume-chip,
 .ey-panel.collapsed .ey-settings,
-.ey-panel.collapsed .ey-debug {
+.ey-panel.collapsed .ey-debug-strip,
+.ey-panel.collapsed .ey-debug-panel-wrap {
   display: none !important;
 }
 
@@ -777,9 +778,18 @@
 
 /* ── 디버그 스트립 ─────────────────────────────────────────────── */
 
-.ey-debug {
+.ey-debug-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   padding: 4px 12px 6px;
   border-top: 1px dashed var(--ey-border);
+  flex-shrink: 0;
+}
+
+.ey-debug {
+  flex: 1;
+  min-width: 0;
   font-family: ui-monospace, Consolas, 'Courier New', monospace;
   font-size: 10px;
   line-height: 1.5;
@@ -788,8 +798,88 @@
   word-break: break-all;
   user-select: text;
   cursor: text;
-  flex-shrink: 0;
 }
+
+/* «전체» — 곡 전체 디버그 패널 토글 */
+.ey-debug-toggle {
+  flex-shrink: 0;
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--ey-border);
+  background: transparent;
+  color: var(--ey-text-dim);
+  cursor: pointer;
+}
+.ey-debug-toggle:hover { background: var(--ey-elev-hover); color: var(--ey-text); }
+.ey-debug-toggle.active { color: var(--ey-accent); background: var(--ey-accent-soft); border-color: var(--ey-accent); }
+
+/* 곡 전체 디버그 패널 — 라인 집중 뷰(pip.ts)의 자매 기능. 원문 vs heard 전수 대비 + 클릭 시크 */
+.ey-debug-panel-wrap {
+  border-top: 1px dashed var(--ey-border);
+  max-height: 240px;
+  overflow-y: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ey-text-faint) transparent;
+}
+.ey-debug-panel-wrap::-webkit-scrollbar { width: 6px; }
+.ey-debug-panel-wrap::-webkit-scrollbar-thumb { background: var(--ey-text-faint); border-radius: 3px; }
+
+.ey-debug-panel-summary {
+  padding: 6px 12px 2px;
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--ey-accent);
+}
+
+.ey-debug-panel-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--ey-text-faint);
+}
+
+.ey-debug-panel-list { display: flex; flex-direction: column; }
+
+.ey-debug-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--ey-text-dim);
+}
+.ey-debug-row:hover { background: var(--ey-elev); }
+
+.ey-debug-row-time { flex-shrink: 0; color: var(--ey-text-faint); padding-top: 1px; }
+
+/* 정렬 신뢰도 등급 칩 — pip.ts confBucketColor·위쪽 .ey-conf-*(단어 색)와 같은 3색 규칙 재사용,
+   여기서는 배경 틴트를 더해 칩 모양으로 */
+.ey-debug-row-chip {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--ey-text-faint);
+}
+.ey-debug-row-chip.ey-conf-low { color: #ff6b6b; background: rgba(255, 107, 107, 0.14); }
+.ey-debug-row-chip.ey-conf-mid { color: #ffd166; background: rgba(255, 209, 102, 0.14); }
+.ey-debug-row-chip.ey-conf-ok { color: #51cf66; background: rgba(81, 207, 102, 0.14); }
+
+.ey-debug-row-text { min-width: 0; flex: 1; }
+.ey-debug-row-orig { color: var(--ey-text); word-break: break-word; white-space: normal; }
+/* heard(CTC가 실제로 들은 것) — 원문과 뚜렷이 구분되도록 흐린 색 */
+.ey-debug-row-heard { color: var(--ey-text-faint); word-break: break-word; white-space: normal; }
+.ey-debug-row-labels { color: var(--ey-accent); }
 
 /* ── 설정 시트 ─────────────────────────────────────────────────── */
 
