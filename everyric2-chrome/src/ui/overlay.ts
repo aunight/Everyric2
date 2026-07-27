@@ -173,11 +173,15 @@ export class LyricsOverlay {
     sourceVideoId: string; offsetSec: number; rate?: number; verified?: boolean;
   } | null = null;
 
-  /** 제목바 언어 칩 줄 — 곡별로 보유/미보유 언어가 다르므로 setAvailableLangs로만 보이거나 숨는다 */
+  /** 제목바 언어 칩 줄 — 가사가 로드돼 있으면 항상 뜬다(setAvailableLangs로 채움). 가사
+   *  자체가 없는 상태(로딩 중·빈 패널)에서만 숨긴다(setAvailableLangs(null)) */
   private langChipsRow: HTMLDivElement;
   private langChipButtons: { code: string; btn: HTMLButtonElement }[] = [];
-  /** 이 곡에 이미 번역이 저장된 언어들 — content가 setAvailableLangs로 밀어넣는다.
-   *  null이면(구서버·싱크 없음) 칩 줄 자체를 숨긴다 */
+  /** 이 곡의 "보유" 언어 — content가 setAvailableLangs로 밀어넣는다. content 쪽에서 이미
+   *  서버 신호·세션 내 성공·곡 자신의 언어를 합쳐 계산해 넘기므로, 가사가 있는 한 항상
+   *  최소 1개 이상(곡 언어)을 담은 배열이 온다. null은 "가사 자체가 없다"는 뜻으로만
+   *  쓰인다 — "서버 신호 없음"과 혼동하지 않는다(그건 그냥 빈 배열에 가까운 폴백일 뿐
+   *  숨김 사유가 아니다). */
   private availableLangs: string[] | null = null;
   /** 방금 클릭해 요청을 보낸 언어 — 응답 오기 전까지 그 칩만 로딩 표시(펄스) */
   private pendingLang: string | null = null;
@@ -701,9 +705,10 @@ export class LyricsOverlay {
     this.linkedInfo = info;
   }
 
-  /** 제목바 언어 칩의 "보유" 목록 — null이면(구서버·싱크 없음) 칩 줄 자체를 숨긴다.
-   *  곡이 바뀔 때(applyLyricsData)와, 번역이 새로 성공 적용될 때(다른 언어가 막 생겼을 때)
-   *  둘 다 호출된다. */
+  /** 제목바 언어 칩의 "보유" 목록 — null이면(가사 자체가 없음: 로딩 중·빈 패널) 칩 줄을
+   *  숨긴다. 가사가 있으면 content가 항상 비어 있지 않은 배열을 넘긴다(서버 신호가 없어도
+   *  최소 곡 자신의 언어는 담아서). 곡이 바뀔 때(applyLyricsData)와, 번역이 새로 성공
+   *  적용될 때(다른 언어가 막 생겼을 때) 둘 다 호출된다. */
   setAvailableLangs(langs: string[] | null): void {
     this.availableLangs = langs;
     this.renderLangChips();

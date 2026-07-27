@@ -1099,6 +1099,66 @@ async function tryCaptionTranslationLayer(
   return true;
 }
 
+/**
+ * 이미 싱크가 있는 곡에서 대상 언어의 위키(미라헤즈/보카로) 사람 번역을 자막 다음,
+ * LLM보다 먼저 시도한다 — tryCaptionTranslationLayer와 같은 자리, 그다음 단계.
+ *
+ * 위키는 언어가 소스별로 고정된 단일언어다(미라헤즈=en, vocaro=ko) — 대상 언어가 그
+ * 언어와 일치할 때만 두드린다. ja는 대응하는 번역 위키가 없어 건너뛴다(자막·LLM만).
+ *
+ * 위키 페이지는 시간 정보가 없는 줄 단위 텍스트라 mergeCaptionTranslation(시간 겹침)을
+ * 못 쓴다 — 대신 enrichFromVocaro와 같은 원리(정규화 텍스트 매칭)로 현재 싱크 줄과
+ * 대조한다. 원문이 위키·싱크 사이에서 문장부호·공백 등으로 다를 수 있어 매칭이 항상
+ * 100%는 아니다 — 매칭률이 절반 미만이면 신뢰할 수 없다고 보고 버린다(잘못된 줄에
+ * 번역이 얹히는 것보다 아예 안 붙는 게 낫다는 이 파일 전체의 원칙과 같다).
+ *
+ * 저장은 캡션 단계와 같은 결론이다(tryCaptionTranslationLayer 문서 참고) — 세션
+ * 로컬 표시만, 서버 저장 경로 없음.
+ */
+async function tryWikiTranslationLayer(
+  data: LyricsData, videoId: string, lang: string,
+): Promise<boolean> {
+  if (data.source !== 'everyric' || !data.synced || !currentSong) return false;
+  let wikiLines: { text: string; translation?: string }[] | null;
+  if (lang === 'en') {
+    const res = await sendToBackground<SourceResult | null>({
+      type: 'MIRAHEZE_LOOKUP', payload: { title: currentSong.title },
+    });
+    if (videoId !== currentVideoId) return false;
+    wikiLines = res.data?.lines ?? null;
+  } else if (lang === 'ko') {
+    const res = await sendToBackground<VocaroResult | null>({
+      type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
+    });
+    if (videoId !== currentVideoId) return false;
+    wikiLines = res.data?.lines ?? null;
+  } else {
+    return false; // ja 등 대응 번역 위키가 없다
+  }
+  if (!wikiLines || wikiLines.length === 0) return false;
+
+  // enrichFromVocaro와 같은 정규화 — 공백을 접고 앞뒤를 자른다
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const byText = new Map<string, string>();
+  for (const l of wikiLines) {
+    if (l.translation && !byText.has(norm(l.text))) byText.set(norm(l.text), l.translation);
+  }
+  let matched = 0;
+  const translations = data.lines.map(line => {
+    const tr = byText.get(norm(line.text));
+    if (tr) matched++;
+    return tr;
+  });
+  if (matched === 0 || matched / data.lines.length < 0.5) return false;
+
+  // pronunciation은 절대 싣지 않는다 — miraheze 로마자는 정렬용이 아니라 표시용이고,
+  // 발음은 서버 pron dict가 정본이다(라틴 정렬 붕괴 실측 — 로마자를 정렬 입력에 쓰면
+  // 무너진다는 것과 같은 이유로, 표시에서도 로마자 대신 pron dict 값을 신뢰한다).
+  applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' })));
+  data.humanTranslated = true;
+  return true;
+}
+
 async function loadTranslations(): Promise<void> {
   const data = currentData;
   const videoId = currentVideoId;
@@ -1152,6 +1212,15 @@ async function loadTranslations(): Promise<void> {
   if (await tryCaptionTranslationLayer(data, videoId, lang)) return;
   if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(자막 시도 중)
 
+  // 자막도 미스면 내 언어의 위키(미라헤즈=en·vocaro=ko)를 다음으로 시도한다 — 이미
+  // 싱크가 있는 곡은 자동 로딩이 위키 체인까지 안 가므로(그건 lookupWikiSources가
+  // 싱크가 **없을 때만** 도는 별개 경로다), 위키에 사람 번역이 있어도 여기까지 오지
+  // 않으면 곧장 LLM으로 갔다 — 그 갭을 메운다. 매 영상 로드마다 위키를 두드리는 게
+  // 아니라 "레이어 미스 + 대각선 아님"일 때만이다(정확히 이 지점 — 어차피 LLM을
+  // 부를 참이었던 경우로 국한된다).
+  if (await tryWikiTranslationLayer(data, videoId, lang)) return;
+  if (currentData !== data || currentVideoId !== videoId) return; // 곡이 바뀜(위키 시도 중)
+
   // 번역은 서버 전용이다 — 고장난 걸 알면서 "생성 중…"을 띄우는 건 작동하는 척하는 것
   if (serverKnownBad(serverStatus)) {
     overlay?.setTranslationStatus(t('content.translation.unavailable', [statusLine(serverStatus)]));
@@ -1194,15 +1263,14 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   // translationLangMatches 가드가 이 값을 읽는다)
   data.translationLang = settings.translationLanguage;
   // 제목바 언어 칩 — 이 언어의 번역이 방금 실제로 생겼으니 서버 재조회 없이 "보유"로
-  // 바로 반영한다(everyric 소스에만 의미가 있다 — availableLangs는 그 서버 레이어 개념).
-  if (data.source === 'everyric') {
-    data.availableLangs = data.availableLangs?.includes(data.translationLang)
-      ? data.availableLangs
-      : [...(data.availableLangs ?? []), data.translationLang];
-    // availableLangsForChip을 거쳐야 곡 자신의 언어 칩이 계속 "보유" 스타일을 유지한다 —
-    // 여기서 data.availableLangs를 그대로 넘기면 방금 병합한 목록으로 덮어써서 잃는다.
-    if (currentData === data) overlay?.setAvailableLangs(availableLangsForChip(data));
-  }
+  // 바로 반영한다. 소스 무관(everyric뿐 아니라 plain·vocaro·caption도) — 번역은 어느
+  // 소스에도 적용되므로 칩도 항상 최신 상태를 반영해야 한다(사용자 요청: 칩 상시 표시).
+  data.availableLangs = data.availableLangs?.includes(data.translationLang)
+    ? data.availableLangs
+    : [...(data.availableLangs ?? []), data.translationLang];
+  // availableLangsForChip을 거쳐야 곡 자신의 언어 칩이 계속 "보유" 스타일을 유지한다 —
+  // 여기서 data.availableLangs를 그대로 넘기면 방금 병합한 목록으로 덮어써서 잃는다.
+  if (currentData === data) overlay?.setAvailableLangs(availableLangsForChip(data));
   let pronApplied = false;
   data.lines.forEach((line, i) => {
     const t = translated[i]?.translation?.trim();
@@ -1264,20 +1332,27 @@ function expectsPronunciation(texts: string[]): boolean {
 }
 
 /**
- * 제목바 언어 칩의 «보유» 목록 — everyric 소스가 아니거나 서버가 available_langs 자체를
- * 안 주면(구서버) null(칩 줄 전체 숨김). 있으면 곡 자신의 스크립트 언어를 항상 합쳐 넣는다.
+ * 제목바 언어 칩의 «보유» 목록 — data 자체가 없으면(가사 미로드·검색 중) null(칩 줄
+ * 전체 숨김). **data가 있으면 소스에 상관없이 항상 무언가를 반환한다**(사용자 요청:
+ * 언어별 번역 여부 칩이 항상 떠야 한다 — everyric 서버 신호가 없어도, plain·vocaro·
+ * caption 같은 소스에서도).
  *
- * 곡 자신의 언어는 번역 레이어가 **절대 생기지 않는다**(대각선 — expectsPronunciation의
- * `script === lang` 분기와 같은 이유로 서버가 번역 자체를 건너뛴다). 서버 목록만 그대로
- * 쓰면 이 언어 칩이 영원히 "미보유"로 보이는데, 클릭해도 실제로 생성되는 게 없고 그냥
- * 원문만 보기로 전환될 뿐이다(대각선 생략이 번역 줄을 자연히 비운다) — "미보유·클릭해
- * 생성" 문구를 달아 두면 사용자는 생성이 실패했다고 오해한다. 그래서 곡 언어는 항상
- * "보유" 스타일로 취급한다.
+ * 서버 신호(everyric availableLangs, 다음 배포부터 실데이터)가 있으면 그걸 기반으로
+ * 하고, 없으면 이 세션에서 실제로 성공한 번역 언어만으로 폴백 목록을 만든다
+ * (applyTranslations가 소스 무관하게 편입한다) — "신호 없음"이지 "미보유 확정"이 아니다.
+ *
+ * 여기에 곡 자신의 스크립트 언어를 항상 합쳐 넣는다 — 번역 레이어가 **절대 생기지
+ * 않는 언어**이기 때문이다(대각선 — expectsPronunciation의 `script === lang` 분기와
+ * 같은 이유로 서버가 번역 자체를 건너뛴다). 합쳐 넣지 않으면 이 언어 칩이 영원히
+ * "미보유"로 보이는데, 클릭해도 실제로 생성되는 게 없고 그냥 원문만 보기로 전환될
+ * 뿐이다(대각선 생략이 번역 줄을 자연히 비운다) — "미보유·클릭해 생성" 문구를 달아
+ * 두면 사용자는 생성이 실패했다고 오해한다. 그래서 곡 언어는 항상 "보유" 스타일이다.
  */
 function availableLangsForChip(data: LyricsData | null): string[] | null {
-  if (!data || data.source !== 'everyric' || !data.availableLangs) return null;
+  if (!data) return null;
   const songLang = detectSongScript(data.lines.map(l => l.text));
-  return data.availableLangs.includes(songLang) ? data.availableLangs : [...data.availableLangs, songLang];
+  const known = data.availableLangs ?? [];
+  return known.includes(songLang) ? known : [...known, songLang];
 }
 
 /**
@@ -1392,6 +1467,11 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   const panel = ensureOverlay();
   panel.setVisible(true);
   panel.showLoading();
+  // 가사 자체가 아직 없는 상태(검색 중) — 이전 곡의 언어 칩이 그대로 남아 있으면
+  // 로딩 중에 엉뚱한 언어 목록이 보인다. applyLyricsData가 새 데이터로 다시 채울 때까지
+  // 명시적으로 숨긴다(availableLangsForChip(null)과 같은 값이지만 여기는 data가 아직
+  // 없는 로딩 구간이라 그 함수를 거치지 않고 직접 부른다).
+  panel.setAvailableLangs(null);
   if (pip.isOpen()) pip.showPanelLoading(); // PiP도 같은 검색 상태를 따라간다
   updateGenChip(); // 이 영상(또는 다른 영상)의 전사 진행 칩은 검색과 무관하게 유지
   // 알림 칩은 영상별 사건이다 — **영상이 바뀔 때만** 지난 알림을 지우고, 이 영상의 검증이
@@ -1502,13 +1582,25 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   }
 }
 
-/** 위키 조회 결과를 LyricsData로 변환하고 출처·재병합 캐시를 채운다 */
+/**
+ * 위키 조회 결과를 LyricsData로 변환하고 출처·재병합 캐시를 채운다.
+ *
+ * **표시 격리** — vocaro 번역은 한국어 **전용**이다. 내 번역 언어가 한국어가 아니면
+ * 화면(translation)에는 싣지 않는다 — 그러지 않으면 en/ja 사용자에게 한국어 번역이
+ * 뜨는데, loadTranslations의 "이미 모든 줄에 번역이 있다" 조기 반환이
+ * hasMatchingHumanTranslation보다 먼저 그 상태를 "다 됐다"고 착각해 LLM 호출 자체가
+ * 일어나지 않고(사용자 실보고: LLM이 덮기 전까지 뜨고, 실패하면 영구 잔류) 진짜 번역을
+ * 영영 못 받는다. wikiTranslation에는 언어 무관하게 항상 싣는다 — AI 생성 시 line_meta로
+ * 그대로 보내 그 언어(한국어) 사용자에게는 이득이 되게 한다(handleGenerate 참고).
+ */
 function adoptVocaroResult(videoId: string, vocaro: VocaroResult): LyricsData {
+  const showTranslation = settings.translationLanguage === 'ko';
   const lines: LyricLine[] = vocaro.lines.map(l => ({
     time: null,
     endTime: null,
     text: l.text,
-    translation: l.translation,
+    translation: showTranslation ? l.translation : undefined,
+    wikiTranslation: l.translation,
     pronunciation: l.pronunciation,
   }));
   currentSourceUrl = vocaro.pageUrl;
@@ -1520,7 +1612,14 @@ function adoptVocaroResult(videoId: string, vocaro: VocaroResult): LyricsData {
       .set({ [`vocaroRef:${videoId}`]: { slug: vocaro.slug, t: Date.now() } })
       .then(() => pruneVocaroRefs());
   } catch { /* 저장 실패는 무시 — 세션 내 캐시로도 동작 */ }
-  return { source: 'vocaro', synced: false, lines, plainText: lines.map(l => l.text).join('\n') };
+  return {
+    source: 'vocaro',
+    synced: false,
+    lines,
+    plainText: lines.map(l => l.text).join('\n'),
+    humanTranslated: showTranslation ? lines.some(l => l.translation) : undefined,
+    translationLang: showTranslation ? 'ko' : undefined,
+  };
 }
 
 /** SourceResult(위키 등 소스 어댑터 조회 결과)의 출처 표기 — 소스별 사람이 읽는 이름. */
@@ -1546,14 +1645,21 @@ function attributionFromSource(result: SourceResult): SourceAttribution {
  * lib/lang.ts의 resolvedPronunciation이 사용자의 script 설정과 일치할 때만 보여주게 한다
  * (한글을 기대하는 사용자에게 로마자가 새지 않는다). 이 설계 덕에 생성 시 line_meta도
  * 자동으로 올바르게 비워진다 — handleGenerate가 읽는 것은 이 pronunciation 필드다.
+ *
+ * **표시 격리** — ``result.translationLang``(miraheze=en 등, 소스별 고정)이 내 번역
+ * 언어와 다르면 화면(translation)에는 싣지 않는다. adoptVocaroResult와 같은 원칙·같은
+ * 이유(loadTranslations의 "이미 다 있다" 조기 반환이 다른 언어 번역을 "완료"로 착각).
+ * wikiTranslation에는 언어 무관하게 항상 실어 AI 생성 line_meta가 쓸 수 있게 한다.
  */
 function adoptSourceResult(result: SourceResult): LyricsData {
   const pronKey = result.pronLang;
+  const showTranslation = result.translationLang === settings.translationLanguage;
   const lines: LyricLine[] = result.lines.map(l => ({
     time: null,
     endTime: null,
     text: l.text,
-    translation: l.translation,
+    translation: showTranslation ? l.translation : undefined,
+    wikiTranslation: l.translation,
     pronunciation: pronKey === 'hangul' ? l.pronunciation : undefined,
     pron: pronKey && pronKey !== 'hangul' && l.pronunciation ? { [pronKey]: l.pronunciation } : undefined,
   }));
@@ -1564,6 +1670,8 @@ function adoptSourceResult(result: SourceResult): LyricsData {
     lines,
     plainText: lines.map(l => l.text).join('\n'),
     attribution: attributionFromSource(result),
+    humanTranslated: showTranslation ? lines.some(l => l.translation) : undefined,
+    translationLang: showTranslation ? result.translationLang : undefined,
   };
 }
 
@@ -2006,13 +2114,25 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
     // 매칭이라 여기서 만들어 보내면 아무것도 안 붙는다.
 
     // 보카로 위키 가사로 생성할 때는 발음/사람 번역도 서버에 함께 저장한다
-    // (서버 싱크에 병합돼 다른 프로필·사용자에게도 그대로 표시됨)
+    // (서버 싱크에 병합돼 다른 프로필·사용자에게도 그대로 표시됨). translation이 아니라
+    // wikiTranslation을 읽는다 — translation은 표시 격리(adoptVocaroResult·adoptSourceResult)로
+    // 내 번역 언어와 다르면 undefined일 수 있지만, 위키 원본 번역은 wikiTranslation에
+    // 언어 무관하게 항상 남아 있다(화면엔 안 보여도 line_meta로는 그 언어 그대로 보낸다
+    // — 그 언어 사용자에게 이득이 되게 하려는 사용자 요청).
     let lineMeta: { text: string; pronunciation?: string; translation?: string }[] | undefined =
       !fromCaption && currentData?.source === 'vocaro'
         ? currentData.lines
-          .filter(l => l.pronunciation || l.translation)
-          .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.translation }))
+          .filter(l => l.pronunciation || l.wikiTranslation)
+          .map(l => ({ text: l.text, pronunciation: l.pronunciation, translation: l.wikiTranslation }))
         : undefined;
+    // 위 lineMeta의 실제 언어 — vocaro 직접 조회는 항상 한국어, miraheze 채택분은 항상
+    // 영어다(attribution.sourceId로 구분 — adoptSourceResult·hasMatchingHumanTranslation과
+    // 같은 관례). 내 translationLanguage와 다를 수 있는 게 표시 격리를 넣은 이유 그 자체인데,
+    // 아래 GENERATE_SYNC에 lineMetaLang을 내 언어로 그대로 보내면 서버가 엉뚱한 언어
+    // 레이어에 이 텍스트를 저장한다 — 표시 격리와 무관하게 이미 있던 버그(감사로 발견).
+    const wikiLineMetaLang = lineMeta && currentData?.source === 'vocaro'
+      ? (currentData.attribution?.sourceId === 'miraheze' ? 'en' : 'ko')
+      : null;
 
     // 위키 출처는 싱크에 영구 저장돼 조회 시 푸터에 병기된다 (라이선스 표기).
     // currentData.attribution이 있으면(miraheze 등 SourceResult 채택분) 그 값을 그대로
@@ -2055,9 +2175,12 @@ async function handleGenerate(lyricsText: string, attributionName?: string): Pro
           title: currentSong?.title,
           artist: currentSong?.artist ?? undefined,
           // 생성 요청자의 번역 언어 — background가 아직 서버 호출에 넘기지 않으면(구버전
-          // 배선) 서버 기본값 "ko"로 생성된다(오늘과 동일한 동작)
+          // 배선) 서버 기본값 "ko"로 생성된다(오늘과 동일한 동작). targetLang은 항상 내
+          // 언어(서버가 LLM으로 새로 만들 번역의 목표)지만, lineMetaLang은 위에서 계산한
+          // wikiLineMetaLang이 있으면 그걸 우선한다 — 이미 위키에서 가져온 텍스트의
+          // 실제 언어를 말해야 하기 때문이다(내 언어와 다를 수 있다).
           targetLang: settings.translationLanguage,
-          lineMetaLang: settings.translationLanguage,
+          lineMetaLang: wikiLineMetaLang ?? settings.translationLanguage,
         },
       });
     if (res.error || !res.data) {
@@ -2231,6 +2354,13 @@ function withoutTiming(data: LyricsData): LyricsData {
     synced: false,
     plainText: data.plainText,
     humanTranslated: data.humanTranslated,
+    // translationLang을 빠뜨리면(예전 버그) humanTranslated는 true인데 어느 언어인지
+    // 모르는 사본이 남는다 — hasMatchingHumanTranslation의 일반 분기(Boolean(humanTranslated)
+    // && translationLang===내 언어)가 항상 false로 떨어져 "언어 일치인데도 보호 안 됨"이
+    // 아니라 반대로 "번역이 있는데 every(l=>l.translation)만 보고 언어 확인 없이 완료로
+    // 착각"하는 구멍이 생긴다(keptLyrics 재사용 경로 — 언어를 바꾼 뒤 초기화했다가 같은
+    // 영상으로 돌아오면 옛 언어 번역이 새 언어인 양 조기 반환을 히트할 수 있었다).
+    translationLang: data.translationLang,
     attribution: data.attribution,
     captionAuto: data.captionAuto,
     lines: data.lines.map(l => ({
@@ -2239,6 +2369,7 @@ function withoutTiming(data: LyricsData): LyricsData {
       text: l.text,
       pronunciation: l.pronunciation,
       translation: l.translation,
+      wikiTranslation: l.wikiTranslation,
     })),
   };
 }

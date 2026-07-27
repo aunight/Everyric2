@@ -30,6 +30,12 @@ export interface LyricLine {
   /** 단어 분해가 없는 라인의 라인 단위 노트 */
   notes?: NoteSegment[];
   translation?: string;
+  /** 위키(vocaro·miraheze) 채택 시 원본 번역 — 언어가 내 translationLanguage와 다르면
+   *  표시 격리를 위해 translation에는 안 싣지만(adoptVocaroResult·adoptSourceResult가
+   *  gate), 이 필드에는 언어 무관하게 항상 남는다. AI 생성(handleGenerate) line_meta는
+   *  이 필드를 읽는다 — 화면엔 안 보여도 그 언어 레이어로 서버에 저장돼 그 언어
+   *  사용자에게는 이득이 되게 하기 위함(사용자 요청: "내 화면만 격리"). */
+  wikiTranslation?: string;
   /** 원문 가사의 한국어 발음 표기 (보카로 가사 위키 등 사람이 단 것) */
   pronunciation?: string;
   /** 발음 음절별 타이밍 (서버가 모라 분해+DP로 산출) — 없으면 시간 비례 그라데이션 폴백 */
@@ -116,9 +122,11 @@ export interface LyricsData {
    *  뒤 세션 내에서 직접 채운 값. undefined면 "모름"(구서버 또는 아직 안 채워짐) — 그 경우
    *  기존 규칙(모든 줄에 translation이 있으면 충분)으로 폴백한다. */
   translationLang?: string | null;
-  /** 서버 EveryricSyncResponse.available_langs를 그대로 옮긴 값 — 제목바 언어 칩의
-   *  "보유" 판정 기준. content.applyTranslations가 새 언어 번역을 성공 적용하면 그
-   *  언어를 이 배열에 직접 추가한다(서버 재조회 없이 즉시 "보유"로 반영하기 위함). */
+  /** 제목바 언어 칩의 "보유" 판정 기준 — everyric 서버 sync면 EveryricSyncResponse.
+   *  available_langs로 시작하지만, 소스 무관하게 content.applyTranslations가 새 언어
+   *  번역을 성공 적용할 때마다 그 언어를 이 배열에 직접 추가한다(서버 재조회 없이 즉시
+   *  "보유"로 반영). undefined면 "서버 신호도 세션 내 성공도 없음" — 칩은 그래도 뜬다
+   *  (곡 자신의 언어만이라도 폴백 표시, content.availableLangsForChip 참고). */
   availableLangs?: string[];
 }
 
