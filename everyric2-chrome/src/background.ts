@@ -1,5 +1,5 @@
 import { fetchFromLrclib, getLrclibById, searchTracksLrclib } from './lib/lrclib';
-import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLinkCandidates, generateSync, generateSyncFromCaption, getJobStatus, getLinkJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
+import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLinkCandidates, generateSync, generateSyncFromCaption, getJobStatus, getLinkJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveTranslationLayer, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
 import { mirahezeLookup } from './lib/miraheze';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
@@ -210,6 +210,19 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
           artist: message.payload.artist,
           persist: message.payload.persist,
           videoId: message.payload.videoId,
+        }, sink,
+      ));
+    }
+
+    case 'SAVE_TRANSLATION_LAYER': {
+      const server = await getServerConfig();
+      return call('save_translation_layer_failed', sink => saveTranslationLayer(
+        server, message.payload.videoId,
+        {
+          target_lang: message.payload.targetLang,
+          lines: message.payload.lines,
+          origin: message.payload.origin,
+          attribution: toWireAttribution(message.payload.attribution),
         }, sink,
       ));
     }

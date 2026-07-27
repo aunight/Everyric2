@@ -1,4 +1,4 @@
-import type { ApiFailure, EveryricSyncResponse, GenerateResponse, JobStatusResponse, LineMeta, LinkCandidatesResponse, LinkJobStatusResponse, ServerLogEntry, ServerStatus, SourceAttribution, SyncListItem, TranslateResult } from '../types';
+import type { ApiFailure, EveryricSyncResponse, GenerateResponse, JobStatusResponse, LineMeta, LinkCandidatesResponse, LinkJobStatusResponse, SaveTranslationLayerResponse, ServerLogEntry, ServerStatus, SourceAttribution, SyncListItem, TranslateResult } from '../types';
 import { affectsServerStatus, failureKindFromStatus, failureToStatus, maskPath, maskSecret, okStatus } from './server-status';
 import { localPermissionBlock, normalizeLoopbackUrl } from './host-permissions';
 
@@ -373,6 +373,30 @@ export function resetSync(
 ): Promise<{ removed_syncs: number; removed_links: number } | null> {
   return request<{ removed_syncs: number; removed_links: number }>(
     server, `/api/sync/${encodeURIComponent(videoId)}`, { method: 'DELETE' }, 4000, sink,
+  );
+}
+
+/**
+ * 자막·위키 채택 번역을 서버 레이어로 저장 — POST /api/sync/{video_id}/translations.
+ * 거절도 200으로 온다(saved=false, request()가 그대로 통과시킨다) — 404(싱크 없음)·
+ * 422(매칭률<50%·origin 위반·상한)만 request()의 !res.ok 경로로 빠져 null이 된다.
+ * 호출부(content.ts)는 fire-and-forget으로 쓴다 — 실패해도 표시엔 영향 없다.
+ */
+export function saveTranslationLayer(
+  server: ServerConfig,
+  videoId: string,
+  payload: {
+    target_lang: string;
+    lines: { text: string; translation: string }[];
+    origin: 'caption' | 'wiki' | 'manual';
+    attribution?: SourceAttribution;
+  },
+  sink?: FailureSink,
+): Promise<SaveTranslationLayerResponse | null> {
+  return request<SaveTranslationLayerResponse>(
+    server, `/api/sync/${encodeURIComponent(videoId)}/translations`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+    8000, sink,
   );
 }
 

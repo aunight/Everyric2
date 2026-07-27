@@ -5,7 +5,7 @@ import { parseTriLineLyrics } from './lib/tri-line';
 import { describeRemoved, stripPartMarkers } from './lib/lyrics-clean';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
-import { resolveScript } from './lib/lang';
+import { resolveScript, resolvedPronunciation } from './lib/lang';
 import { setUiLanguage, t } from './lib/i18n';
 import { LyricsOverlay } from './ui/overlay';
 import { PipController } from './ui/pip';
@@ -30,6 +30,7 @@ import type {
   MessageResponse,
   PanelGeometry,
   LineMeta,
+  SaveTranslationLayerResponse,
   SearchCandidate,
   ServerLogEntry,
   ServerStatus,
@@ -1061,19 +1062,41 @@ function clearTranslations(): void {
 }
 
 /**
+ * 자막·위키 채택 번역을 서버 레이어로 저장 — fire-and-forget이라 호출부(성공 판정에)
+ * 영향을 안 준다. 이미 applyTranslations로 화면엔 적용된 뒤 부르므로 이 저장이 실패해도
+ * 표시는 그대로다 — 실패는 콘솔 로그만 남긴다. 빈 문자열(매칭 안 된 줄)은 페이로드에서
+ * 걷어낸다 — 서버 origin 규칙(사람 origin은 다른 사람 origin이 못 덮는다)에 "번역 없음"
+ * 줄이 불필요하게 걸릴 이유가 없다. 저장 성공 시 data.translationLang·availableLangs는
+ * 이미 applyTranslations가 채웠으므로 이 함수에서 추가로 만질 것이 없다 — 다음 사용자
+ * 부터는 이 세션이 아니라 서버 레이어에서 바로 온다.
+ */
+function persistTranslationLayer(
+  videoId: string, lang: string, lines: LyricLine[], translations: (string | undefined)[],
+  origin: 'caption' | 'wiki' | 'manual', attribution?: SourceAttribution,
+): void {
+  const payloadLines = lines
+    .map((line, i) => ({ text: line.text, translation: translations[i] }))
+    .filter((l): l is { text: string; translation: string } => Boolean(l.translation));
+  if (payloadLines.length === 0) return;
+  void sendToBackground<SaveTranslationLayerResponse | null>({
+    type: 'SAVE_TRANSLATION_LAYER',
+    payload: { videoId, targetLang: lang, lines: payloadLines, origin, attribution },
+  }).then(res => {
+    if (!res.data?.saved) {
+      console.debug('[everyric] translation layer save skipped', origin, lang, res.data ?? res.error);
+    }
+  });
+}
+
+/**
  * 이미 서버 싱크가 있는 곡(everyric·synced)에서 내 번역 언어의 유튜브 수동 자막을
  * LLM보다 먼저 시도한다 — tryCaptionFallback(첫 로딩·싱크 자체가 없을 때의 폴백)과 같은
  * 원칙을 "이미 싱크가 있어 번역 레이어만 미스인" 사후 경로에 적용한 것.
  *
- * **저장(persist)은 하지 않는다** — 이 세션(currentData) 동안만 유지되고 새로고침하면
- * 다시 이 경로를 탄다. everyric-api에 "이미 있는 텍스트를 그대로 레이어에 저장"할 경로가
- * 없기 때문이다: translateLyrics(/api/translate persist=true)는 항상 LLM이 **직접**
- * 번역해 그 결과를 저장한다 — 자막 원문을 text로 실어 보내도 서버가 그것을 재번역해 버려
- * 자막을 쓰는 의미(사람이 쓴 표현 그대로)가 사라진다. attachLineMeta는
- * `/api/sync/jobs/{jobId}/line-meta`로 생성 잡에 매달린 엔드포인트라, 잡이 없는 순수
- * 조회 세션(여기)에는 jobId 자체가 없어 호출할 수 없다. 즉 오늘 기준으로는 "표시는 되지만
- * 서버에는 안 남는" 상태가 맞는 결론이다 — 저장하려면 서버에 새 엔드포인트(원문 그대로
- * 받는 레이어 저장)가 필요하고, 이번 작업은 서버 변경이 금지돼 있다.
+ * 성공하면 persistTranslationLayer로 서버에도 origin='caption'으로 저장을 시도한다
+ * (S6이 만든 POST /api/sync/{video_id}/translations, fire-and-forget) — 예전엔 저장
+ * 경로가 없어 세션 로컬 표시로만 남겼는데, 이제 다음 사용자부터는 이 결과가 서버
+ * 레이어로 바로 온다.
  */
 async function tryCaptionTranslationLayer(
   data: LyricsData, videoId: string, lang: string,
@@ -1099,6 +1122,7 @@ async function tryCaptionTranslationLayer(
   // 기존 LLM 경로와 동일하게 맞아떨어진다. pronunciation은 안 실어 보낸다(자막엔 없다).
   applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: merged[i] ?? '' })));
   data.humanTranslated = true;
+  persistTranslationLayer(videoId, lang, data.lines, merged, 'caption');
   return true;
 }
 
@@ -1115,26 +1139,30 @@ async function tryCaptionTranslationLayer(
  * 100%는 아니다 — 매칭률이 절반 미만이면 신뢰할 수 없다고 보고 버린다(잘못된 줄에
  * 번역이 얹히는 것보다 아예 안 붙는 게 낫다는 이 파일 전체의 원칙과 같다).
  *
- * 저장은 캡션 단계와 같은 결론이다(tryCaptionTranslationLayer 문서 참고) — 세션
- * 로컬 표시만, 서버 저장 경로 없음.
+ * 성공하면 persistTranslationLayer로 서버에도 origin='wiki'로 저장을 시도한다(캡션
+ * 단계와 같은 새 엔드포인트) — attribution은 실제로 히트한 위키 응답에서 그대로 뽑는다
+ * (miraheze는 attributionFromSource 재사용, vocaro는 handleGenerate와 같은 이름 관례).
  */
 async function tryWikiTranslationLayer(
   data: LyricsData, videoId: string, lang: string,
 ): Promise<boolean> {
   if (data.source !== 'everyric' || !data.synced || !currentSong) return false;
   let wikiLines: { text: string; translation?: string }[] | null;
+  let wikiAttribution: SourceAttribution | undefined;
   if (lang === 'en') {
     const res = await sendToBackground<SourceResult | null>({
       type: 'MIRAHEZE_LOOKUP', payload: { title: currentSong.title },
     });
     if (videoId !== currentVideoId) return false;
     wikiLines = res.data?.lines ?? null;
+    if (res.data) wikiAttribution = attributionFromSource(res.data);
   } else if (lang === 'ko') {
     const res = await sendToBackground<VocaroResult | null>({
       type: 'VOCARO_LOOKUP', payload: { title: currentSong.title },
     });
     if (videoId !== currentVideoId) return false;
     wikiLines = res.data?.lines ?? null;
+    if (res.data) wikiAttribution = { name: '보카로 가사 위키', url: res.data.pageUrl };
   } else {
     return false; // ja 등 대응 번역 위키가 없다
   }
@@ -1159,6 +1187,7 @@ async function tryWikiTranslationLayer(
   // 무너진다는 것과 같은 이유로, 표시에서도 로마자 대신 pron dict 값을 신뢰한다).
   applyTranslations(data, data.lines.map((line, i) => ({ original: line.text, translation: translations[i] ?? '' })));
   data.humanTranslated = true;
+  persistTranslationLayer(videoId, lang, data.lines, translations, 'wiki', wikiAttribution);
   return true;
 }
 
@@ -1228,16 +1257,22 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
   // 값) 그 언어가 내 언어와 같을 때만 "이미 있음"으로 본다. 필드가 없으면(구서버·아직
   // 안 채워짐) 예전 규칙 그대로 — 모든 줄에 translation이 있으면 충분하다고 본다.
   const translationLangMatches = data.translationLang == null || data.translationLang === lang;
+  // 발음 존재 판정은 레거시 flat 필드만 보면 안 된다(감사 E3) — E1 수정 이후
+  // applyTranslations는 hangul이 아닌 스크립트의 발음을 line.pron[script]에 싣지
+  // line.pronunciation(한글 전용)에는 안 싣는다. resolvedPronunciation을 거쳐야 en/ja
+  // 사용자의 이미 확보된 로마자·가나 발음도 "있음"으로 잡혀, 매번 다시 요청하지 않는다.
   if (
     translationLangMatches
     && data.lines.every(l => l.translation)
-    && (data.lines.some(l => l.pronunciation) || !expectsPron)
+    && (data.lines.some(l => resolvedPronunciation(l, resolveScript(settings))) || !expectsPron)
   ) return;
   // 지금 화면의 원문 지문으로 조회한다 — 소스를 갈아탄 뒤 남아 있던 다른 원문의 번역이
   // 위치로 얹히는 것을 키 단계에서 막는다 (translationKey 주석의 실제 경로)
   const cached = translationCacheGet(translationKey(videoId, lang, srcLines));
-  // 캐시도 같은 기준으로 검증 — 발음 빠진 캐시(구버전 응답)는 다시 받아온다
-  if (cached && (!expectsPron || cached.some(l => l.pronunciation))) {
+  // 캐시도 같은 기준으로 검증 — 발음 빠진 캐시(구버전 응답)는 다시 받아온다. cached는
+  // TranslatedLine[](서버 응답 원본, .pron 딕셔너리가 없다)이라 resolvedPronunciation을
+  // 못 쓴다 — isUsablePronunciation으로 같은 원칙(hangul이면 콘텐츠도 검증)을 적용한다.
+  if (cached && (!expectsPron || cached.some(l => isUsablePronunciation(l.pronunciation)))) {
     applyTranslations(data, cached);
     return;
   }
@@ -1315,6 +1350,8 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
   // availableLangsForChip을 거쳐야 곡 자신의 언어 칩이 계속 "보유" 스타일을 유지한다 —
   // 여기서 data.availableLangs를 그대로 넘기면 방금 병합한 목록으로 덮어써서 잃는다.
   if (currentData === data) overlay?.setAvailableLangs(availableLangsForChip(data));
+  // 이 배치의 발음을 실을 스크립트 — 매 줄 동일하므로 루프 밖에서 한 번만 정한다.
+  const pronScript = resolveScript(settings);
   let pronApplied = false;
   data.lines.forEach((line, i) => {
     const t = translated[i]?.translation?.trim();
@@ -1326,11 +1363,20 @@ function applyTranslations(data: LyricsData, translated: TranslatedLine[]): void
     if (t && t !== line.text && !t.startsWith('[NO API KEY]') && !line.translation) {
       line.translation = t;
     }
-    // 발음표기(target=ko면 한글 독음) — 사람이 단 발음(보카로 위키)이 있으면 건드리지 않는다
+    // 발음표기 — translate 응답의 legacy pronunciation은 요청 시점 target_lang에 따라
+    // 이미 한글이 아닐 수 있다(로마자·가나, 번역 API의 결정론 매트릭스 — 감사 E1).
+    // pronScript==='hangul'일 때만 레거시 한글 전용 슬롯에 쓰고, 그 밖은 pron[script]
+    // 딕셔너리에 표시 문자열만 싣는다(pronSegsByScript는 안 건드린다 — 음절 타이밍은
+    // 서버가 세그로 줄 때만 정본이고, 여기서 만들 수 있는 게 아니다). 사람이 단 발음이
+    // 있으면(보카로 위키 등) 어느 쪽이든 건드리지 않는다.
     const p = translated[i]?.pronunciation?.trim();
-    if (p && !line.pronunciation) {
-      line.pronunciation = p;
-      pronApplied = true;
+    if (p) {
+      if (pronScript === 'hangul') {
+        if (!line.pronunciation) { line.pronunciation = p; pronApplied = true; }
+      } else if (!line.pron?.[pronScript]) {
+        line.pron = { ...line.pron, [pronScript]: p };
+        pronApplied = true;
+      }
     }
   });
   // 서버가 복구하지 못한 줄(응답 잘림 등)은 failed로 온다. 조용히 비워 두면 사용자는
@@ -1487,6 +1533,19 @@ function requestTranslation(
 }
 
 /**
+ * 문자열이 지금 스크립트(resolveScript)의 발음 표기로 실제로 쓸 만한가 — "존재 판정"에
+ * 쓴다(감사 E3). 캐시·서버 sync 등에 남아 있는 레거시 pronunciation은 한글일 수도, E1
+ * 수정 이전 세션이 남긴 로마자·가나일 수도 있다 — hangul 스크립트인데 한글이 아니면
+ * "없음"과 동일 취급해야 재조회가 다시 일어난다(원문 폴백과 같은 원칙). hangul이
+ * 아니면(로마자·가나) 값만 있으면 된다 — 캐시 키(translationKey)가 이미 언어별로
+ * 갈라져 있어 존재만 봐도 실질적으로 그 스크립트에 맞는 값이다.
+ */
+function isUsablePronunciation(p: string | null | undefined): boolean {
+  if (!p) return false;
+  return resolveScript(settings) !== 'hangul' || /[가-힣]/.test(p);
+}
+
+/**
  * translate 응답의 legacy pronunciation을 line_meta에 실어도 되는지 — 그 필드는 한글
  * **전용** 계약이다(LyricLine 문서, adoptSourceResult의 pronLang 가드와 같은 원칙).
  * resolveScript(settings)가 'hangul'이 아니면(로마자·가나 사용자)애초에 한글을 기대하지
@@ -1512,10 +1571,13 @@ async function fetchLlmLineMeta(
   try {
     overlay?.setTranslationStatus(t('content.translation.aiGenerating'));
     let translated = translationCacheGet(translationKey(videoId, lang, srcLines));
-    // 발음이 빠진 캐시(구버전 응답 등)는 다시 받아온다
+    // 발음이 빠진 캐시(구버전 응답 등)는 다시 받아온다 — isUsablePronunciation으로
+    // 검증한다(감사 E3와 같은 종류: 레거시 flat 필드라도 hangul 스크립트인데 한글이
+    // 아니면 "없음"과 동일 취급해야 한다). 이 캐시는 fetchLlmLineMeta 전용 조회라
+    // resolvedPronunciation을 쓸 LyricLine이 없다 — cached 검증과 같은 이유로 함수만 다르다.
     if (
       !translated || translated.length !== srcLines.length
-      || (expectsPronunciation(srcLines) && !translated.some(l => l.pronunciation))
+      || (expectsPronunciation(srcLines) && !translated.some(l => isUsablePronunciation(l.pronunciation)))
     ) {
       translated = await requestTranslation(videoId, srcLines);
     }

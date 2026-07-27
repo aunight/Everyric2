@@ -527,6 +527,16 @@ export interface TranslateResult {
   engine?: string;
 }
 
+/** POST /api/sync/{video_id}/translations 응답 — 거절도 200으로 온다(saved=false).
+ *  404(싱크 없음)·422(매칭률<50%·origin 위반·상한)는 request()의 !res.ok 경로로 빠져
+ *  null이 된다. saveTranslationLayer는 fire-and-forget이라 호출부는 실패를 로그만 한다. */
+export interface SaveTranslationLayerResponse {
+  saved: boolean;
+  matched: number;
+  total: number;
+  target_lang: string;
+}
+
 export interface PanelGeometry {
   x: number;
   y: number;
@@ -587,7 +597,20 @@ export type BgRequest =
   | { type: 'VOCARO_PAGE'; payload: { slug: string } }
   | { type: 'MIRAHEZE_LOOKUP'; payload: { title: string } }
   | { type: 'YT_CAPTION_TEXT'; payload: { videoId: string; lang: string; auto: boolean } }
-  | { type: 'GENERATE_FROM_CAPTION'; payload: { videoId: string } };
+  | { type: 'GENERATE_FROM_CAPTION'; payload: { videoId: string } }
+  /** 자막·위키 채택 번역을 서버 레이어로 저장 — fire-and-forget(호출부가 실패를 무시한다).
+   *  origin은 그 번역이 어디서 왔는지: 사람 origin(caption·wiki·manual)은 다른 사람
+   *  origin이 못 덮지만 llm 위 승격은 허용된다(서버 규칙, 클라이언트는 몰라도 된다). */
+  | {
+    type: 'SAVE_TRANSLATION_LAYER';
+    payload: {
+      videoId: string;
+      targetLang: string;
+      lines: { text: string; translation: string }[];
+      origin: 'caption' | 'wiki' | 'manual';
+      attribution?: SourceAttribution;
+    };
+  };
 
 export type ContentMessage =
   | { type: 'TOGGLE_OVERLAY' }
