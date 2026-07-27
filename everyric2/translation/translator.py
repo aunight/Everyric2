@@ -492,18 +492,40 @@ LYRICS:
             return "en"
         return "other"
 
-    def _should_skip_pronunciation(self, text: str, source_lang: str) -> bool:
-        """원문이 영어/한국어면 로마자/한글 발음표기가 무의미하므로 생략한다.
-        번역 자체는 그대로 수행되고 pronunciation 필드만 비운다.
+    def _should_skip_pronunciation(
+        self, text: str, source_lang: str, target_lang: str = "ko"
+    ) -> bool:
+        """발음표기가 대상 언어에 무의미하면 생략한다 — 매트릭스 대각선(곡 언어==대상
+        언어) 우선, 그 다음 target=ko 전용의 기존 규칙.
 
-        **가나가 있으면 생략하지 않는다.** 이 함수의 전제는 "원문이 영어/한국어"인데,
-        `_detect_lang_heuristic`은 글자 수로 판정하므로 **영어가 많이 섞인 일본어 곡**을
-        영어로 오판한다. 실측: 라틴 7줄/일본어 3줄로 된 요청에서 판정이 "en"이 되어
-        10줄 전부 발음이 None으로 나갔다(번역은 정상, `failed=False`). 하필 라틴이 많은 곡이
-        정렬이 가장 나쁜 곡이라(라인 conf가 라틴 없는 줄의 1/10) 발음이 그 줄에서 가장
-        필요한데, 그 곡만 발음을 못 받고 있었다. 가나가 한 글자라도 있으면 원문은 영어가
-        아니고 한글 독음이 의미를 가지므로 전제가 성립하지 않는다.
+        **매트릭스 대각선**: 곡 언어와 번역 대상 언어가 같으면(ko곡×ko유저, en곡×en유저,
+        ja곡×ja유저) 무조건 생략한다. ja곡×ja유저는 가나가 있어도 생략된다 — target이
+        ja면 "가나 독음"은 원문 그 자체라 무의미하다(아래 가나 예외는 target=ko 전용).
+
+        **target=ko 전용의 기존 규칙**: 원문이 영어/한국어면 로마자/한글 발음표기가
+        무의미하므로 생략한다. 번역 자체는 그대로 수행되고 pronunciation 필드만 비운다.
+        target이 ko가 아니면 이 규칙은 적용하지 않는다 — 비ko 타깃(예: ko곡×en유저)은
+        로마자 발음이 필요할 수 있어 원문 언어만으로 생략을 결정할 수 없다(ko_reading 등
+        미래 경로를 이 게이트가 먼저 죽이지 않게 한다).
+
+        **가나가 있으면(target=ko일 때만) 생략하지 않는다.** 이 규칙의 전제는 "원문이
+        영어/한국어"인데, `_detect_lang_heuristic`은 글자 수로 판정하므로 **영어가 많이
+        섞인 일본어 곡**을 영어로 오판한다. 실측: 라틴 7줄/일본어 3줄로 된 요청에서 판정이
+        "en"이 되어 10줄 전부 발음이 None으로 나갔다(번역은 정상, `failed=False`). 하필
+        라틴이 많은 곡이 정렬이 가장 나쁜 곡이라(라인 conf가 라틴 없는 줄의 1/10) 발음이 그
+        줄에서 가장 필요한데, 그 곡만 발음을 못 받고 있었다. 가나가 한 글자라도 있으면
+        원문은 영어가 아니고 한글 독음이 의미를 가지므로 전제가 성립하지 않는다.
         """
+        target = self._norm_lang(target_lang)
+        song_lang = self._norm_lang(source_lang)
+        if song_lang in ("", "auto"):
+            song_lang = self._detect_lang_heuristic(text)
+            if song_lang == "other" and has_kana(text):
+                song_lang = "ja"
+        if target and song_lang == target:
+            return True
+        if target != "ko":
+            return False
         if has_kana(text):
             return False
         lang = source_lang
@@ -643,7 +665,7 @@ class GeminiTranslator(BaseTranslator):
             return self._fallback_result(original_lines, source_lang, target_lang)
 
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
-            text, source_lang
+            text, source_lang, target_lang
         )
         # 일본어 곡의 독음은 서버가 결정론적으로 만든다 — 모델에는 번역만 요청한다
         deterministic_pron = include_pron and self._use_deterministic_pron(
@@ -747,7 +769,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
             )
 
         include_pron = self.settings.include_pronunciation and not self._should_skip_pronunciation(
-            text, source_lang
+            text, source_lang, target_lang
         )
         # 일본어 곡의 독음은 서버가 결정론적으로 만든다 — 모델에는 번역만 요청하므로
         # 라인당 출력이 절반 이하로 줄고 _TEXT_BATCH_*의 큰 배치를 쓸 수 있다

@@ -97,9 +97,13 @@ def _captions(monkeypatch, texts=CAPTION_TEXTS, language="ja", translations=None
 
 
 def _fake_translate(calls: list, lines=None, boom: bool = False):
-    """translate_lyrics 대역 — 실제 함수와 같은 동기 시그니처(스레드풀 호출)를 지킨다."""
+    """translate_lyrics 대역 — 실제 함수와 같은 동기 시그니처(스레드풀 호출)를 지킨다.
 
-    def fake(request):
+    background_tasks는 실제 함수가 POST /api/translate의 persist=true 저장에만 쓰는
+    인자다 — 이 호출부(_translate_and_attach_line_meta)는 persist를 안 쓰므로 값을
+    받기만 하고 버린다(실 시그니처와 위치 인자 개수를 맞추기 위해서만 필요)."""
+
+    def fake(request, background_tasks=None):
         calls.append(request)
         if boom:
             # 실제 엔드포인트가 실패를 알리는 방식(HTTPException 500)과 동일
@@ -455,7 +459,7 @@ def test_translation_overlaps_job_processing(monkeypatch):
             order: list[str] = []
             gate = asyncio.Event()
 
-            async def slow_translate(request):
+            async def slow_translate(request, background_tasks=None):
                 order.append("translate_start")
                 await gate.wait()  # 잡 처리가 먼저 돌 기회를 준다
                 order.append("translate_end")

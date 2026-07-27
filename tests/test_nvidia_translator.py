@@ -256,22 +256,27 @@ class TestTranslateAppliesGate:
         return NvidiaTranslator(settings)
 
     def test_english_source_skips_pronunciation_even_if_requested(self, monkeypatch, tmp_path):
+        # 매트릭스 대각선(Task 10) 이후: "en/ko 원문이면 발음 생략"은 target=ko 전용이다
+        # (ko곡×en유저처럼 target이 ko가 아닌 조합은 미래의 로마자 발음 경로를 위해 더 이상
+        # 여기서 생략하지 않는다 — _should_skip_pronunciation 참고). 이 테스트는 여전히
+        # 원래 실증 시나리오(영어/한국어 원문에 그 언어 자체의 "발음표기"는 무의미하다)를
+        # target=ko로 검증한다.
         translator = self._make_translator(monkeypatch, tmp_path, include_pronunciation=True)
 
         captured = {}
 
         def fake_post(url, json, headers, timeout):
             captured["json"] = json
-            return chat_response("Hello there\nGood morning")
+            return chat_response("안녕하세요\n좋은 아침입니다")
 
         monkeypatch.setattr(
             "everyric2.translation.translator.requests.post", fake_post
         )
 
         result = translator.translate(
-            "안녕하세요\n좋은 아침입니다",
-            source_lang="ko",
-            target_lang="en",
+            "Hello there\nGood morning",
+            source_lang="en",
+            target_lang="ko",
         )
 
         assert all(line.pronunciation is None for line in result.lines)

@@ -1,7 +1,7 @@
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from everyric2.config.settings import get_settings
@@ -63,6 +63,10 @@ class TranslateRequest(BaseModel):
     # 로그 상관용 (선택) — 지금까지 서버 로그에 어떤 곡인지 안 남아 품질 사고의 사후
     # 추적이 불가능했다. 선택 필드라 기존 호출자는 그대로 동작한다.
     video_id: str | None = Field(default=None, description="Video id, logged for diagnostics")
+    # true이고 video_id가 있으면 성공한 번역 결과를 TranslationLayer(origin="llm")로 저장한다
+    # — 언어별 번역 레이어(video_id, fingerprint, target_lang)에 실려 GET /api/sync?lang=
+    # 조회가 재사용한다. video_id가 없으면 조용히 무시(저장할 키가 없다).
+    persist: bool = Field(default=False, description="Persist result to the translation layer")
 
 
 class TranslationLineResponse(BaseModel):
@@ -84,8 +88,38 @@ class TranslateResponse(BaseModel):
     translation_skipped: bool = False
 
 
+async def _persist_translation_layer(
+    video_id: str, texts: list[str], target_lang: str, translations: list[str]
+) -> None:
+    """번역 결과를 TranslationLayer(origin="llm")로 저장 — BackgroundTasks로 응답 후 실행된다.
+
+    translate_lyrics는 동기(plain def) 핸들러라 요청 스레드에서 바로 await할 async 세션을
+    쓸 수 없다. 이 리포의 기존 브리지 패턴(sync.py의 background_tasks.add_task)을 그대로
+    따른다 — 핸들러는 결과를 즉시 반환하고, 저장은 응답 이후 이벤트 루프에서 처리된다.
+    실패해도 번역 응답 자체는 이미 나갔으므로 로그만 남기고 삼킨다.
+    """
+    from everyric2.server.db.connection import get_session
+    from everyric2.server.db.repository import TranslationLayerRepository
+    from everyric2.server.text_fingerprint import lines_fingerprint
+
+    try:
+        fingerprint = lines_fingerprint(texts)
+        lines = [{"text": t, "translation": tr} for t, tr in zip(texts, translations)]
+        async with get_session() as session:
+            await TranslationLayerRepository(session).upsert_layer(
+                video_id, fingerprint, target_lang, lines=lines, attribution=None, origin="llm"
+            )
+    except Exception:
+        logger.exception("Failed to persist translation layer for video %s", video_id)
+
+
 @router.post("", response_model=TranslateResponse)
-def translate_lyrics(request: TranslateRequest):
+def translate_lyrics(request: TranslateRequest, background_tasks: BackgroundTasks):
+    # background_tasks는 `BackgroundTasks | None` 같은 optional 주석을 쓸 수 없다 —
+    # FastAPI가 그러면 이 타입을 더 이상 "시스템이 주입하는 특수 의존성"으로 인식하지
+    # 않고 일반 Pydantic 필드로 취급해 라우트 등록 자체가 FastAPIError로 깨진다(실측).
+    # 그래서 필수 인자로 두고, 이 함수를 직접 호출하는 기존 경로들(sync.py의 자막 자동
+    # 번역, 일부 테스트)이 전부 BackgroundTasks() 인스턴스를 함께 넘기도록 맞춘다.
     # async def가 아닌 plain def — 내부의 동기 LLM 호출(requests.post, 수십 초)이
     # 이벤트 루프를 세우면 /health까지 밀려 확장이 서버가 죽은 줄 알게 된다.
     # FastAPI는 plain def 엔드포인트를 스레드풀에서 돌린다.
@@ -128,8 +162,9 @@ def translate_lyrics(request: TranslateRequest):
                 target_lang=request.target_lang,
                 context=context,
             )
-            # 독음에 가나가 섞였으면(LLM 실수) 한 번 재시도해 오염 라인만 교체한다
-            bad = bad_pron_indices(result.lines)
+            # 가나 오염 가드는 target=ko 전용이다 — 발음 계약이 "가나 없는 한글"인 건 ko
+            # 타깃뿐이고, ja 타깃(가나 곡의 정상 가나 발음)에서 돌면 멀쩡한 발음을 파괴한다.
+            bad = bad_pron_indices(result.lines) if request.target_lang == "ko" else []
             if bad:
                 logger.warning(
                     "%sKana leaked into %d pronunciation lines; retrying once",
@@ -182,6 +217,17 @@ def translate_lyrics(request: TranslateRequest):
                     len(result.lines),
                     blank,
                 )
+
+        # 스킵 결과(translation_skipped)는 번역 필드가 전부 빈 값이라 저장할 것이 없다 —
+        # 레이어에 빈 값을 얹으면 기존에 저장된 실제 번역을 덮어쓸 위험만 있다.
+        if request.persist and request.video_id and not skipped:
+            background_tasks.add_task(
+                _persist_translation_layer,
+                request.video_id,
+                [line.original for line in result.lines],
+                request.target_lang,
+                [line.translation for line in result.lines],
+            )
 
         return TranslateResponse(
             lines=[

@@ -20,9 +20,11 @@ from everyric2.server.db.repository import (
     LinkJobRepository,
     SyncLinkRepository,
     SyncRepository,
+    TranslationLayerRepository,
     VideoOffsetRepository,
     hash_lyrics,
 )
+from everyric2.server.text_fingerprint import lines_fingerprint, normalize_line
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +225,11 @@ class SyncLookupResponse(BaseModel):
     # 이 영상에 저장된 사용자 싱크 오프셋(초) — 클라이언트가 재생 시점에 적용.
     # 링크로 빌려온 싱크도 보는 영상 기준이라 영상마다 따로 저장된다.
     user_offset: float | None = None
+    # 세그먼트 translation이 실제로 어느 언어인지 — lang 쿼리 파라미터를 준 요청에만
+    # 의미가 있다. lang 없이 조회하면 항상 None(구버전 응답과 필드 단위 동일 유지).
+    # lang="ko"인데 레이어가 없으면 레거시 저장분이 ko라는 이행 가정으로 "ko"를 낸다
+    # (세그에 번역이 하나도 없으면 None). 레이어가 없는 비ko lang은 번역을 비우고 None.
+    translation_lang: str | None = None
 
 
 class LineMeta(BaseModel):
@@ -436,6 +443,54 @@ def _build_sync_response(
         key=timestamps.get("key"),
         linked=linked,
     )
+
+
+async def _apply_translation_lang(
+    session, video_id: str, resp: "SyncLookupResponse", lang: str | None
+) -> "SyncLookupResponse":
+    """lang 쿼리 파라미터에 따라 조회 응답의 세그먼트 translation을 그 언어로 맞춘다.
+
+    **lang이 없으면 아무것도 하지 않는다** — 구버전 클라이언트의 응답이 필드 단위로
+    기존과 동일해야 한다는 전역 제약을 여기서 지킨다. video_id는 항상 URL 경로의
+    값(자기 싱크든 링크로 빌린 싱크든)을 쓴다 — TranslationLayer는 (video_id, fingerprint,
+    target_lang) 키라 보는 영상 기준으로 일관되게 조회해야 POST /api/translate의
+    persist=true 저장과 같은 키로 맞아떨어진다.
+
+    세그먼트는 원본 result.timestamps의 리스트를 직접 건드리지 않도록 얕은 복사본을
+    만들어 교체한다 — JSON 컬럼은 재할당해야 변경이 감지되므로(다른 곳의 동일 주석 참고)
+    이 자체가 SyncResult를 오염시키진 않지만, 세션 수명 동안 같은 ORM 객체가 재사용될
+    가능성을 원천 차단하는 편이 안전하다.
+    """
+    if not lang or not resp.found:
+        return resp
+    segments = [dict(seg) for seg in (resp.timestamps or [])]
+    fingerprint = lines_fingerprint([seg.get("text", "") or "" for seg in segments])
+    layer = await TranslationLayerRepository(session).get_layer(video_id, fingerprint, lang)
+    if layer is not None:
+        # merge_line_meta(worker.py)와 같은 색인 규칙 — 값이 있는 첫 항목을 채택한다
+        by_text: dict[str, str] = {}
+        for item in layer.lines or []:
+            key = normalize_line(item.get("text", "") or "")
+            if not key:
+                continue
+            value = item.get("translation", "") or ""
+            if key not in by_text or (not by_text[key] and value):
+                by_text[key] = value
+        for seg in segments:
+            seg["translation"] = by_text.get(normalize_line(seg.get("text", "") or ""), "")
+        resp.translation_lang = lang
+    elif lang == "ko":
+        # 레이어가 없으면 저장된 레거시 번역이 ko라는 이행 가정 — 그대로 둔다.
+        # 세그에 번역이 하나도 없으면 "ko"라고 우길 근거가 없으므로 None.
+        has_translation = any((seg.get("translation") or "").strip() for seg in segments)
+        resp.translation_lang = "ko" if has_translation else None
+    else:
+        # 비ko이고 레이어가 없으면 레거시 값이 어느 언어인지 알 수 없다 — 비운다
+        for seg in segments:
+            seg["translation"] = ""
+        resp.translation_lang = None
+    resp.timestamps = segments
+    return resp
 
 
 @router.post("/link", response_model=SyncLinkResponse)
@@ -682,13 +737,18 @@ async def get_sync(
     lyrics_hash: str | None = None,
     title: Annotated[str | None, Query(max_length=256)] = None,
     artist: Annotated[str | None, Query(max_length=128)] = None,
+    lang: Annotated[str | None, Query(max_length=8)] = None,
 ):
     """이 영상의 싱크를 조회한다. 자기 싱크 > 링크로 빌려온 싱크 순.
 
     title/artist는 선택적 기회적 백필용이다 — 이 영상 '자기' 싱크의 title이 비어 있을 때만
     조용히 채운다(기존 값은 절대 덮어쓰지 않는다). 재생성 없이 기존 코퍼스에 제목이 쌓여
     커버 링크 후보 탐색이 동작하게 만드는 경로다. 링크로 빌려온 싱크는 소유자가 다른 영상
-    (원곡)이라 커버의 제목이 원곡 행에 새겨지지 않도록 백필하지 않는다."""
+    (원곡)이라 커버의 제목이 원곡 행에 새겨지지 않도록 백필하지 않는다.
+
+    lang은 선택이다 — 주면 세그먼트 translation을 그 언어의 TranslationLayer로 맞춰
+    치환하고 응답의 translation_lang에 실제 반영된 언어를 담는다(규칙은
+    _apply_translation_lang 참고). 안 주면 기존 필드 그대로다(구버전 클라이언트 호환)."""
     _validate_video_id(video_id)
     async with get_session() as session:
         repo = SyncRepository(session)
@@ -701,14 +761,14 @@ async def get_sync(
                 await repo.set_title_if_missing(result, title, artist)
                 resp = _build_sync_response(result, result.timestamps)
                 resp.user_offset = user_offset
-                return resp
+                return await _apply_translation_lang(session, video_id, resp, lang)
         else:
             results = await repo.get_by_video(video_id)
             if results:
                 await repo.set_title_if_missing(results[0], title, artist)
                 resp = _build_sync_response(results[0], results[0].timestamps)
                 resp.user_offset = user_offset
-                return resp
+                return await _apply_translation_lang(session, video_id, resp, lang)
 
         # 자기 싱크가 없고 링크가 있으면 source 싱크를 offset 적용해 빌려 온다
         link = await SyncLinkRepository(session).get(video_id)
@@ -731,7 +791,10 @@ async def get_sync(
                     },
                 )
                 resp.user_offset = user_offset
-                return resp
+                # lang 레이어는 보는 영상(video_id) 기준으로 조회한다 — source_video_id가
+                # 아니다. POST /api/translate persist=true도 항상 요청받은 video_id로
+                # 저장하므로, 조회도 같은 키를 써야 서로 맞아떨어진다.
+                return await _apply_translation_lang(session, video_id, resp, lang)
 
         return SyncLookupResponse(found=False, user_offset=user_offset)
 
@@ -1075,6 +1138,8 @@ async def _translate_and_attach_line_meta(
         # 같은 경로를 쓴다 — 별도 호출을 만들면 두 경로의 번역 품질이 조용히 갈린다.
         # 동기 LLM 호출(수십 초)이라 이벤트 루프 밖으로 내보낸다: 같은 루프에서 이 잡의
         # 다운로드·보컬 분리가 돌고 있다.
+        from fastapi import BackgroundTasks
+
         result = await run_in_threadpool(
             translate_lyrics,
             TranslateRequest(
@@ -1085,6 +1150,10 @@ async def _translate_and_attach_line_meta(
                 artist=artist,
                 video_id=video_id,
             ),
+            # persist를 안 쓰므로(기본 False) 실행될 일 없는 껍데기 — translate_lyrics가
+            # BackgroundTasks를 필수로 받게 되어(POST /api/translate의 persist 브리지)
+            # 직접 호출하는 이 경로도 인스턴스를 함께 넘겨야 한다.
+            BackgroundTasks(),
         )
         # LLM이 echo한 original이 아니라 넘긴 원문으로 text를 채운다 — 병합(merge_line_meta)은
         # 정규화 텍스트 매칭이라 한 글자만 달라도 그 줄은 붙지 않는다. 줄 수가 같아 인덱스로

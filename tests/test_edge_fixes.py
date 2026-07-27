@@ -233,24 +233,32 @@ class TestDurationProbe:
 
 class TestInputGuards:
     def test_translate_too_long_422(self):
+        from fastapi import BackgroundTasks
+
         from everyric2.server.api.translate import TranslateRequest, translate_lyrics
 
         with pytest.raises(HTTPException) as e:
-            translate_lyrics(TranslateRequest(text="가" * 15001))
+            translate_lyrics(TranslateRequest(text="가" * 15001), BackgroundTasks())
         assert e.value.status_code == 422
 
     def test_translate_too_many_lines_422(self):
+        from fastapi import BackgroundTasks
+
         from everyric2.server.api.translate import TranslateRequest, translate_lyrics
 
         with pytest.raises(HTTPException) as e:
-            translate_lyrics(TranslateRequest(text="\n".join(["가"] * 401)))
+            translate_lyrics(TranslateRequest(text="\n".join(["가"] * 401)), BackgroundTasks())
         assert e.value.status_code == 422
 
     def test_translate_bad_tone_422(self):
+        from fastapi import BackgroundTasks
+
         from everyric2.server.api.translate import TranslateRequest, translate_lyrics
 
         with pytest.raises(HTTPException) as e:
-            translate_lyrics(TranslateRequest(text="こんにちは", tone="not_a_real_tone"))
+            translate_lyrics(
+                TranslateRequest(text="こんにちは", tone="not_a_real_tone"), BackgroundTasks()
+            )
         assert e.value.status_code == 422
 
     def test_get_sync_invalid_video_id_422(self):
