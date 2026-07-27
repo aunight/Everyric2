@@ -16,6 +16,7 @@ const HOST_FUNCTIONS = new Set([
   "everyricRemoveGeneratedLayers",
   "everyricCreateLineMarkers",
   "everyricRemoveGeneratedMarkers",
+  "everyricSplitTextLayer",
   "everyricPickFile",
 ]);
 

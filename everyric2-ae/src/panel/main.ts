@@ -1,4 +1,12 @@
 import { evalHost, isCepHost } from "./cep";
+import {
+  buildCutSession,
+  computePieces,
+  defaultCutTime,
+  moveCut,
+  pieceWarnings,
+  toggleCut,
+} from "./cutter";
 import { installEngine } from "./engine-install";
 import { inspectEnvironment, readJsonFile, runLocalSync } from "./local-sync";
 import { normalizeSyncPayload, planLayerFill, planLineLyrics, planTypography } from "./planner";
@@ -8,9 +16,12 @@ import { isNewerVersion, parseVersion, satisfiesRange, SUPPORTED_ENGINE_RANGE } 
 import type {
   AppSettings,
   CompInfo,
+  CutPoint,
+  CutSession,
   Density,
   FillAssignment,
   HostResult,
+  TextLayerInfo,
   PlannerOptions,
   SyncLine,
   SyncDocument,
@@ -39,6 +50,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   layerOrder: "bottom-to-top",
   replacePrevious: true,
   autoLabelColors: false,
+  keepCutPosition: false,
 };
 
 function element<T extends HTMLElement>(id: string): T {
@@ -250,6 +262,27 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusEngineInstallFailed: "엔진 설치 실패 · {error}",
     statusEngineUpdateAvailable: "새 엔진 {version} 사용 가능 · 엔진 업데이트 버튼으로 갱신하세요.",
     statusEngineOutOfRange: "엔진 {version}이 지원 범위({range}) 밖입니다. 엔진 업데이트를 권장합니다.",
+    tabCut: "글자 커팅",
+    cutTitle: "글자 커팅",
+    cutIntro: "타이밍이 붙은 텍스트 레이어를 글자 사이에서 자릅니다. 자르는 순간 레이어가 나뉘고 타이밍이 맞춰집니다.",
+    loadCutLayer: "선택 레이어 불러오기",
+    applyCut: "자르기 적용",
+    keepCutPosition: "원래 위치 유지",
+    keepCutPositionHint: "끄면 각 조각이 원래 그 글자가 있던 자리에 남습니다.",
+    cutEmpty: "AE에서 텍스트 레이어를 하나 선택하고 불러오세요.",
+    cutMicro: "글자 사이를 누르면 자르고, 자른 자리를 다시 누르면 되붙입니다. 경계는 좌우로 끌어 미세 조정할 수 있습니다.",
+    cutMatchExact: "싱크 라인과 정확히 일치",
+    cutMatchSubstring: "싱크 라인의 일부",
+    cutMatchTime: "시간이 겹치는 라인에서 추정",
+    cutMatchNone: "싱크 라인 없음 · 레이어 구간을 글자 수로 균등 배분",
+    cutPronLabel: "발음",
+    cutTransLabel: "번역",
+    cutPieceCount: "조각 {count}개",
+    cutNoCuts: "아직 자른 곳이 없습니다.",
+    statusCutLoaded: "「{name}」 불러옴 · 글자 {count}자",
+    statusCutNoSelection: "AE에서 텍스트 레이어를 선택하세요.",
+    statusCutApplying: "레이어를 자르는 중…",
+    statusCutApplied: "조각 {count}개로 나눴습니다.",
   },
   ja: {
     settingsAria: "設定",
@@ -401,6 +434,27 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusEngineInstallFailed: "エンジンのインストール失敗 · {error}",
     statusEngineUpdateAvailable: "新しいエンジン {version} が利用可能 · エンジン更新ボタンで更新してください。",
     statusEngineOutOfRange: "エンジン {version} はサポート範囲({range})外です。エンジン更新を推奨します。",
+    tabCut: "文字カット",
+    cutTitle: "文字カット",
+    cutIntro: "タイミングの付いたテキストレイヤーを文字の間で切ります。切ると同時にレイヤーが分かれ、タイミングが揃います。",
+    loadCutLayer: "選択レイヤーを読み込む",
+    applyCut: "カットを適用",
+    keepCutPosition: "元の位置を保つ",
+    keepCutPositionHint: "オフにすると、各断片は元の文字があった位置に残ります。",
+    cutEmpty: "AEでテキストレイヤーを1つ選んで読み込んでください。",
+    cutMicro: "文字の間を押すと切れ、切った所をもう一度押すと繋がります。境界は左右にドラッグして微調整できます。",
+    cutMatchExact: "同期行と完全一致",
+    cutMatchSubstring: "同期行の一部",
+    cutMatchTime: "時間が重なる行から推定",
+    cutMatchNone: "同期行なし · レイヤー区間を文字数で均等配分",
+    cutPronLabel: "発音",
+    cutTransLabel: "翻訳",
+    cutPieceCount: "断片 {count}個",
+    cutNoCuts: "まだ切った所がありません。",
+    statusCutLoaded: "「{name}」を読み込みました · {count}文字",
+    statusCutNoSelection: "AEでテキストレイヤーを選択してください。",
+    statusCutApplying: "レイヤーを切っています…",
+    statusCutApplied: "{count}個の断片に分けました。",
   },
   en: {
     settingsAria: "Settings",
@@ -552,6 +606,27 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     statusEngineInstallFailed: "Engine install failed · {error}",
     statusEngineUpdateAvailable: "Engine {version} is available · use Update Engine to upgrade.",
     statusEngineOutOfRange: "Engine {version} is outside the supported range ({range}). Updating is recommended.",
+    tabCut: "Character Cut",
+    cutTitle: "Character cut",
+    cutIntro: "Cut a timed text layer between characters. The split and the retiming happen in one step.",
+    loadCutLayer: "Load selected layer",
+    applyCut: "Apply cut",
+    keepCutPosition: "Keep original position",
+    keepCutPositionHint: "When off, each piece stays where its characters were drawn.",
+    cutEmpty: "Select one text layer in After Effects, then load it.",
+    cutMicro: "Click between characters to cut, click a cut again to rejoin. Drag a boundary sideways to fine-tune it.",
+    cutMatchExact: "Exact match with a sync line",
+    cutMatchSubstring: "Part of a sync line",
+    cutMatchTime: "Estimated from the overlapping line",
+    cutMatchNone: "No sync line · the layer's range is spread evenly across characters",
+    cutPronLabel: "Pronunciation",
+    cutTransLabel: "Translation",
+    cutPieceCount: "{count} pieces",
+    cutNoCuts: "Nothing has been cut yet.",
+    statusCutLoaded: "Loaded \"{name}\" · {count} characters",
+    statusCutNoSelection: "Select a text layer in After Effects.",
+    statusCutApplying: "Splitting the layer…",
+    statusCutApplied: "Split into {count} pieces.",
   },
 };
 
@@ -572,6 +647,8 @@ class EveryricStudioPanel {
   private busy = false;
   private latestManifest: LatestManifest | null = null;
   private engineInstallMode: "install" | "update" = "install";
+  private cutSession: CutSession | null = null;
+  private cutPoints: CutPoint[] = [];
 
   constructor() {
     this.bindUI();
@@ -619,6 +696,10 @@ class EveryricStudioPanel {
     this.bindClick("addLineMarkersBtn", () => this.addLineMarkers());
     this.bindClick("removeMarkersBtn", () => this.removeMarkers());
     this.bindClick("removeGeneratedLayersBtn", () => this.removeGeneratedLayers());
+    this.bindClick("loadCutLayerBtn", () => this.loadCutLayer());
+    this.bindClick("applyCutBtn", () => this.applyCut());
+    this.bindCutStage();
+    element<HTMLInputElement>("keepCutPositionCheck").addEventListener("change", () => this.captureSettings(false));
     this.bindClick("installEngineBtn", () => this.installEngineFlow());
     this.bindClick("updateBadge", () => openExternal(this.latestManifest?.ae?.releaseUrl ?? RELEASES_URL));
     this.bindClick("removeTypeMarkersBtn", () => this.removeMarkers());
@@ -684,6 +765,8 @@ class EveryricStudioPanel {
     if (name === "fill") this.scheduleFillPreview();
     if (name === "fill") this.startFillSelectionWatch();
     else this.stopFillSelectionWatch();
+    // 커팅 탭은 선택된 레이어로 시작하는 것이 자연스럽다. 선택이 없으면 조용히 빈 상태로 둔다.
+    if (name === "cut" && !this.cutSession) void this.loadCutLayer({ quiet: true });
   }
 
   private currentView(): string {
@@ -740,6 +823,7 @@ class EveryricStudioPanel {
     this.setText('.mode-tabs [data-view="sync"]', "tabSync");
     this.setText('.mode-tabs [data-view="fill"]', "tabFill");
     this.setText('.mode-tabs [data-view="type"]', "tabType");
+    this.setText('.mode-tabs [data-view="cut"]', "tabCut");
     document.querySelectorAll<HTMLButtonElement>(".mode-tabs button").forEach((button, index) => {
       const label = button.textContent ?? "";
       button.innerHTML = `<span>${String(index + 1).padStart(2, "0")}</span>${escapeHtml(label.replace(/^\d+/, ""))}`;
@@ -794,6 +878,13 @@ class EveryricStudioPanel {
     this.setText("#removeGeneratedLayersBtn", "removeLayers");
     this.setText("#removeTypeMarkersBtn", "removeTypeMarkers");
     this.setText("#view-type .microcopy", "typeMicro");
+    this.setText("#view-cut .section-heading h1", "cutTitle");
+    this.setText("#view-cut .section-heading p", "cutIntro");
+    this.setText("#loadCutLayerBtn", "loadCutLayer");
+    this.setText("#applyCutBtn", "applyCut");
+    this.setToggleText("keepCutPositionCheck", "keepCutPosition", "keepCutPositionHint");
+    this.setText("#view-cut .microcopy", "cutMicro");
+    if (this.cutSession) this.renderCut();
     this.setText(".drawer-head h2", "preferences");
     this.setLabelHint("uiLocaleSelect", "uiLanguageHint");
     this.setLabelHint("pythonPathInput", "pythonHint");
@@ -879,6 +970,7 @@ class EveryricStudioPanel {
     element<HTMLSelectElement>("layerOrderSelect").value = this.settings.layerOrder;
     element<HTMLInputElement>("replacePreviousCheck").checked = this.settings.replacePrevious;
     element<HTMLInputElement>("autoLabelColorsCheck").checked = this.settings.autoLabelColors;
+    element<HTMLInputElement>("keepCutPositionCheck").checked = this.settings.keepCutPosition;
     this.renderPresetState();
     this.applyLocaleToUI();
   }
@@ -912,6 +1004,7 @@ class EveryricStudioPanel {
       layerOrder: element<HTMLSelectElement>("layerOrderSelect").value as AppSettings["layerOrder"],
       replacePrevious: element<HTMLInputElement>("replacePreviousCheck").checked,
       autoLabelColors: element<HTMLInputElement>("autoLabelColorsCheck").checked,
+      keepCutPosition: element<HTMLInputElement>("keepCutPositionCheck").checked,
     };
     this.saveSettings();
     if (close) {
@@ -1591,6 +1684,171 @@ class EveryricStudioPanel {
       const result = await evalHost<HostResult>("everyricRemoveGeneratedLayers");
       if (!result.ok) throw new Error(result.error || this.t("statusLayersRemoveFailed"));
       this.statusKey("success", "statusLayersRemoved", { count: result.removed ?? 0 });
+      await this.refreshComp(true);
+    } catch (error) {
+      this.statusKey("error", "statusParseError", { error: errorMessage(error) });
+    } finally {
+      this.setBusy(false);
+    }
+  }
+
+  private async loadCutLayer(options: { quiet?: boolean } = {}): Promise<void> {
+    try {
+      const response = await evalHost<{ ok: boolean; layers?: TextLayerInfo[]; error?: string }>(
+        "everyricGetSelectedTextLayers",
+      );
+      const layer = (response.layers ?? [])[0];
+      if (!response.ok || !layer) throw new Error(response.error || this.t("statusCutNoSelection"));
+      this.cutSession = buildCutSession(layer, this.syncDocument);
+      this.cutPoints = [];
+      this.renderCut();
+      this.statusKey("ready", "statusCutLoaded", {
+        name: layer.name,
+        count: this.cutSession.chars.length,
+      });
+    } catch (error) {
+      this.cutSession = null;
+      this.cutPoints = [];
+      this.renderCut();
+      // 뷰에 들어오자마자 자동으로 부를 때는 선택이 없는 것이 정상이라 조용히 넘긴다.
+      if (!options.quiet) this.statusKey("error", "statusParseError", { error: errorMessage(error) });
+    }
+  }
+
+  private matchQualityKey(session: CutSession): string {
+    if (session.matchQuality === "exact") return "cutMatchExact";
+    if (session.matchQuality === "substring") return "cutMatchSubstring";
+    if (session.matchQuality === "time") return "cutMatchTime";
+    return "cutMatchNone";
+  }
+
+  private renderCut(): void {
+    const stage = element<HTMLElement>("cutStage");
+    const piecesNode = element<HTMLElement>("cutPieces");
+    const applyButton = element<HTMLButtonElement>("applyCutBtn");
+    const session = this.cutSession;
+
+    if (!session) {
+      stage.innerHTML = `<div class="empty-state">${escapeHtml(this.t("cutEmpty"))}</div>`;
+      piecesNode.innerHTML = "";
+      applyButton.disabled = true;
+      return;
+    }
+
+    const cutIndexes = new Set(this.cutPoints.map((cut) => cut.index));
+    const glyphs = session.chars
+      .map((entry, index) => {
+        const caret =
+          index === 0
+            ? ""
+            : `<button class="cut-caret${cutIndexes.has(index) ? " cut" : ""}" data-caret="${index}" type="button"></button>`;
+        const classes = ["cut-char"];
+        if (!entry.visible) classes.push("space");
+        if (entry.interpolated) classes.push("estimated");
+        const glyph = entry.visible ? escapeHtml(entry.char) : "␣";
+        return `${caret}<span class="${classes.join(" ")}"><b>${glyph}</b><em>${entry.start.toFixed(2)}</em></span>`;
+      })
+      .join("");
+
+    const meta: string[] = [
+      `<span class="cut-quality ${session.matchQuality}">${escapeHtml(this.t(this.matchQualityKey(session)))}</span>`,
+    ];
+    if (session.pronunciation) {
+      meta.push(`<span class="cut-aux"><i>${escapeHtml(this.t("cutPronLabel"))}</i>${escapeHtml(session.pronunciation)}</span>`);
+    }
+    if (session.translation) {
+      meta.push(`<span class="cut-aux"><i>${escapeHtml(this.t("cutTransLabel"))}</i>${escapeHtml(session.translation)}</span>`);
+    }
+
+    stage.innerHTML = `
+      <div class="cut-head"><b>${escapeHtml(session.layerName)}</b><span>${timeLabel(session.inPoint)}–${timeLabel(session.outPoint)}</span></div>
+      ${session.blocked ? `<div class="cut-blocked">${escapeHtml(session.blocked)}</div>` : ""}
+      <div class="cut-line">${glyphs}</div>
+      <div class="cut-meta">${meta.join("")}</div>
+    `;
+
+    const pieces = computePieces(session, this.cutPoints);
+    const warnings = pieceWarnings(session, pieces);
+    if (this.cutPoints.length === 0) {
+      piecesNode.innerHTML = `<div class="empty-state">${escapeHtml(this.t("cutNoCuts"))}</div>`;
+    } else {
+      piecesNode.innerHTML = `
+        <div class="cut-piece-head">${escapeHtml(this.t("cutPieceCount", { count: pieces.length }))}</div>
+        ${pieces
+          .map(
+            (piece) => `
+          <div class="assignment">
+            <div class="assignment-head"><b>${escapeHtml(piece.text)}</b><span>${timeLabel(piece.start)}–${timeLabel(piece.end)}</span></div>
+          </div>`,
+          )
+          .join("")}
+        ${warnings.map((warning) => `<small class="cut-warning">${escapeHtml(warning)}</small>`).join("")}
+      `;
+    }
+
+    applyButton.disabled = Boolean(session.blocked) || pieces.length < 2;
+  }
+
+  /**
+   * 캐럿 하나에 클릭과 드래그를 같이 건다.
+   *
+   * 움직이지 않고 뗐으면 자르기/되붙이기, 옆으로 끌었으면 이미 있는 컷의 시각 조정이다.
+   * 드래그 중 renderCut이 DOM을 새로 그리므로 리스너는 document에 건다.
+   */
+  private bindCutStage(): void {
+    element<HTMLElement>("cutStage").addEventListener("mousedown", (event) => {
+      const target = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-caret]");
+      const session = this.cutSession;
+      if (!target || !session || session.blocked) return;
+      event.preventDefault();
+
+      const index = Number(target.dataset.caret);
+      const existing = this.cutPoints.find((cut) => cut.index === index);
+      const startX = event.clientX;
+      const startTime = existing?.time ?? defaultCutTime(session, index);
+      let dragged = false;
+
+      const onMove = (moveEvent: MouseEvent): void => {
+        const dx = moveEvent.clientX - startX;
+        if (!dragged && Math.abs(dx) < 3) return;
+        dragged = true;
+        if (!existing) return;
+        const perPixel = moveEvent.shiftKey ? 0.002 : 0.01;
+        this.cutPoints = moveCut(session, this.cutPoints, index, startTime + dx * perPixel);
+        this.renderCut();
+      };
+      const onUp = (): void => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        if (dragged) return;
+        this.cutPoints = toggleCut(session, this.cutPoints, index);
+        this.renderCut();
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  private async applyCut(): Promise<void> {
+    const session = this.cutSession;
+    if (!session || session.blocked) return;
+    const pieces = computePieces(session, this.cutPoints);
+    if (pieces.length < 2) return;
+
+    this.setBusyKey(true, "statusCutApplying");
+    try {
+      const result = await evalHost<HostResult>("everyricSplitTextLayer", {
+        layerIndex: session.layerIndex,
+        pieces,
+        keepOriginalPosition: element<HTMLInputElement>("keepCutPositionCheck").checked,
+      });
+      if (!result.ok) throw new Error(result.error || this.t("statusLayerApplyFailed"));
+      (result.warnings ?? []).forEach((warning) => this.addProgress("warn", warning));
+      this.statusKey("success", "statusCutApplied", { count: result.created ?? pieces.length });
+      this.cutSession = null;
+      this.cutPoints = [];
+      this.renderCut();
       await this.refreshComp(true);
     } catch (error) {
       this.statusKey("error", "statusParseError", { error: errorMessage(error) });

@@ -242,3 +242,33 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .update-badge { display: inline-block; margin-left: 6px; cursor: pointer; background: transparent; color: var(--accent); border-color: rgba(217,255,88,.35); }
 .update-badge:hover { background: var(--panel-2); }
 .update-badge[hidden] { display: none; }
+
+/* 글자 커팅 */
+.cut-stage { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(23,26,29,.72); overflow: hidden; }
+.cut-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 9px 11px; border-bottom: 1px solid var(--line-soft); }
+.cut-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cut-head span { flex: none; font: 9px var(--mono); color: var(--muted); }
+.cut-blocked { padding: 9px 11px; background: rgba(255,126,110,.08); color: var(--danger); line-height: 1.5; border-bottom: 1px solid var(--line-soft); }
+.cut-line { display: flex; flex-wrap: wrap; align-items: stretch; justify-content: center; padding: 14px 8px 12px; user-select: none; }
+.cut-char { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 1px; }
+.cut-char b { font-size: 22px; font-weight: 500; line-height: 1.2; }
+.cut-char em { font: 8px var(--mono); font-style: normal; color: #5e666d; }
+.cut-char.space b { color: #454c52; }
+.cut-char.estimated em { color: #7a6a3f; }
+
+/* 글자 사이의 클릭 지점. 평소엔 비어 있다가 가까이 가면 커서처럼 선이 선다. */
+.cut-caret { position: relative; flex: none; width: 11px; align-self: stretch; margin: 0; padding: 0; border: 0; background: transparent; cursor: col-resize; }
+.cut-caret::before { content: ""; position: absolute; left: 50%; top: 4px; bottom: 16px; width: 1px; transform: translateX(-50%); background: transparent; }
+.cut-caret:hover::before { background: var(--muted); }
+.cut-caret.cut::before { width: 2px; background: var(--accent); box-shadow: 0 0 6px rgba(217,255,88,.45); }
+.cut-caret.cut::after { content: ""; position: absolute; left: 50%; bottom: 8px; width: 5px; height: 5px; border-radius: 50%; transform: translateX(-50%); background: var(--accent); }
+
+.cut-meta { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 11px 11px; }
+.cut-quality { border: 1px solid var(--line); border-radius: 99px; padding: 3px 8px; font: 9px var(--mono); color: var(--muted); }
+.cut-quality.exact { color: var(--accent); border-color: rgba(217,255,88,.35); }
+.cut-quality.substring { color: var(--blue); border-color: rgba(117,201,255,.3); }
+.cut-quality.none { color: var(--danger); border-color: rgba(255,126,110,.35); }
+.cut-aux { border: 1px solid var(--line-soft); border-radius: 6px; padding: 3px 8px; color: var(--muted); line-height: 1.5; }
+.cut-aux i { font-style: normal; margin-right: 6px; font: 8px var(--mono); letter-spacing: .08em; color: #5e666d; }
+.cut-piece-head { padding: 9px 11px; border-bottom: 1px solid var(--line-soft); font: 9px var(--mono); letter-spacing: .1em; color: var(--muted); }
+.cut-warning { display: block; padding: 8px 11px; color: var(--danger); line-height: 1.5; }

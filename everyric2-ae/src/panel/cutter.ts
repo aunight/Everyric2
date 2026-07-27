@@ -1,0 +1,317 @@
+import type { CutPiece, CutPoint, CharTiming, CutSession, MatchQuality, SyncDocument, SyncLine, TextLayerInfo, TimingAtom } from "./types";
+
+/** 컷끼리, 그리고 컷과 레이어 경계 사이에 최소한 남겨 두는 간격(초). 30fps 한 프레임. */
+const MIN_PIECE_SEC = 1 / 30;
+
+function isWhitespace(char: string): boolean {
+  return /\s/.test(char);
+}
+
+/** 공백을 지운 비교용 키. 레이어 텍스트는 줄바꿈·들여쓰기가 라인과 다를 수 있다. */
+function comparisonKey(text: string): string {
+  return text.replace(/\s+/g, "");
+}
+
+/**
+ * atom 하나를 글자 단위로 편다. 글자 단위 CTC면 이미 한 글자라 그대로,
+ * 단어 단위 atom("hello")이면 글자 수로 균등 분할한다.
+ */
+function explodeAtom(atom: TimingAtom): CharTiming[] {
+  const chars = Array.from(atom.text).filter((char) => !isWhitespace(char));
+  if (chars.length === 0) return [];
+  const span = Math.max(0, atom.end - atom.start);
+  const step = span / chars.length;
+  return chars.map((char, index) => ({
+    char,
+    start: atom.start + step * index,
+    end: atom.start + step * (index + 1),
+    visible: true,
+    // 한 atom을 쪼갠 값은 측정치가 아니라 추정치다 — UI가 구분해서 보여준다.
+    interpolated: chars.length > 1,
+  }));
+}
+
+/**
+ * 레이어 텍스트의 각 글자에 시각을 배정한다.
+ *
+ * 가시 글자는 atom을 편 큐에서 순서대로 가져가고, 공백은 이웃 사이를 메운다.
+ * 큐가 모자라면 남은 글자를 마지막 시각과 fallbackEnd 사이에 균등 배분한다.
+ */
+function assignCharTimings(
+  text: string,
+  atoms: TimingAtom[],
+  fallbackStart: number,
+  fallbackEnd: number,
+): CharTiming[] {
+  const characters = Array.from(text);
+  if (characters.length === 0) return [];
+
+  const queue = atoms.flatMap(explodeAtom);
+  const visibleCount = characters.filter((char) => !isWhitespace(char)).length;
+  const result: CharTiming[] = [];
+
+  // 큐가 모자랄 때 쓸 균등 배분 구간: 큐가 끝나는 지점부터 fallbackEnd까지.
+  const shortfall = Math.max(0, visibleCount - queue.length);
+  const tailStart = queue.length > 0 ? (queue[queue.length - 1]?.end ?? fallbackStart) : fallbackStart;
+  const tailStep = shortfall > 0 ? Math.max(0, fallbackEnd - tailStart) / shortfall : 0;
+
+  let taken = 0;
+  let tailTaken = 0;
+  for (const char of characters) {
+    if (isWhitespace(char)) {
+      // 공백은 폭이 없는 경계로 둔다. 앞뒤가 정해진 뒤 아래에서 채운다.
+      result.push({ char, start: 0, end: 0, visible: false, interpolated: true });
+      continue;
+    }
+    const fromQueue = queue[taken];
+    if (fromQueue) {
+      result.push({ ...fromQueue, char });
+      taken += 1;
+      continue;
+    }
+    const start = tailStart + tailStep * tailTaken;
+    tailTaken += 1;
+    result.push({
+      char,
+      start,
+      end: tailStart + tailStep * tailTaken,
+      visible: true,
+      interpolated: true,
+    });
+  }
+
+  // 공백의 시각을 이웃에서 메운다: 앞 가시 글자의 end ~ 뒤 가시 글자의 start.
+  for (let index = 0; index < result.length; index += 1) {
+    const entry = result[index];
+    if (!entry || entry.visible) continue;
+    let before: CharTiming | undefined;
+    for (let back = index - 1; back >= 0; back -= 1) {
+      const candidate = result[back];
+      if (candidate?.visible) {
+        before = candidate;
+        break;
+      }
+    }
+    let after: CharTiming | undefined;
+    for (let forward = index + 1; forward < result.length; forward += 1) {
+      const candidate = result[forward];
+      if (candidate?.visible) {
+        after = candidate;
+        break;
+      }
+    }
+    entry.start = before?.end ?? after?.start ?? fallbackStart;
+    entry.end = after?.start ?? before?.end ?? fallbackEnd;
+    if (entry.end < entry.start) entry.end = entry.start;
+  }
+
+  return result;
+}
+
+interface LineMatch {
+  line: SyncLine;
+  quality: Exclude<MatchQuality, "none">;
+  atoms: TimingAtom[];
+}
+
+/** 라인의 atoms 중 가시 글자 [from, to) 구간에 해당하는 것만 잘라 온다. */
+function sliceAtomsByVisibleRange(line: SyncLine, from: number, to: number): TimingAtom[] {
+  const exploded = line.atoms.flatMap(explodeAtom);
+  if (exploded.length === 0) return [];
+  const window = exploded.slice(from, to);
+  if (window.length === 0) return [];
+  return window.map((entry) => ({ text: entry.char, start: entry.start, end: entry.end }));
+}
+
+/**
+ * 레이어를 싱크 라인에 붙인다.
+ *
+ * 1) 텍스트 완전 일치 → 2) 라인의 부분 문자열(배치 모드가 만든 블록) →
+ * 3) 시간 겹침이 가장 큰 라인 → 4) 실패.
+ */
+function matchLine(layer: TextLayerInfo, document: SyncDocument): LineMatch | null {
+  const layerKey = comparisonKey(layer.text);
+  if (layerKey === "") return null;
+
+  for (const line of document.lines) {
+    if (comparisonKey(line.text) === layerKey) {
+      return { line, quality: "exact", atoms: line.atoms };
+    }
+  }
+
+  for (const line of document.lines) {
+    const lineKey = comparisonKey(line.text);
+    const offset = lineKey.indexOf(layerKey);
+    if (offset < 0) continue;
+    const atoms = sliceAtomsByVisibleRange(line, offset, offset + layerKey.length);
+    if (atoms.length > 0) return { line, quality: "substring", atoms };
+  }
+
+  let best: LineMatch | null = null;
+  let bestOverlap = 0;
+  for (const line of document.lines) {
+    const overlap = Math.min(line.end, layer.outPoint) - Math.max(line.start, layer.inPoint);
+    if (overlap <= bestOverlap) continue;
+    // 레이어 구간에 실제로 드는 atom만 — 라인 전체를 가져오면 없는 글자의 시각이 섞인다.
+    const atoms = line.atoms.filter((atom) => {
+      const midpoint = (atom.start + atom.end) / 2;
+      return midpoint >= layer.inPoint && midpoint < layer.outPoint;
+    });
+    bestOverlap = overlap;
+    best = { line, quality: "time", atoms: atoms.length > 0 ? atoms : line.atoms };
+  }
+  return best;
+}
+
+/** 커팅을 막아야 하는 레이어인지. 막는 이유는 UI에 그대로 띄운다. */
+export function cutBlocker(layer: TextLayerInfo): string | undefined {
+  if (layer.locked) return "잠긴 레이어는 자를 수 없습니다.";
+  if (layer.sourceTextKeys > 0) {
+    return "Source Text에 키프레임이 있는 레이어는 자를 수 없습니다. 키를 지우고 다시 시도하세요.";
+  }
+  if (/[\r\n]/.test(layer.text)) {
+    return "여러 줄 텍스트는 자를 수 없습니다. 줄마다 레이어를 나눈 뒤 시도하세요.";
+  }
+  if (Array.from(layer.text.replace(/\s/g, "")).length < 2) {
+    return "글자가 두 개 이상이어야 자를 수 있습니다.";
+  }
+  return undefined;
+}
+
+export function buildCutSession(layer: TextLayerInfo, document: SyncDocument | null): CutSession {
+  const blocked = cutBlocker(layer);
+  const match = document ? matchLine(layer, document) : null;
+  const atoms = match?.atoms ?? [];
+  const chars = assignCharTimings(
+    layer.text,
+    atoms,
+    match?.quality === "exact" || match?.quality === "substring"
+      ? (atoms[0]?.start ?? layer.inPoint)
+      : layer.inPoint,
+    layer.outPoint,
+  );
+
+  return {
+    layerIndex: layer.index,
+    layerName: layer.name,
+    text: layer.text,
+    inPoint: layer.inPoint,
+    outPoint: layer.outPoint,
+    chars,
+    matchQuality: match?.quality ?? "none",
+    ...(match ? { lineText: match.line.text } : {}),
+    ...(match?.line.pronunciation ? { pronunciation: match.line.pronunciation } : {}),
+    ...(match?.line.translation ? { translation: match.line.translation } : {}),
+    ...(blocked ? { blocked } : {}),
+  };
+}
+
+/** 컷을 놓을 수 있는 글자 사이 위치. 양끝은 제외한다. */
+export function cutCandidates(session: CutSession): number[] {
+  const positions: number[] = [];
+  for (let index = 1; index < session.chars.length; index += 1) positions.push(index);
+  return positions;
+}
+
+/** index 지점의 기본 컷 시각 — 앞 글자가 끝나고 뒤 글자가 시작하는 사이. */
+export function defaultCutTime(session: CutSession, index: number): number {
+  const before = session.chars[index - 1];
+  const after = session.chars[index];
+  if (!before || !after) return session.inPoint;
+  if (after.start <= before.end) return after.start;
+  return (before.end + after.start) / 2;
+}
+
+function sortCuts(cuts: CutPoint[]): CutPoint[] {
+  return [...cuts].sort((a, b) => a.index - b.index);
+}
+
+/** 이미 있으면 지우고(되붙이기), 없으면 기본 시각으로 만든다. */
+export function toggleCut(session: CutSession, cuts: CutPoint[], index: number): CutPoint[] {
+  if (index <= 0 || index >= session.chars.length) return cuts;
+  const existing = cuts.find((cut) => cut.index === index);
+  if (existing) return cuts.filter((cut) => cut.index !== index);
+  const next: CutPoint = { index, time: defaultCutTime(session, index), auto: true };
+  return sortCuts([...cuts, next]);
+}
+
+/** 드래그로 옮긴 컷 시각을 이웃 컷·레이어 경계 안으로 가둔다. */
+export function clampCutTime(session: CutSession, cuts: CutPoint[], index: number, time: number): number {
+  const sorted = sortCuts(cuts.filter((cut) => cut.index !== index));
+  let lower = session.inPoint;
+  let upper = session.outPoint;
+  for (const cut of sorted) {
+    if (cut.index < index) lower = Math.max(lower, cut.time);
+    if (cut.index > index) upper = Math.min(upper, cut.time);
+  }
+  const min = lower + MIN_PIECE_SEC;
+  const max = upper - MIN_PIECE_SEC;
+  if (min >= max) return (lower + upper) / 2;
+  return Math.min(max, Math.max(min, time));
+}
+
+export function moveCut(session: CutSession, cuts: CutPoint[], index: number, time: number): CutPoint[] {
+  return sortCuts(
+    cuts.map((cut) =>
+      cut.index === index ? { ...cut, time: clampCutTime(session, cuts, index, time), auto: false } : cut,
+    ),
+  );
+}
+
+/**
+ * 컷을 조각으로 편다.
+ *
+ * 첫 조각은 레이어 inPoint에서, 마지막 조각은 outPoint에서 끝난다 — 원본 구간을 넘기지 않는다.
+ * 조각 텍스트의 양끝 공백은 지우고, 그만큼 charStart/charEnd를 좁힌다(x 좌표 계산이
+ * 실제로 그려지는 첫 글자를 기준으로 해야 하기 때문).
+ */
+export function computePieces(session: CutSession, cuts: CutPoint[]): CutPiece[] {
+  const sorted = sortCuts(cuts).filter((cut) => cut.index > 0 && cut.index < session.chars.length);
+  const boundaries = [0, ...sorted.map((cut) => cut.index), session.chars.length];
+  const pieces: CutPiece[] = [];
+
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const rawFrom = boundaries[index] ?? 0;
+    const rawTo = boundaries[index + 1] ?? session.chars.length;
+    if (rawTo <= rawFrom) continue;
+
+    let from = rawFrom;
+    let to = rawTo;
+    while (from < to && isWhitespace(session.chars[from]?.char ?? "")) from += 1;
+    while (to > from && isWhitespace(session.chars[to - 1]?.char ?? "")) to -= 1;
+    if (to <= from) continue;
+
+    const text = session.chars
+      .slice(from, to)
+      .map((entry) => entry.char)
+      .join("");
+    pieces.push({
+      text,
+      head: session.chars
+        .slice(0, to)
+        .map((entry) => entry.char)
+        .join(""),
+      start: index === 0 ? session.inPoint : (sorted[index - 1]?.time ?? session.inPoint),
+      end: index === boundaries.length - 2 ? session.outPoint : (sorted[index]?.time ?? session.outPoint),
+      charStart: from,
+      charEnd: to,
+    });
+  }
+
+  return pieces;
+}
+
+/** 조각 목록에서 사용자에게 알려야 할 문제. 비어 있으면 적용해도 된다. */
+export function pieceWarnings(session: CutSession, pieces: CutPiece[]): string[] {
+  const warnings: string[] = [];
+  if (pieces.length < 2) warnings.push("자를 지점을 하나 이상 선택하세요.");
+  for (const piece of pieces) {
+    if (piece.end - piece.start < MIN_PIECE_SEC) {
+      warnings.push(`「${piece.text}」 구간이 한 프레임보다 짧습니다.`);
+    }
+  }
+  if (session.matchQuality === "none") {
+    warnings.push("싱크 라인을 찾지 못해 레이어 구간을 글자 수로 균등 배분했습니다. 시각을 확인하세요.");
+  }
+  return warnings;
+}

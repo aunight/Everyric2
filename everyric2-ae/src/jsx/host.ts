@@ -414,6 +414,186 @@ function everyricCreateLineMarkers(payloadJson?: string): string {
   }
 }
 
+/** sourceRectAtTime을 재는 시각. setTextAnchor와 같은 기준을 쓴다. */
+function measureTime(layer: any): number {
+  try {
+    return Math.max(layer.inPoint, 0);
+  } catch (error) {
+    return 0;
+  }
+}
+
+/**
+ * 측정용 레이어에 텍스트를 넣고 바운딩 박스를 잰다.
+ *
+ * ExtendScript에는 글자별 위치 API가 없어서, 문자열을 갈아 끼우며 재는 것이 유일한 방법이다.
+ */
+function measureText(measureLayer: any, text: string, time: number): HostObject | null {
+  if (!text) return { left: 0, width: 0 };
+  var sourceText = textProperty(measureLayer);
+  if (!sourceText) return null;
+  try {
+    var documentValue = sourceText.value;
+    documentValue.text = text;
+    sourceText.setValue(documentValue);
+    var rect = measureLayer.sourceRectAtTime(time, false);
+    return { left: rect.left, width: rect.width };
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * 각 조각을 원본에서 그 글자들이 있던 자리에 놓기 위한 x 이동량.
+ *
+ * 로컬 좌표에서 조각의 시작은 rect.left이고, 원본에서 그 글자의 시작은
+ * (원본 rect.left + 앞선 글자들의 폭)이다. 둘의 차이가 이동량이라 justification과 무관하게
+ * 성립한다. 앞선 글자들의 폭은 "접두사+조각"에서 "조각"을 빼서 구한다 — 접두사만 재면
+ * 끝의 공백이 바운딩 박스에서 빠져 조각이 왼쪽으로 밀린다.
+ *
+ * 실패하면 null을 돌려주고 호출부가 위치를 건드리지 않는다.
+ */
+function pieceOffsets(layer: any, pieces: any[], time: number): number[] | null {
+  var originalRect;
+  try {
+    originalRect = layer.sourceRectAtTime(time, false);
+  } catch (error) {
+    return null;
+  }
+  if (!originalRect || !(originalRect.width > 0)) return null;
+
+  var measureLayer = null;
+  try {
+    measureLayer = layer.duplicate();
+    var offsets: number[] = [];
+    for (var index = 0; index < pieces.length; index += 1) {
+      var piece = pieces[index];
+      var pieceRect = measureText(measureLayer, String(piece.text || ""), time);
+      var headRect = measureText(measureLayer, String(piece.head || piece.text || ""), time);
+      if (!pieceRect || !headRect) return null;
+      var prefixWidth = headRect.width - pieceRect.width;
+      offsets.push(originalRect.left + prefixWidth - pieceRect.left);
+    }
+    return offsets;
+  } catch (error) {
+    return null;
+  } finally {
+    if (measureLayer) {
+      try {
+        measureLayer.remove();
+      } catch (error) {}
+    }
+  }
+}
+
+/** 로컬 x 이동량을 레이어의 회전·스케일을 거쳐 컴포지션 좌표의 이동으로 바꾼다. */
+function localShiftToComp(layer: any, dx: number): number[] {
+  var scaleX = 1;
+  var radians = 0;
+  try {
+    scaleX = Number(layer.property("ADBE Transform Group").property("ADBE Scale").value[0]) / 100;
+    if (!(scaleX > 0)) scaleX = 1;
+  } catch (error) {}
+  try {
+    radians = (Number(layer.property("ADBE Transform Group").property("ADBE Rotate Z").value) * Math.PI) / 180;
+  } catch (error) {}
+  var shift = dx * scaleX;
+  return [shift * Math.cos(radians), shift * Math.sin(radians)];
+}
+
+/** in/out을 순서 사고 없이 설정한다. 항상 out을 먼저 좁혀야 in < out이 깨지지 않는다. */
+function setLayerSpan(layer: any, start: number, end: number, comp: any): void {
+  var safeEnd = Math.max(comp.frameDuration, Math.min(comp.duration, end));
+  var safeStart = Math.max(0, Math.min(safeEnd - comp.frameDuration, start));
+  try {
+    layer.outPoint = safeEnd;
+  } catch (error) {}
+  try {
+    layer.inPoint = safeStart;
+  } catch (error) {}
+}
+
+function everyricSplitTextLayer(payloadJson?: string): string {
+  var undoStarted = false;
+  try {
+    var comp = activeComp();
+    if (!comp) return response({ ok: false, error: "활성 컴포지션이 없습니다." });
+    var payload = parsePayload(payloadJson);
+    var pieces = payload.pieces || [];
+    if (pieces.length < 2) return response({ ok: false, error: "자를 지점을 하나 이상 선택하세요." });
+
+    var layer = comp.layer(Number(payload.layerIndex));
+    if (!layer || !isTextLayer(layer)) return response({ ok: false, error: "텍스트 레이어를 찾을 수 없습니다." });
+    if (layer.locked) return response({ ok: false, error: "잠긴 레이어는 자를 수 없습니다." });
+    var sourceText = textProperty(layer);
+    if (!sourceText) return response({ ok: false, error: "Source Text를 읽을 수 없습니다." });
+    if (sourceText.numKeys > 0) {
+      return response({ ok: false, error: "Source Text에 키프레임이 있는 레이어는 자를 수 없습니다." });
+    }
+
+    app.beginUndoGroup("Everyric Studio - Split text layer");
+    undoStarted = true;
+
+    var warnings: string[] = [];
+    var time = measureTime(layer);
+    var offsets: number[] | null = payload.keepOriginalPosition ? null : pieceOffsets(layer, pieces, time);
+    if (!payload.keepOriginalPosition && !offsets) {
+      warnings.push("글자 폭을 재지 못해 조각을 원래 위치에 두었습니다.");
+    }
+
+    var basePosition;
+    try {
+      basePosition = layer.property("ADBE Transform Group").property("ADBE Position").value;
+    } catch (error) {
+      basePosition = null;
+    }
+
+    var baseComment = String(layer.comment || "");
+    var baseName = String(layer.name || "");
+    var created = 0;
+    // 위에서부터 쌓으면 조각 순서가 타임라인에서 뒤집힌다 — 뒤 조각부터 복제해 순서를 맞춘다.
+    for (var index = pieces.length - 1; index >= 0; index -= 1) {
+      var piece = pieces[index];
+      var clone = layer.duplicate();
+      clone.name = baseName + " " + String(index + 1);
+      if (baseComment.indexOf("EV2|") === 0) {
+        clone.comment = baseComment + "|CUT" + String(index + 1);
+      } else if (baseComment === "") {
+        // 사용자가 써 둔 코멘트는 덮지 않는다. 비어 있을 때만 출처를 남긴다.
+        clone.comment = "EV2CUT|" + baseName + "|" + String(index + 1);
+      }
+
+      var cloneText = textProperty(clone);
+      if (cloneText) {
+        var documentValue = cloneText.value;
+        documentValue.text = String(piece.text || "");
+        cloneText.setValue(documentValue);
+      }
+      setLayerSpan(clone, Number(piece.start), Number(piece.end), comp);
+
+      if (offsets && basePosition) {
+        var shift = localShiftToComp(layer, offsets[index] || 0);
+        try {
+          clone
+            .property("ADBE Transform Group")
+            .property("ADBE Position")
+            .setValue([basePosition[0] + shift[0], basePosition[1] + shift[1]]);
+        } catch (error) {
+          warnings.push("조각 " + String(index + 1) + "의 위치를 옮기지 못했습니다.");
+        }
+      }
+      created += 1;
+    }
+
+    layer.remove();
+    return response({ ok: true, created: created, removed: 1, warnings: warnings });
+  } catch (error) {
+    return response({ ok: false, error: String(error) });
+  } finally {
+    if (undoStarted) app.endUndoGroup();
+  }
+}
+
 function everyricPickFile(payloadJson?: string): string {
   try {
     var payload = parsePayload(payloadJson);
@@ -433,6 +613,7 @@ $.global.everyricApplyTextAssignments = everyricApplyTextAssignments;
 $.global.everyricCreateTypography = everyricCreateTypography;
 $.global.everyricRemoveGeneratedLayers = everyricRemoveGeneratedLayers;
 $.global.everyricCreateLineMarkers = everyricCreateLineMarkers;
+$.global.everyricSplitTextLayer = everyricSplitTextLayer;
 $.global.everyricRemoveGeneratedMarkers = function (): string {
   try {
     var comp = activeComp();

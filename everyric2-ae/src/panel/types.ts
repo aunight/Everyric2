@@ -22,6 +22,55 @@ export interface SyncDocument {
   duration: number;
 }
 
+export type MatchQuality = "exact" | "substring" | "time" | "none";
+
+export interface CharTiming {
+  char: string;
+  start: number;
+  end: number;
+  /** 공백·개행이 아니라 실제로 그려지는 글자인가. */
+  visible: boolean;
+  /** 시각이 atom 측정치가 아니라 추정치인가(단어 atom 분할, 공백 메움, 폴백 배분). */
+  interpolated: boolean;
+}
+
+export interface CutSession {
+  layerIndex: number;
+  layerName: string;
+  text: string;
+  inPoint: number;
+  outPoint: number;
+  chars: CharTiming[];
+  matchQuality: MatchQuality;
+  lineText?: string;
+  pronunciation?: string;
+  translation?: string;
+  /** 값이 있으면 이 레이어는 자를 수 없고, 문자열이 그 사유다. */
+  blocked?: string;
+}
+
+export interface CutPoint {
+  /** chars 배열에서 이 인덱스 앞을 자른다. 1..chars.length-1 */
+  index: number;
+  time: number;
+  /** 기본 계산값 그대로인가(드래그로 옮기면 false). */
+  auto: boolean;
+}
+
+export interface CutPiece {
+  text: string;
+  start: number;
+  end: number;
+  charStart: number;
+  charEnd: number;
+  /**
+   * 원본 텍스트의 처음부터 이 조각의 끝까지. host가 "접두사+조각"에서 "조각"을 빼는 방식으로
+   * 앞선 글자들의 폭을 재는 데 쓴다. ExtendScript는 코드포인트 단위 slice를 못 하므로
+   * 패널이 만들어서 넘긴다.
+   */
+  head: string;
+}
+
 export interface TextLayerInfo {
   index: number;
   name: string;
@@ -141,6 +190,8 @@ export interface AppSettings {
   layerOrder: LayerOrder;
   replacePrevious: boolean;
   autoLabelColors: boolean;
+  /** 커팅으로 나뉜 조각을 원본 위치에 그대로 둘지. 끄면 각 글자가 있던 자리로 옮긴다. */
+  keepCutPosition: boolean;
 }
 
 export interface HostResult {
