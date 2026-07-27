@@ -52,6 +52,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   replacePrevious: true,
   autoLabelColors: false,
   keepCutPosition: false,
+  cutReveal: "cumulative",
   serverUrl: "https://everyric.moref.co",
   serverApiKey: "",
 };
@@ -268,7 +269,10 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     tabCut: "글자 커팅",
     cutTitle: "글자 커팅",
     cutIntro: "타이밍이 붙은 텍스트 레이어를 글자 사이에서 자릅니다. 자르는 순간 레이어가 나뉘고 타이밍이 맞춰집니다.",
-    loadCutLayer: "선택 레이어 불러오기",
+    loadCutLayer: "선택 레이어 다시 읽기",
+    cutRevealLabel: "등장 방식",
+    cutRevealCumulative: "이어서 쌓임",
+    cutRevealSequential: "차례로 교체",
     applyCut: "자르기 적용",
     keepCutPosition: "원래 위치 유지",
     keepCutPositionHint: "끄면 각 조각이 원래 그 글자가 있던 자리에 남습니다.",
@@ -448,7 +452,10 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     tabCut: "文字カット",
     cutTitle: "文字カット",
     cutIntro: "タイミングの付いたテキストレイヤーを文字の間で切ります。切ると同時にレイヤーが分かれ、タイミングが揃います。",
-    loadCutLayer: "選択レイヤーを読み込む",
+    loadCutLayer: "選択レイヤーを再読み込み",
+    cutRevealLabel: "登場方法",
+    cutRevealCumulative: "積み重なる",
+    cutRevealSequential: "順に入れ替え",
     applyCut: "カットを適用",
     keepCutPosition: "元の位置を保つ",
     keepCutPositionHint: "オフにすると、各断片は元の文字があった位置に残ります。",
@@ -628,7 +635,10 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     tabCut: "Character Cut",
     cutTitle: "Character cut",
     cutIntro: "Cut a timed text layer between characters. The split and the retiming happen in one step.",
-    loadCutLayer: "Load selected layer",
+    loadCutLayer: "Reload selected layer",
+    cutRevealLabel: "Reveal",
+    cutRevealCumulative: "Stays on screen",
+    cutRevealSequential: "Replaces previous",
     applyCut: "Apply cut",
     keepCutPosition: "Keep original position",
     keepCutPositionHint: "When off, each piece stays where its characters were drawn.",
@@ -676,6 +686,8 @@ class EveryricStudioPanel {
   private engineInstallMode: "install" | "update" = "install";
   private cutSession: CutSession | null = null;
   private cutPoints: CutPoint[] = [];
+  private cutSelectionTimer: number | null = null;
+  private lastCutSelectionSignature = "";
 
   constructor() {
     this.bindUI();
@@ -727,7 +739,12 @@ class EveryricStudioPanel {
     this.bindClick("loadCutLayerBtn", () => this.loadCutLayer());
     this.bindClick("applyCutBtn", () => this.applyCut());
     this.bindCutStage();
-    element<HTMLInputElement>("keepCutPositionCheck").addEventListener("change", () => this.captureSettings(false));
+    ["keepCutPositionCheck", "cutRevealSelect"].forEach((id) => {
+      element<HTMLElement>(id).addEventListener("change", () => {
+        this.captureSettings(false);
+        this.renderCut();
+      });
+    });
     this.bindClick("installEngineBtn", () => this.installEngineFlow());
     this.bindClick("updateBadge", () => openExternal(this.latestManifest?.ae?.releaseUrl ?? RELEASES_URL));
     this.bindClick("removeTypeMarkersBtn", () => this.removeMarkers());
@@ -793,8 +810,9 @@ class EveryricStudioPanel {
     if (name === "fill") this.scheduleFillPreview();
     if (name === "fill") this.startFillSelectionWatch();
     else this.stopFillSelectionWatch();
-    // 커팅 탭은 선택된 레이어로 시작하는 것이 자연스럽다. 선택이 없으면 조용히 빈 상태로 둔다.
-    if (name === "cut" && !this.cutSession) void this.loadCutLayer({ quiet: true });
+    // 커팅 탭에서는 AE에서 레이어를 고르는 것만으로 바로 불러온다.
+    if (name === "cut") this.startCutSelectionWatch();
+    else this.stopCutSelectionWatch();
   }
 
   private currentView(): string {
@@ -914,6 +932,9 @@ class EveryricStudioPanel {
     this.setText("#view-cut .section-heading p", "cutIntro");
     this.setText("#loadCutLayerBtn", "loadCutLayer");
     this.setText("#applyCutBtn", "applyCut");
+    this.setLabelText("cutRevealSelect", "cutRevealLabel");
+    this.setOptionText("cutRevealSelect", "cumulative", "cutRevealCumulative");
+    this.setOptionText("cutRevealSelect", "sequential", "cutRevealSequential");
     this.setToggleText("keepCutPositionCheck", "keepCutPosition", "keepCutPositionHint");
     this.setText("#view-cut .microcopy", "cutMicro");
     if (this.cutSession) this.renderCut();
@@ -1003,6 +1024,7 @@ class EveryricStudioPanel {
     element<HTMLInputElement>("replacePreviousCheck").checked = this.settings.replacePrevious;
     element<HTMLInputElement>("autoLabelColorsCheck").checked = this.settings.autoLabelColors;
     element<HTMLInputElement>("keepCutPositionCheck").checked = this.settings.keepCutPosition;
+    element<HTMLSelectElement>("cutRevealSelect").value = this.settings.cutReveal;
     element<HTMLInputElement>("serverUrlInput").value = this.settings.serverUrl;
     element<HTMLInputElement>("serverApiKeyInput").value = this.settings.serverApiKey;
     this.renderPresetState();
@@ -1039,6 +1061,7 @@ class EveryricStudioPanel {
       replacePrevious: element<HTMLInputElement>("replacePreviousCheck").checked,
       autoLabelColors: element<HTMLInputElement>("autoLabelColorsCheck").checked,
       keepCutPosition: element<HTMLInputElement>("keepCutPositionCheck").checked,
+      cutReveal: element<HTMLSelectElement>("cutRevealSelect").value as AppSettings["cutReveal"],
       serverUrl: element<HTMLInputElement>("serverUrlInput").value.trim() || DEFAULT_SETTINGS.serverUrl,
       serverApiKey: element<HTMLInputElement>("serverApiKeyInput").value.trim(),
     };
@@ -1753,6 +1776,55 @@ class EveryricStudioPanel {
     }
   }
 
+  /** 커팅 탭에 있는 동안 AE의 선택을 지켜본다. 레이어를 고르면 그것으로 바로 갈아탄다. */
+  private startCutSelectionWatch(): void {
+    if (this.cutSelectionTimer !== null) return;
+    // 들어오자마자 한 번, 그 뒤로는 주기적으로.
+    void this.refreshCutIfSelectionChanged();
+    this.cutSelectionTimer = window.setInterval(() => {
+      if (this.busy || this.currentView() !== "cut") return;
+      void this.refreshCutIfSelectionChanged();
+    }, 700);
+  }
+
+  private stopCutSelectionWatch(): void {
+    if (this.cutSelectionTimer !== null) {
+      window.clearInterval(this.cutSelectionTimer);
+      this.cutSelectionTimer = null;
+    }
+  }
+
+  /** 레이어를 특정하는 지문. 텍스트까지 넣어야 내용이 바뀐 것도 잡힌다. */
+  private cutSelectionSignature(layer: TextLayerInfo | undefined): string {
+    if (!layer) return "";
+    return [layer.index, layer.text, layer.inPoint.toFixed(3), layer.outPoint.toFixed(3), layer.sourceTextKeys, layer.locked ? 1 : 0].join(":");
+  }
+
+  private async refreshCutIfSelectionChanged(): Promise<void> {
+    try {
+      const response = await evalHost<{ ok: boolean; layers?: TextLayerInfo[]; error?: string }>(
+        "everyricGetSelectedTextLayers",
+      );
+      const layer = (response.layers ?? [])[0];
+      const signature = this.cutSelectionSignature(layer);
+      // 같은 레이어를 계속 보고 있으면 찍어 둔 컷을 건드리지 않는다.
+      if (signature === this.lastCutSelectionSignature) return;
+      this.lastCutSelectionSignature = signature;
+      if (!layer) {
+        this.cutSession = null;
+        this.cutPoints = [];
+        this.renderCut();
+        return;
+      }
+      this.cutSession = buildCutSession(layer, this.syncDocument);
+      this.cutPoints = [];
+      this.renderCut();
+      this.statusKey("ready", "statusCutLoaded", { name: layer.name, count: this.cutSession.chars.length });
+    } catch {
+      // 선택을 못 읽는 것은 흔한 일(컴포지션 전환 중 등)이라 조용히 넘긴다.
+    }
+  }
+
   private async loadCutLayer(options: { quiet?: boolean } = {}): Promise<void> {
     try {
       const response = await evalHost<{ ok: boolean; layers?: TextLayerInfo[]; error?: string }>(
@@ -1762,6 +1834,7 @@ class EveryricStudioPanel {
       if (!response.ok || !layer) throw new Error(response.error || this.t("statusCutNoSelection"));
       this.cutSession = buildCutSession(layer, this.syncDocument);
       this.cutPoints = [];
+      this.lastCutSelectionSignature = this.cutSelectionSignature(layer);
       this.renderCut();
       this.statusKey("ready", "statusCutLoaded", {
         name: layer.name,
@@ -1828,7 +1901,7 @@ class EveryricStudioPanel {
       <div class="cut-meta">${meta.join("")}</div>
     `;
 
-    const pieces = computePieces(session, this.cutPoints);
+    const pieces = computePieces(session, this.cutPoints, this.settings.cutReveal);
     const warnings = pieceWarnings(session, pieces);
     if (this.cutPoints.length === 0) {
       piecesNode.innerHTML = `<div class="empty-state">${escapeHtml(this.t("cutNoCuts"))}</div>`;
@@ -1894,7 +1967,7 @@ class EveryricStudioPanel {
   private async applyCut(): Promise<void> {
     const session = this.cutSession;
     if (!session || session.blocked) return;
-    const pieces = computePieces(session, this.cutPoints);
+    const pieces = computePieces(session, this.cutPoints, this.settings.cutReveal);
     if (pieces.length < 2) return;
 
     this.setBusyKey(true, "statusCutApplying");
@@ -1909,6 +1982,8 @@ class EveryricStudioPanel {
       this.statusKey("success", "statusCutApplied", { count: result.created ?? pieces.length });
       this.cutSession = null;
       this.cutPoints = [];
+      // 원본이 사라졌으니 다음 감시 때 새 선택을 반드시 다시 읽어야 한다.
+      this.lastCutSelectionSignature = "";
       this.renderCut();
       await this.refreshComp(true);
     } catch (error) {

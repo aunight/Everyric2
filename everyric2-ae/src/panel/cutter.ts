@@ -1,4 +1,4 @@
-import type { CutPiece, CutPoint, CharTiming, CutSession, MatchQuality, SyncDocument, SyncLine, TextLayerInfo, TimingAtom } from "./types";
+import type { CutPiece, CutPoint, CutReveal, CharTiming, CutSession, MatchQuality, SyncDocument, SyncLine, TextLayerInfo, TimingAtom } from "./types";
 
 /** 컷끼리, 그리고 컷과 레이어 경계 사이에 최소한 남겨 두는 간격(초). 30fps 한 프레임. */
 const MIN_PIECE_SEC = 1 / 30;
@@ -286,11 +286,20 @@ export function moveCut(session: CutSession, cuts: CutPoint[], index: number, ti
 /**
  * 컷을 조각으로 편다.
  *
- * 첫 조각은 레이어 inPoint에서, 마지막 조각은 outPoint에서 끝난다 — 원본 구간을 넘기지 않는다.
- * 조각 텍스트의 양끝 공백은 지우고, 그만큼 charStart/charEnd를 좁힌다(x 좌표 계산이
- * 실제로 그려지는 첫 글자를 기준으로 해야 하기 때문).
+ * `reveal`이 등장 방식을 가른다:
+ * - `cumulative`(기본) — 조각이 제 시각에 나타나 **줄이 끝날 때까지 남는다**. 조각을 원래
+ *   글자 자리에 두는 것과 짝을 이뤄, 한 줄이 왼쪽부터 차례로 채워진다.
+ * - `sequential` — 다음 조각이 나오면 앞 조각이 사라진다. 조각을 한자리에 겹쳐 놓고
+ *   갈아 끼우는 연출에 쓴다.
+ *
+ * 어느 쪽이든 원본 구간을 넘기지 않는다. 조각 텍스트의 양끝 공백은 지우고 그만큼
+ * charStart/charEnd를 좁힌다(x 좌표는 실제로 그려지는 첫 글자를 기준으로 해야 한다).
  */
-export function computePieces(session: CutSession, cuts: CutPoint[]): CutPiece[] {
+export function computePieces(
+  session: CutSession,
+  cuts: CutPoint[],
+  reveal: CutReveal = "cumulative",
+): CutPiece[] {
   const sorted = sortCuts(cuts).filter((cut) => cut.index > 0 && cut.index < session.chars.length);
   const boundaries = [0, ...sorted.map((cut) => cut.index), session.chars.length];
   const pieces: CutPiece[] = [];
@@ -317,7 +326,10 @@ export function computePieces(session: CutSession, cuts: CutPoint[]): CutPiece[]
         .map((entry) => entry.char)
         .join(""),
       start: index === 0 ? session.inPoint : (sorted[index - 1]?.time ?? session.inPoint),
-      end: index === boundaries.length - 2 ? session.outPoint : (sorted[index]?.time ?? session.outPoint),
+      end:
+        reveal === "cumulative" || index === boundaries.length - 2
+          ? session.outPoint
+          : (sorted[index]?.time ?? session.outPoint),
       charStart: from,
       charEnd: to,
     });

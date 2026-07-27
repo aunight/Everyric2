@@ -57,6 +57,13 @@ export interface CutPoint {
   auto: boolean;
 }
 
+/**
+ * 자른 조각이 화면에 남는 방식.
+ * - `cumulative`: 제 시각에 나타나 줄이 끝날 때까지 남는다(한 줄이 차례로 채워진다).
+ * - `sequential`: 다음 조각이 나오면 사라진다.
+ */
+export type CutReveal = "cumulative" | "sequential";
+
 export interface CutPiece {
   text: string;
   start: number;
@@ -192,6 +199,8 @@ export interface AppSettings {
   autoLabelColors: boolean;
   /** 커팅으로 나뉜 조각을 원본 위치에 그대로 둘지. 끄면 각 글자가 있던 자리로 옮긴다. */
   keepCutPosition: boolean;
+  /** 자른 조각이 줄 끝까지 남을지(cumulative), 다음 조각이 나오면 사라질지(sequential). */
+  cutReveal: CutReveal;
   /** 이미 만들어진 싱크를 영상 ID로 조회할 서버. */
   serverUrl: string;
   serverApiKey: string;

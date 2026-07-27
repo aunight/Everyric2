@@ -221,7 +221,14 @@ try {
   assert.equal(pieces[1].text, "名前を呼ぶよ");
   assert.equal(pieces[0].start, exactSession.inPoint, "the first piece keeps the layer's in point");
   assert.equal(pieces[1].end, exactSession.outPoint, "the last piece keeps the layer's out point");
-  assert.equal(pieces[0].end, pieces[1].start, "pieces meet at the cut with no gap");
+  // 기본은 누적: 조각이 제 시각에 나타나 줄이 끝날 때까지 남는다. 각 조각을 원래 글자
+  // 자리에 두는 것과 짝을 이뤄야 한 줄이 왼쪽부터 차례로 채워진다.
+  assert.equal(pieces[0].end, exactSession.outPoint, "by default an earlier piece stays on screen to the end of the line");
+  assert.equal(pieces[1].start, oneCut[0].time, "the later piece appears at the cut");
+  const sequential = computePieces(exactSession, oneCut, "sequential");
+  assert.equal(sequential[0].end, sequential[1].start, "sequential reveal hands off at the cut instead of stacking");
+  assert.equal(sequential[1].end, exactSession.outPoint);
+  assert.equal(sequential[0].start, exactSession.inPoint);
   assert.deepEqual(pieceWarnings(exactSession, pieces), []);
   assert.ok(pieceWarnings(exactSession, computePieces(exactSession, [])).some((text) => text.includes("자를 지점")));
 
@@ -244,7 +251,8 @@ try {
   const moved = moveCut(exactSession, oneCut, 2, 11.4);
   assert.equal(moved[0].time, 11.4);
   assert.equal(moved[0].auto, false, "a dragged cut is no longer the computed default");
-  assert.equal(computePieces(exactSession, moved)[0].end, 11.4, "dragging the boundary retimes the pieces");
+  assert.equal(computePieces(exactSession, moved)[1].start, 11.4, "dragging the boundary retimes the piece that starts there");
+  assert.equal(computePieces(exactSession, moved, "sequential")[0].end, 11.4, "sequential reveal moves the hand-off too");
 
   // 후렴 반복: 텍스트가 같은 줄이 여럿이면 시간이 겹치는 쪽을 잡아야 한다.
   // (실측에서 2절 레이어가 1절의 시각을 가져와 조각이 곡 앞머리로 날아갔다.)
