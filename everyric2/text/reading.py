@@ -63,6 +63,9 @@ _SMALL_COMBINING = set("ゃゅょぁぃぅぇぉゎ")
 # 다른 ASCII 낱말과 동일한 계약(Mora.kana가 원문 글자 그대로)을 지킨다.
 _ASCII_WORD_RE = re.compile(r"[A-Za-z0-9&＆]+(?:['’-][A-Za-z0-9]+)*")
 
+# 완성형 한글 음절 런 — ja 곡에 섞인 한글 구간(«좋아해 きみが» 류 혼합 줄)을 찾는다.
+_HANGUL_RUN_RE = re.compile(r"[가-힣]+")
+
 def _is_japanese_char(ch: str) -> bool:
     """히라가나/가타카나/한자 범위인지 (일본어 유닛 판별용)."""
     cp = ord(ch)
@@ -185,6 +188,13 @@ def text_to_moras(text: str, tokens: list | None = None) -> list[Mora]:
     고른 대안 읽기(``pron_style.candidate_token_sets``)의 모라 수를 그대로 반영하려는
     호출부를 위한 것이다. 생략하면(``None``) 기존과 동일하게 ``tokenize_reading(text)``로
     새로 토큰화한다 — 기존 호출자는 무변경.
+
+    비일본어 런 안에 완성형 한글이 섞여 있으면(«좋아해 きみが» 같은 혼합 줄) 그 구간도
+    모라로 만든다(``ko_reading.hangul_line_moras``를 재료로 — 자모 분해→가타카나 근사).
+    예전에는 ASCII도 일본어도 아니라 통째로 빠져(감사 2차 M1) romaji_line이 그 구간을
+    삭제한 채 렌더했다. is_ascii=False로 담는다 — ASCII 유닛과 달리 DP 정렬(ja 발음)에서
+    별도 취급이 필요 없고, kana_romaji가 가타카나를 히라가나로 정규화한 뒤 표에서 찾으므로
+    romaji 렌더러가 별도 분기 없이 그대로 읽는다.
     """
     if tokens is None:
         tokens = tokenize_reading(text)
@@ -210,8 +220,10 @@ def text_to_moras(text: str, tokens: list | None = None) -> list[Mora]:
         while j + 1 < n and not any(_is_japanese_char(c) for c in tokens[j + 1].surface):
             j += 1
         run_start, run_end = token.start, tokens[j].end
-        for match in _ASCII_WORD_RE.finditer(text[run_start:run_end]):
-            moras.append(
+        run_text = text[run_start:run_end]
+        run_moras: list[Mora] = []
+        for match in _ASCII_WORD_RE.finditer(run_text):
+            run_moras.append(
                 Mora(
                     kana=match.group(),
                     char_start=run_start + match.start(),
@@ -219,6 +231,18 @@ def text_to_moras(text: str, tokens: list | None = None) -> list[Mora]:
                     is_ascii=True,
                 )
             )
+        if _HANGUL_RUN_RE.search(run_text):
+            # 한글 하위런만 골라 먹인다(런 전체를 먹이면 ASCII 문자까지 낱개 통과돼
+            # 위 ASCII_WORD_RE 결과와 겹친다 — hangul_line_moras 자체는 비한글도
+            # 통과시키는 범용 함수라서다).
+            from everyric2.text.ko_reading import hangul_line_moras
+
+            for hangul_match in _HANGUL_RUN_RE.finditer(run_text):
+                base = run_start + hangul_match.start()
+                for kana, cs, ce in hangul_line_moras(hangul_match.group()):
+                    run_moras.append(Mora(kana=kana, char_start=base + cs, char_end=base + ce))
+        run_moras.sort(key=lambda m: m.char_start)
+        moras.extend(run_moras)
         i = j + 1
     return moras
 

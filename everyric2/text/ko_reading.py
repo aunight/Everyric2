@@ -37,6 +37,8 @@ g/d/b/j로 고정하므로(한국=Hanguk의 "국"이 g로 시작하는 것이 �
 """
 from __future__ import annotations
 
+import re
+
 from everyric2.text.latin_hangul import transliterate_latin
 from everyric2.text.reading import _decompose_hangul
 
@@ -240,7 +242,14 @@ def _render_run(run: list[list]) -> list[tuple[str, str, int]]:
 
 
 def hangul_to_kana(text: str) -> str:
-    """한국어 텍스트를 가타카나 발음 표기로 바꾼다. 비한글 문자는 그대로 통과."""
+    """한국어 텍스트를 가타카나 발음 표기로 바꾼다. 비한글 문자는 그대로 통과.
+
+    라틴 런은 먼저 ``transliterate_latin``(느슨 음차)으로 한글을 거쳐 들어온다 —
+    감사 2차 M3: 예전에는 라틴을 그냥 통과시켜(«사랑해 baby»→«サランヘ baby») 카타카나
+    표기 줄에 로마자가 섞였다. 느슨 음차 결과는 전부 한글이므로 재귀 없이 아래 루프가
+    그대로 변환한다(``latin_to_kana``가 정확히 이 순서를 쓴다 — 순서를 바꾸면 안 된다).
+    """
+    text = transliterate_latin(text, tight=False)
     out: list[str] = []
     for is_hangul, payload in _hangul_runs(text):
         if is_hangul:
@@ -322,24 +331,51 @@ def hangul_line_romaja_syllables(text: str) -> list[tuple[str, int, int]]:
     return result
 
 
+_LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+
+
 def hangul_line_moras(text: str) -> list[tuple[str, int, int]]:
     """원문 한글 라인을 (모라 토큰, char_start, char_end) 리스트로 분해한다.
 
     한글 1글자는 기본 1모라. 받침이 독립 가나(ン/ッ/ム/ル/ク/プ)로 실현되면 그 글자에
     2모라가 귀속되고, 둘 다 같은 (char_start, char_end)를 공유한다(한→ハ+ン). 공백은
-    모라를 만들지 않고, 그 외 비한글 문자(구두점 등)는 낱글자 1모라로 통과한다.
+    모라를 만들지 않고, 그 외 비한글 문자(구두점 등)는 낱글자 1모라로 통과한다 —
+    단 라틴 런(공백으로 구분된 낱말 단위)은 ``latin_to_kana``로 환전해 낱말 하나를
+    모라 하나로 담는다(감사 2차 M3: 예전에는 라틴을 낱글자로 통과시켜 표시(hangul_to_kana)
+    와 세그(이 함수) 내용이 어긋났다 — «baby»가 표시는 «ペビ»인데 세그는 b·a·b·y
+    낱글자 통과였다). 낱글자 이름 음차(글자 이름 읽기)는 카라오케 단위로 무의미해
+    통째로 한 모라에 담는다 — 시각은 호출부가 이 모라의 (char_start, char_end)
+    전체 구간을 하나로 쓴다(``worker._kana_mora_segments_ko`` 참고).
     """
     result: list[tuple[str, int, int]] = []
+    buf: list[tuple[str, int]] = []  # 연속된 비한글·비공백 (글자, 글자위치)
+
+    def flush() -> None:
+        if not buf:
+            return
+        chunk = "".join(ch for ch, _ in buf)
+        start_idx, end_idx = buf[0][1], buf[-1][1] + 1
+        if _LATIN_CHAR_RE.search(chunk):
+            result.append((latin_to_kana(chunk), start_idx, end_idx))
+        else:
+            for ch, idx in buf:
+                result.append((ch, idx, idx + 1))
+        buf.clear()
+
     for is_hangul, payload in _hangul_runs(text):
         if is_hangul:
+            flush()
             for onset_vowel, coda, idx in _render_run(payload):
                 result.append((onset_vowel, idx, idx + 1))
                 if coda:
                     result.append((coda, idx, idx + 1))
         else:
             ch, idx = payload
-            if not ch.isspace():
-                result.append((ch, idx, idx + 1))
+            if ch.isspace():
+                flush()  # 공백이 라틴 런의 경계 — 낱말 단위로 끊는다
+            else:
+                buf.append((ch, idx))
+    flush()
     return result
 
 

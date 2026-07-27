@@ -55,33 +55,41 @@ def test_coverage_ignores_non_hangul_pron():
 
 def test_merge_line_meta_skips_non_hangul_pronunciation_but_keeps_translation():
     # 감사 치명 #1의 서버 잔여 재현: line_meta에 romaji 발음이 실린 줄(비ko 사용자
-    # 요청 등)을 병합해도 legacy seg["pronunciation"]에 로마자가 박히면 안 되고,
-    # 그 위에 attach_pron_variants가 pron["hangul"]=romaji를 얹어서도 안 된다.
-    # 번역 병합·attach 호출 자체는 그대로 동작해야 한다.
+    # 요청 등)을 병합해도 legacy seg["pronunciation"]에 그 로마자가 박히면 안 되고,
+    # 그 위에 attach_pron_variants가 pron["hangul"]=romaji를 얹어서도 안 된다. 감사
+    # 2차 E4가 더해진 뒤로는 "아예 안 채움"이 아니라 **서버가 직접 만든 정확한 한글
+    # 독음**으로 채워진다(빈 값보다 낫다) — 검증 대상은 "거부된 로마자가 아니라
+    # wiki_pronunciation의 값이 들어가는가"다. 번역 병합·attach 호출 자체는 그대로
+    # 동작해야 한다.
     text = "本能が狂い始める"
     seg = {"text": text, "start": 0.0, "end": 4.0}
+    rejected_romaji = "honnoo ga kurui hajimeru"
     line_meta = [
-        {"text": text, "pronunciation": "honnoo ga kurui hajimeru", "translation": "본능이 미쳐가기 시작해"}
+        {"text": text, "pronunciation": rejected_romaji, "translation": "본능이 미쳐가기 시작해"}
     ]
 
     merged = merge_line_meta([seg], line_meta)
 
     assert merged == 1
-    assert "pronunciation" not in seg  # 한글 전용 legacy 슬롯에 로마자가 안 박힌다
-    assert "pron" not in seg  # attach_pron_variants도 pron.hangul을 만들지 않는다(빈 발음 취급)
+    assert seg["pronunciation"] != rejected_romaji  # 거부된 로마자가 legacy 슬롯에 안 박힌다
+    assert seg["pron"]["hangul"] != rejected_romaji  # pron.hangul도 로마자가 아니다
+    assert seg["pronunciation"] == "혼노오가 쿠루이 하지메루"  # E4 자체 생성값(정답)
+    assert seg["pron"]["hangul"] == "혼노오가 쿠루이 하지메루"
     assert seg["translation"] == "본능이 미쳐가기 시작해"  # 번역 병합은 그대로
 
 
 def test_merge_line_meta_skips_katakana_pronunciation_too():
-    # 가타카나(ja 사용자 line_meta)도 같은 구멍 — 한글이 아니면 전부 막혀야 한다.
+    # 가타카나(ja 사용자 line_meta)도 같은 구멍 — 한글이 아니면 병합에서 전부 막혀야
+    # 한다. E4 자체 생성은 여전히 동작하므로 legacy 슬롯이 빈 채로 남지는 않는다.
     text = "本能が狂い始める"
     seg = {"text": text, "start": 0.0, "end": 4.0}
-    line_meta = [{"text": text, "pronunciation": "ホンノウガ クルイ ハジメル"}]
+    rejected_katakana = "ホンノウガ クルイ ハジメル"
+    line_meta = [{"text": text, "pronunciation": rejected_katakana}]
 
     merge_line_meta([seg], line_meta)
 
-    assert "pronunciation" not in seg
-    assert "pron" not in seg
+    assert seg["pronunciation"] != rejected_katakana
+    assert seg["pronunciation"] == "혼노오가 쿠루이 하지메루"
 
 
 def test_merge_line_meta_still_merges_hangul_pronunciation():

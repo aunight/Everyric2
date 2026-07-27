@@ -85,14 +85,85 @@ def test_romaji_segments_are_monotonic_and_rebuild_the_display():
     assert segments[-1]["end"] <= seg["end"]
 
 
+# ---------------------------------------------------------------------------
+# 감사 2차(O1 실측 4케이스) — 혼합 줄(ja/ko/라틴이 섞인 줄)의 분기 판정(M2)·소실
+# 방지(M1)·라틴 환전+공백(M3)·kana 표시=세그 단일 소스(M4)를 한 번에 검증한다.
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_line_branch_decision_by_character_majority():
+    # M2: 문자 수 우세로 분기한다("일본어 글자가 하나라도 있으면 ja"였던 예전 규칙은
+    # 한글이 더 많은 혼합 줄까지 ja로 새게 했다).
+    tie_favors_ja = _seg("좋아해 きみが", "", words=True)  # 한글3=일본어3 → 동률은 ja
+    tie_favors_ja["words"] = _full_words("좋아해 きみが")
+    attach_pron_variants(tie_favors_ja)
+    assert "hangul" in tie_favors_ja["pron"]  # ja 분기(hangul 키가 ja 전용)
+
+    ko_majority = _seg("사랑해 デス", "", words=True)  # 한글3 > 일본어2 → ko
+    ko_majority["words"] = _full_words("사랑해 デス")
+    attach_pron_variants(ko_majority)
+    assert "hangul" not in ko_majority["pron"]  # ko 분기
+
+    ko_no_ja = _seg("사랑해 baby", "", words=True)  # 일본어 0 → ko(원래도 ko였다)
+    ko_no_ja["words"] = _full_words("사랑해 baby")
+    attach_pron_variants(ko_no_ja)
+    assert "hangul" not in ko_no_ja["pron"]
+
+
+def test_mixed_line_no_deletion_and_display_equals_segments():
+    # M1(로마자 삭제 금지)·M3(라틴 환전+공백)·M4(kana 단일 소스)를 한 번에: 모든
+    # 표기(pron 값)와 그 세그를 재구성한 문자열이 완전히 같아야 한다(소실 0).
+    fixtures = ["좋아해 きみが", "사랑해 デス", "사랑해 baby", NEKURA]
+    for text in fixtures:
+        seg = {"text": text, "start": 0.0, "end": len(text) * 0.5, "words": _full_words(text)}
+        attach_pron_variants(seg)
+        assert seg.get("pron"), text
+        for script, display in seg["pron"].items():
+            segments = (seg.get("pron_segs") or {}).get(script)
+            if segments is None:
+                continue  # 표시만 있고 세그가 없는 표기(예: 라틴 곡)는 이 라운드 범위 밖
+            assert _rebuild(segments) == display, (text, script)
+
+
+def test_mixed_ja_line_hangul_substring_is_not_deleted_from_romaji_and_kana():
+    # M1 정공법 검증: 「좋아해 きみが」의 「좋아해」가 romaji/kana에서 통째로 사라지던
+    # 것(text_to_moras가 한글을 모라로 못 만들어서)이 이제 살아 있어야 한다.
+    text = "좋아해 きみが"
+    seg = {"text": text, "start": 0.0, "end": len(text) * 0.5, "words": _full_words(text)}
+    attach_pron_variants(seg)
+
+    assert seg["pron"]["hangul"] == "좋아해 키미가"
+    assert seg["pron"]["romaji"] == "choahe kimi ga"
+    assert seg["pron"]["kana"] == "チョアヘ キミ ガ"
+    assert seg["pron"]["romaji"].startswith("choahe")  # 삭제됐다면 "kimi ga"로 시작했을 것
+    assert seg["pron"]["kana"].startswith("チョアヘ")
+
+
+def test_mixed_ko_line_latin_run_is_transliterated_and_space_preserved():
+    # M3: ko 분기의 라틴 런이 latin_to_kana로 환전되고(«サランヘ baby» 사고 재현 방지),
+    # 세그를 재구성하면 원문 공백이 그대로 살아 있어야 한다.
+    text = "사랑해 baby"
+    seg = {"text": text, "start": 0.0, "end": len(text) * 0.5, "words": _full_words(text)}
+    attach_pron_variants(seg)
+
+    assert seg["pron"]["kana"] == "サランヘ ペビ"  # baby가 raw 라틴으로 안 남는다
+    kana_segments = seg["pron_segs"]["kana"]
+    assert kana_segments[-1]["text"] == "ペビ"  # 낱말 하나로 묶인 모라
+    assert any(s.get("space") for s in kana_segments)  # 공백 플래그가 살아 있다
+    assert _rebuild(kana_segments) == seg["pron"]["kana"]
+
+    romaji_segments = seg["pron_segs"]["romaji"]
+    assert _rebuild(romaji_segments) == seg["pron"]["romaji"] == "saranghae baby"
+
+
 def test_ja_segment_gets_kana_display_and_shares_timing_with_romaji():
     # 사용자 버그 보고: ja 세그의 pron dict에 kana가 없어 script=kana 설정에서 발음 줄이
-    # 통째로 사라졌다. 표시는 가타카나(항등 렌더러 + 히라가나→가타카나 정규화)이고,
-    # 모라 시각은 romaji와 완전히 같은 mora_segments_for_line 결과를 공유한다.
+    # 통째로 사라졌다. 감사 2차 M4로 표시는 세그와 같은 카타카나 모라 열에서 합성된다
+    # (romaji와 같은 모라/토큰 경계 띄어쓰기 — 문절 띄어쓰기이던 예전 값과 다르다).
     seg = _seg(NEKURA, NEKURA_HANGUL)
     attach_pron_variants(seg)
 
-    assert seg["pron"]["kana"] == "アルバイトワ ネクラ モード"
+    assert seg["pron"]["kana"] == "アルバイト ワ ネクラ モード"
     kana_segments = seg["pron_segs"]["kana"]
     romaji_segments = seg["pron_segs"]["romaji"]
     assert len(kana_segments) == len(romaji_segments) == 12
@@ -200,11 +271,18 @@ def test_display_survives_when_char_spans_do_not_match_the_text():
     assert "pron_segs" not in seg
 
 
-def test_skips_ja_segment_without_pronunciation():
-    # ja 곡 분기는 ``pronunciation``(독음) 필드가 필수다 — 없으면 hangul/romaji 둘 다 생략.
+def test_ja_segment_self_generates_hangul_pronunciation_when_missing():
+    # 감사 2차 E4: 비ko 사용자의 생성 요청은 line_meta에 한글 발음이 없다(번역 API가
+    # 그 사용자 언어로 번역만 만든다) — 예전엔 pron dict가 통째로 안 생겼다. 이제는
+    # wiki_pronunciation(text)로 서버가 직접 만들어 legacy 슬롯과 pron.hangul에 싣고,
+    # romaji·kana도 평소처럼 파생된다.
     no_pron = _seg(NEKURA, "")
     attach_pron_variants(no_pron)
-    assert "pron" not in no_pron
+
+    assert no_pron["pronunciation"] == NEKURA_HANGUL  # legacy 슬롯도 채워진다
+    assert no_pron["pron"]["hangul"] == NEKURA_HANGUL
+    assert no_pron["pron"]["romaji"] == NEKURA_ROMAJI
+    assert "kana" in no_pron["pron"]
 
 
 def test_skips_segment_without_ja_ko_or_latin_text():

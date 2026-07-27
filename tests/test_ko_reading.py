@@ -32,8 +32,14 @@ def test_hangul_to_kana(ko, kana):
 
 
 def test_hangul_to_kana_passthrough_non_hangul():
-    assert hangul_to_kana("Take it easy!") == "Take it easy!"
     assert hangul_to_kana("사랑해!") == "サランヘ!"
+
+
+def test_hangul_to_kana_transliterates_embedded_latin():
+    # 감사 2차 M3: 라틴 런을 그냥 통과시키지 않고 latin_to_kana(느슨 음차 체인)로 환전한다
+    # — 표시 줄이 로마자·가나 혼용이 아니라 전부 가나가 되어야 한다.
+    assert hangul_to_kana("Take it easy!") == "テイク イトゥ イシ!"
+    assert hangul_to_kana("사랑해 baby") == "サランヘ ペビ"
 
 
 @pytest.mark.parametrize(
@@ -109,3 +115,14 @@ def test_hangul_line_romaja_syllables_passthrough_non_hangul():
 def test_hangul_line_moras_skips_space_passes_through_punctuation():
     moras = hangul_line_moras("사 랑!")
     assert moras == [("サ", 0, 1), ("ラ", 2, 3), ("ン", 2, 3), ("!", 3, 4)]
+
+
+def test_hangul_line_moras_groups_latin_run_into_one_mora():
+    # 감사 2차 M3: «baby»가 낱글자(b,a,b,y)로 흩어지면 hangul_to_kana의 표시("ペビ")와
+    # 세그 내용이 어긋난다 — 낱말 전체를 latin_to_kana로 환전해 모라 1개로 담는다.
+    moras = hangul_line_moras("사랑해 baby")
+    assert moras == [
+        ("サ", 0, 1), ("ラ", 1, 2), ("ン", 1, 2), ("ヘ", 2, 3), ("ペビ", 4, 8),
+    ]
+    # 표시=세그 단일 소스: 모라를 이어 붙이면(공백 복원 없이) hangul_to_kana와 낱말별로 같다
+    assert [m[0] for m in moras] == ["サ", "ラ", "ン", "ヘ", "ペビ"]

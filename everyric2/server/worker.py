@@ -448,11 +448,21 @@ def _ko_char_time(seg: dict[str, Any], text: str) -> dict[int, tuple[float, floa
     return char_time
 
 
+def _ko_seg_gap_has_space(text: str, ce: int, next_cs: int) -> bool:
+    """두 토큰의 글자 구간 사이에 공백이 있는가 — ko 분기 세그의 space 플래그 재료."""
+    return any(ch.isspace() for ch in text[ce:next_cs])
+
+
 def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any]] | None:
     """ko 곡 세그: ``hangul_line_moras`` + ``_ko_char_time``으로 kana 모라 시각을 만든다.
 
     받침이 독립 가나가 되어 한 글자에 모라 2개가 붙으면(한→ハ+ン), 그 글자의 시간
     구간을 모라 개수만큼 균등 분할한다(``reading._build_mora_time``과 같은 방식).
+
+    모라의 글자 구간이 한 글자보다 넓을 수 있다 — 라틴 런이 낱말 하나로 묶인
+    모라(예: baby→(4,8), ``ko_reading.hangul_line_moras`` 참고)가 그렇다. 그래서
+    시작 시각은 ``char_time[cs]``, 끝 시각은 ``char_time[ce-1]``에서 따로 가져와
+    합친다(단일 글자 모라는 cs==ce-1이라 예전과 동일하게 동작한다).
     """
     char_time = _ko_char_time(seg, text)
     if char_time is None:
@@ -475,12 +485,13 @@ def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any
         span = (moras[i][1], moras[i][2])
         while j + 1 < n and (moras[j + 1][1], moras[j + 1][2]) == span:
             j += 1
-        cs, _ce = span
-        t = char_time.get(cs)
-        if t is None:
+        cs, ce = span
+        start_t = char_time.get(cs)
+        end_t = char_time.get(ce - 1)
+        if start_t is None or end_t is None:
             i = j + 1
             continue
-        start, end = t
+        start, end = start_t[0], end_t[1]
         total = max(end - start, 0.0)
         count = j - i + 1
         for k in range(count):
@@ -491,6 +502,8 @@ def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any
                     "end": round(start + total * (k + 1) / count, 3),
                 }
             )
+        if j + 1 < n and _ko_seg_gap_has_space(text, ce, moras[j + 1][1]):
+            segments[-1]["space"] = True
         i = j + 1
 
     if not segments:
@@ -525,11 +538,13 @@ def _romaja_syllable_segments_ko(seg: dict[str, Any], text: str) -> list[dict[st
         return None
 
     segments: list[dict[str, Any]] = []
-    for token, cs, _ce in syllables:
+    for idx, (token, cs, ce) in enumerate(syllables):
         t = char_time.get(cs)
         if t is None:
             continue
         segments.append({"text": token, "start": round(t[0], 3), "end": round(t[1], 3)})
+        if idx + 1 < len(syllables) and _ko_seg_gap_has_space(text, ce, syllables[idx + 1][1]):
+            segments[-1]["space"] = True
     if not segments:
         return None
 
@@ -546,6 +561,13 @@ def _attach_ja_pron_variants(
 ) -> None:
     """일본어 곡 세그: hangul(기존 ``pronunciation`` 값) + romaji + kana(가타카나 표시).
 
+    ``pronunciation``이 없으면(비ko 사용자의 생성 요청 — 번역 API가 그 사용자 언어로
+    번역만 만들고 발음은 ko 전용 결정론 경로라 line_meta에 한글 독음이 안 실린다)
+    ``wiki_pronunciation(text)``로 서버가 직접 한글 독음을 만든다(감사 2차 E4). 정렬은
+    이미 이 경우 원문 폴백이었으므로(``_alignable_pron``이 빈 값 취급) 표시만 새로
+    생기는 것이라 안전하다 — legacy ``seg["pronunciation"]``에도 싣는다(구버전 확장
+    호환). 형태소 분석기가 없거나 실패하면 조용히 스킵(pron dict 자체가 안 생긴다).
+
     ``referee_tokens``를 주면(오디오 심판이 이긴 후보의 토큰 열 —
     ``pron_style.candidate_token_sets``) 그 읽기로 romaji·kana 모라 시각을 만든다. 주지
     않았는데 심판이 이 줄의 독음을 바꿨으면(``_referee_switched``) romaji·kana를
@@ -555,7 +577,16 @@ def _attach_ja_pron_variants(
     """
     pron = (seg.get("pronunciation") or "").strip()
     if not pron:
-        return
+        try:
+            from everyric2.text.pron_style import wiki_pronunciation
+
+            pron = wiki_pronunciation(text)
+        except Exception:
+            logger.exception("self-generated hangul pronunciation failed")
+            return
+        if not pron:
+            return
+        seg["pronunciation"] = pron
 
     seg["pron"] = {"hangul": pron}
     if referee_tokens is None and _referee_switched(seg):
@@ -585,35 +616,24 @@ def _attach_ja_kana_variant(
 ) -> None:
     """ja 곡 세그: 가타카나 발음 표시(``pron.kana``) + 가능하면 모라 시각.
 
-    표시는 ``wiki_pronunciation(text, script="kana")``(항등 렌더러라 히라가나로 나온다 —
-    ``pron_style._kana_run_renderer`` 참고)를 가타카나로 정규화한 것이다. **문절
-    띄어쓰기**를 그대로 쓴다 — romaji는 형태소(모라) 토큰 경계로 띄우지만(NEKURA에서
-    「~とは」의 は가 "wa"로 갈라짐) 여기는 위키 한글 표기와 같은 문절 경계로 띄운다.
-    표시 자체는 이 라인의 기본(비심판) 읽기다 — ``wiki_pronunciation``이 토큰 인자를
-    받지 않아서다. 심판이 바꾼 줄은 로마자·한글 표기와 문구 스타일이 다르므로 표시가
-    기본 읽기를 보여줄 수 있다는 뜻이지만(알려진 한계), 아래 **모라 시각은** 심판의
-    읽기를 그대로 따른다.
+    표시=세그 단일 소스(감사 2차 M4, romaji와 같은 방식) — 카타카나 모라 열 하나를
+    만들어 표시 문자열(공백 규칙까지 ``space_after``를 그대로 재사용)과 세그 둘 다에
+    쓴다. 예전에는 표시를 ``wiki_pronunciation(text, script="kana")``(문절 띄어쓰기)로
+    따로 만들었는데, 세그는 romaji와 같은 모라(토큰) 경계로 띄워 둘의 공백 위치가
+    달랐다(NEKURA: 표시는 「アルバイトワ」로 붙는데 세그는 「ワ」 앞에 공백 플래그가
+    있다) — 혼합 줄(한글이 섞인 줄)에서는 한 술 더 떠 ``wiki_pronunciation``이 한글
+    구간을 렌더 못 해 표시에서만 빠질 위험까지 있었다. 이제는 세그 재료(카타카나
+    모라 열)로 표시를 합성하므로 그 위험이 구조적으로 없다.
 
-    모라 시각은 romaji와 **같은 ``_ja_mora_segments`` 결과**를 쓴다 — 텍스트만 카타카나
-    모라로 바꿔 끼운다. 카타카나 모라 열은 ``referee_tokens``가 있으면 그 토큰 열로,
-    없으면 ``romaji_line``이 기본값일 때 쓰는 것과 **같은 phonetic=True 토큰화**로
-    ``text_to_moras``를 부른다 — ``text_to_moras(text)``의 무인자 기본값(phonetic=False)을
-    그냥 쓰면 は・を 같은 조사가 표기 그대로(하·워)로 남아 romaji가 읽는 소리(wa·o)와
-    짝이 어긋난다(실측: NEKURA의 は가 로마자로는 "wa"인데 무인자 모라는 literal "ハ"를
-    낸다 — 자모가 다른데 한 모라로 짝지어지는 사고). 그래서 기본값도 같은 phonetic
-    토큰화를 명시적으로 만들어 쓴다(``romaji_line``이 내부에서 하는 것과 동일).
+    카타카나 모라 열은 ``referee_tokens``가 있으면 그 토큰 열로, 없으면 ``romaji_line``이
+    기본값일 때 쓰는 것과 **같은 phonetic=True 토큰화**로 ``text_to_moras``를 부른다 —
+    ``text_to_moras(text)``의 무인자 기본값(phonetic=False)을 그냥 쓰면 は・を 같은
+    조사가 표기 그대로(하·워)로 남아 romaji가 읽는 소리(wa·o)와 짝이 어긋난다(실측:
+    NEKURA의 は가 로마자로는 "wa"인데 무인자 모라는 literal "ハ"를 낸다). 그래서
+    기본값도 같은 phonetic 토큰화를 명시적으로 만들어 쓴다(``romaji_line``이 내부에서
+    하는 것과 동일) — 한글이 섞인 줄의 모라(``reading.text_to_moras``의 M1 확장)도 이
+    호출 하나로 같이 나온다.
     """
-    try:
-        from everyric2.text.pron_style import wiki_pronunciation
-
-        kana_display = _hiragana_to_katakana(wiki_pronunciation(text, script="kana"))
-    except Exception:
-        logger.exception("kana display rendering failed")
-        return
-    if not kana_display:
-        return
-    seg["pron"]["kana"] = kana_display
-
     try:
         from everyric2.text.ja_reading import tokenize_reading
         from everyric2.text.reading import text_to_moras
@@ -625,8 +645,17 @@ def _attach_ja_kana_variant(
             _hiragana_to_katakana(m.kana) for m in text_to_moras(text, tokens=mora_tokens_source)
         ]
     except Exception:
-        logger.exception("kana mora tokens failed; keeping the display string only")
+        logger.exception("kana mora tokens failed")
         return
+    if not kana_tokens:
+        return
+
+    kana_display = "".join(
+        tok + (" " if sp else "") for tok, sp in zip(kana_tokens, space_after)
+    ).strip()
+    if not kana_display:
+        return
+    seg["pron"]["kana"] = kana_display
 
     segments = _ja_mora_segments(seg, text, kana_tokens, space_after, referee_tokens)
     if segments:
@@ -685,12 +714,18 @@ def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = N
     기존 ``pronunciation``/``pron_segments``(한글, ja 곡 전용)는 손대지 않는다 — 구버전
     확장은 그 필드만 읽으므로 새 표기는 **추가 필드로만** 올라간다(공유 계약).
 
-    곡 언어는 세그 원문 텍스트의 문자 구성으로 판정한다(문자 검사 순서가 우선순위다):
+    곡 언어는 세그 원문 텍스트의 **문자 수 우세**로 판정한다(감사 2차 M2 — 예전엔
+    "일본어 글자가 하나라도 있으면 ja"였는데, ko 곡의 혼합 줄(«사랑해 デス»처럼 일본어
+    낱말이 섞인 줄)이 한글이 더 많은데도 ja 분기로 새서 그 줄만 이웃 줄과 다른 표기
+    종류(kana/romaji 대신 hangul/romaji/kana)를 받았다. E4로 ja 분기가 자체 발음
+    생성을 갖췄으니 "새면 발음이 빈다"는 문제는 없어졌지만, 표기 종류 불일치는
+    우세 판정 없이는 안 없어진다):
 
-    1. 일본어 글자(가나·한자, ``_JA_CHAR_RE``)가 있으면 **ja 곡** — 기존 동작(hangul+
-       romaji, ``pronunciation`` 필드 필요)을 그대로 쓴다.
-    2. 없고 한글(``_HANGUL_CHAR_RE``)이 있으면 **ko 곡** — 가타카나+RR 로마자를 그
-       자리에서 결정론 생성한다(``pronunciation`` 필드 불필요 — 원문 자체가 독음이다).
+    1. 일본어 글자(가나·한자, ``_JA_CHAR_RE``) 수가 한글(``_HANGUL_CHAR_RE``) 수
+       이상이면 **ja 곡** — hangul(없으면 자체 생성)+romaji+kana.
+    2. 그렇지 않고 한글이 있으면(즉 한글 수 > 일본어 수) **ko 곡** — 가타카나+RR
+       로마자를 그 자리에서 결정론 생성한다(``pronunciation`` 필드 불필요 — 원문
+       자체가 독음이다).
     3. 둘 다 없고 라틴 알파벳(``_LATIN_CHAR_RE``)이 있으면 **라틴 곡** — 일본어권
        사용자용 가나 근사만 표시로 붙인다.
     4. 셋 다 없으면(숫자·기호뿐인 줄 등) 아무것도 붙이지 않는다.
@@ -704,9 +739,11 @@ def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = N
     if not text:
         return
 
-    if _JA_CHAR_RE.search(text):
+    ja_n = len(_JA_CHAR_RE.findall(text))
+    ko_n = len(_HANGUL_CHAR_RE.findall(text))
+    if ja_n and ja_n >= ko_n:
         _attach_ja_pron_variants(seg, text, referee_tokens=referee_tokens)
-    elif _HANGUL_CHAR_RE.search(text):
+    elif ko_n:
         _attach_ko_pron_variants(seg, text)
     elif _LATIN_CHAR_RE.search(text):
         _attach_latin_pron_variants(seg, text)
@@ -4139,6 +4176,9 @@ def _run_alignment(
             )
 
         timestamps = []
+        # attach_pron_variants 호출은 이 루프 밖(gloss 되붙이기 뒤)으로 미룬다 — referee_tokens만
+        # 여기서 인덱스 순서대로 챙겨 둔다(아래 이유 참고).
+        pron_referee_tokens: list[Any] = []
         for i, r in enumerate(results):
             seg = {
                 "text": r.text,
@@ -4201,9 +4241,13 @@ def _run_alignment(
                 debug["referee"] = pd["referee"]
             if debug:
                 seg["debug"] = debug
-            # 세그 완성 직후(독음·글자 스팬·심판 debug가 모두 자리를 잡은 뒤): 표기별 발음을
-            # 얹는다. debug["referee"]가 이미 실려 있어야 attach가 심판 개입 라인을 알아본다.
-            attach_pron_variants(seg, referee_tokens=pd.get("tokens"))
+            # attach_pron_variants는 여기서 바로 부르지 않는다 — E4(자체 한글 독음 생성,
+            # 감사 2차)가 ``pronunciation``이 비어 있으면 즉시 채우는데, 병기 시트 줄(gloss)의
+            # pronunciation은 이 루프가 다 끝난 뒤 ``_fold_gloss_into_segments``가 되붙인다.
+            # 여기서 먼저 부르면 E4가 그 자리를 선점해 자체 생성값이 들어가고, 뒤이은 fold의
+            # "이미 값이 있으면 안 덮는다" 가드에 걸려 사용자가 붙여넣은 진짜 발음이 영영
+            # 안 붙는다. referee_tokens만 순서대로 챙겨 뒀다가 fold 이후에 일괄 호출한다.
+            pron_referee_tokens.append(pd.get("tokens"))
             timestamps.append(seg)
 
         # 정렬 입력에서 뺀 병기 줄을 표시용으로 되붙인다 — 사용자가 붙여넣은 줄이 화면에서
@@ -4214,6 +4258,12 @@ def _run_alignment(
                 f"Re-attached {attached} excluded gloss line(s) to their source segment "
                 f"for display (alignment input untouched)"
             )
+
+        # 세그 완성 + gloss 되붙이기까지 끝난 뒤: 표기별 발음을 얹는다(위 루프에서 미룬 이유
+        # 참고). debug["referee"]는 이미 각 세그에 실려 있어 attach가 심판 개입 라인을
+        # 알아본다 — 순서 의존은 그 필드뿐이라 여기로 옮겨도 무관하다.
+        for seg, referee_tokens in zip(timestamps, pron_referee_tokens):
+            attach_pron_variants(seg, referee_tokens=referee_tokens)
 
         # 앞뒤에 섞여 들어온 비가창 줄(크레딧·출처·URL) 제거 — 발성 근거와 텍스트 근거가
         # 함께 성립할 때만 버린다. 자세한 판정 근거는 _drop_nonvocal_nonlyric_edges 참고.
