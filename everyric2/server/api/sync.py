@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from everyric2.config.settings import get_settings
-from everyric2.server import media_cache, title_match
+from everyric2.server import media_cache, song_link, title_match
 
 # 리스 회수는 워커 API가 소유한다 (레지스트리가 거기 있다). api/worker는 api/sync를
 # 임포트하지 않으므로 순환이 없다 — 요청마다 함수 내 임포트를 반복하지 않게 최상위로 둔다.
@@ -1258,6 +1258,16 @@ async def find_link_candidates(
         if await SyncLinkRepository(session).get(video_id):
             return LinkCandidatesResponse(video_id=video_id, status="linked")
 
+        # (b0) 무다운로드 0순위 — 플랫폼 관계 조회(songlink/1): 코퍼스 메타데이터에서
+        # 파생된 커버↔원곡 관계, 조달 비용 0. 자동 파생이라(정답지 대비 74.5%) 후보일
+        # 뿐이고, 원곡에 싱크가 있어야만 세운다(빌릴 것이 없으면 링크가 무의미하다).
+        relation = await asyncio.to_thread(song_link.lookup_original, video_id)
+        relation_hit = None
+        if relation:
+            rel_rows = await sync_repo.get_by_video(relation["original"]["id"])
+            if rel_rows:
+                relation_hit = rel_rows[0]
+
         # (b) 무다운로드 1순위 — 가사 지문: 같은 lyrics_hash의 싱크를 가진 다른 영상이
         # 있으면 제목 유사도와 무관하게 최상위 후보다. 지문은 직전 GET /api/sync가 서버
         # 메모리에 남긴 것을 이어받는다(확장 동결 — 요청 모양 불변). 판정이 아니라 후보다:
@@ -1286,16 +1296,21 @@ async def find_link_candidates(
             )
             for vid, score in ranked
         ]
-        if fingerprint_hit is not None:
-            candidates = [
+        def _prepend(cands: list[LinkCandidate], row, score: float) -> list[LinkCandidate]:
+            return [
                 LinkCandidate(
-                    video_id=fingerprint_hit.video_id,
-                    title=fingerprint_hit.title,
-                    artist=fingerprint_hit.artist,
-                    score=1.0,
+                    video_id=row.video_id, title=row.title, artist=row.artist, score=score
                 ),
-                *[c for c in candidates if c.video_id != fingerprint_hit.video_id],
+                *[c for c in cands if c.video_id != row.video_id],
             ][:5]
+
+        # 우선순위: 지문(가사 문자열 일치 — 가장 강함) > 관계(자동 파생) > 제목 유사도.
+        # 관계를 먼저 얹고 지문을 마지막에 얹어 지문이 맨 앞에 선다.
+        if relation_hit is not None:
+            conf = max(0.0, min(1.0, float(relation.get("confidence") or 0.0)))
+            candidates = _prepend(candidates, relation_hit, conf)
+        if fingerprint_hit is not None:
+            candidates = _prepend(candidates, fingerprint_hit, 1.0)
         if not candidates:
             return LinkCandidatesResponse(video_id=video_id, status="none")
         if not server.auto_link_candidates:

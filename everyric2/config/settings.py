@@ -1086,6 +1086,17 @@ class ServerSettings(BaseSettings):
         default="",
         description="외부 미디어 캐시 인증 키 — 조회 요청에 Authorization: Bearer <key>로 실린다.",
     )
+    song_link_url: str = Field(
+        default="",
+        description="외부 곡 관계 조회(songlink/1)의 베이스 URL. 설정하면 링크 후보 탐색이 "
+        "GET {url}/lookup?platform=youtube&id=<video_id>로 커버↔원곡 관계를 다운로드 0으로 "
+        "조회한다. 응답은 판정이 아니라 후보다(자동 파생, 정답지 대비 74.5%) — 링크 확정은 "
+        "캐시 쌍 게이트 + 반주 상관이 그대로 담당한다. 빈 값이면 조회하지 않는다.",
+    )
+    song_link_key: str = Field(
+        default="",
+        description="곡 관계 조회 인증 키 — Authorization: Bearer <key>로 실린다.",
+    )
     link_match_threshold: float = Field(
         default=0.55,
         description="반주 상관 링크 검증(link-jobs)에서 match로 판정하는 confidence(정규화 "

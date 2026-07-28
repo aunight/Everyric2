@@ -639,6 +639,59 @@ def test_fingerprint_recall_expires_after_ttl():
     asyncio.run(body())
 
 
+def test_relation_candidate_requires_an_existing_sync(monkeypatch):
+    """①(songlink/1) — 관계가 가리키는 원곡에 싱크가 있어야만 후보다(빌릴 것이 없으면
+    링크가 무의미). 관계는 판정이 아니라 후보라 score는 응답 confidence를 그대로 쓴다."""
+
+    async def body():
+        async with _env(auto_link_candidates=False) as sm:
+            from everyric2.server.api import sync as sync_api
+
+            monkeypatch.setattr(
+                sync_api.song_link,
+                "lookup_original",
+                lambda _vid: {
+                    "found": True,
+                    "original": {"platform": "youtube", "id": SOURCE},
+                    "confidence": 0.74,
+                },
+            )
+            resp = await find_link_candidates(COVER, title="무관한 제목")
+            assert resp.candidates == []  # 원곡 싱크 없음 → 후보 아님
+            await _seed_sync(sm, SOURCE, title="아무 표기")
+            resp2 = await find_link_candidates(COVER, title="무관한 제목")
+            assert resp2.candidates[0].video_id == SOURCE
+            assert resp2.candidates[0].score == 0.74
+
+    asyncio.run(body())
+
+
+def test_fingerprint_outranks_relation_candidate(monkeypatch):
+    """우선순위 — 가사 지문(문자열 일치)이 자동 파생 관계보다 앞선다."""
+
+    async def body():
+        async with _env(auto_link_candidates=False) as sm:
+            from everyric2.server.api import sync as sync_api
+
+            await _seed_sync(sm, SOURCE, title=None, lyrics_hash="FPHASH")
+            await _seed_sync(sm, OTHER, title=None, lyrics_hash="unrelated")
+            monkeypatch.setattr(
+                sync_api.song_link,
+                "lookup_original",
+                lambda _vid: {
+                    "found": True,
+                    "original": {"platform": "youtube", "id": OTHER},
+                    "confidence": 1.0,
+                },
+            )
+            with contextlib.suppress(HTTPException):
+                await get_sync(COVER, lyrics_hash="FPHASH")
+            resp = await find_link_candidates(COVER, title="무관한 제목")
+            assert [c.video_id for c in resp.candidates][:2] == [SOURCE, OTHER]
+
+    asyncio.run(body())
+
+
 def test_cache_gate_blocks_submission_without_cached_pair(monkeypatch):
     """④ 캐시 쌍 게이트 — 한쪽이라도 미디어 캐시에 없으면 잡을 만들지 않는다(후보만 반환).
     실측: 실사용자 영상 캐시 적중 11% — 이 게이트가 자동 제출의 89%가 다운로드로 이어지던
