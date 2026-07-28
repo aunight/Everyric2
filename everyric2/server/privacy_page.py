@@ -222,7 +222,7 @@ API 키를 포함한 설정값은 <strong>암호화되지 않은 평문으로</s
 <h2>8. 문의</h2>
 <p>
 이 확장의 소스 코드는 공개되어 있으며, 문의·삭제 요청·저작권 관련 연락은
-<a href="https://github.com/onpe5679/Everyric2/issues">GitHub 이슈</a>로 받습니다.
+<a href="mailto:perion5679@naver.com">perion5679@naver.com</a>으로 받습니다.
 </p>
 
 <hr class="lang">
@@ -390,8 +390,8 @@ audio.
 <h2>8. Contact</h2>
 <p>
 The source code for this extension is public. For questions, deletion requests, or copyright
-matters, please open a
-<a href="https://github.com/onpe5679/Everyric2/issues">GitHub issue</a>.
+matters, please contact
+<a href="mailto:perion5679@naver.com">perion5679@naver.com</a>.
 </p>
 
 </body>
