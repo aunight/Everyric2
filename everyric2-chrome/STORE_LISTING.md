@@ -46,9 +46,10 @@ Display time-synced lyrics for any song on YouTube. Karaoke-style lyric highligh
 
 아래는 모두 "가사를 시간에 맞춰 보여준다"는 한 가지 목적을 돕는 표시 방식입니다.
 
-· 발음 표기 — 일본어 가사의 한글 독음을 원문 밑에 함께 보여줍니다. 한자를 못 읽어도
-  따라 부를 수 있습니다
-· 번역 — 가사의 뜻을 함께 보여줍니다(한국어·영어·일본어·중국어). 기본 꺼짐
+· 발음 표기 — 원문에 맞춰 한글 독음·로마자·가나 표기를 자동으로 골라 원문 밑에
+  보여줍니다. 한자를 못 읽어도 따라 부를 수 있습니다
+· 번역 — 가사의 뜻을 함께 보여줍니다(한국어·영어·일본어·중국어). 기본 꺼짐이며,
+  제목바의 언어 칩으로 준비된 언어를 바로 전환할 수 있습니다
 · 별도 창(PiP) — 가사만 담은 작은 창을 띄워, 다른 탭을 보면서도 가사를 계속 볼 수 있습니다
 · 음정 표시 — 곡의 멜로디를 가사 옆에 그려 어느 높이로 부르는지 보여줍니다
 · 마이크 음정 — 자기 목소리의 높이를 곡의 멜로디와 나란히 볼 수 있습니다.
@@ -94,9 +95,11 @@ music — the line you are on fills in syllable by syllable so you can sing alon
 Everything below exists to help you follow the lyrics in time — that is the one purpose of
 this extension.
 
-· Pronunciation — shows a Korean reading beneath Japanese lyrics, so you can sing along
-  without reading kanji
-· Translation — shows what the lyrics mean (Korean, English, Japanese, Chinese). Off by default
+· Pronunciation — shows a reading beneath the lyrics, automatically choosing between
+  Hangul, romaji, and kana to match the original text, so you can sing along without
+  reading kanji
+· Translation — shows what the lyrics mean (Korean, English, Japanese, Chinese). Off by
+  default; language chips in the title bar switch between available languages instantly
 · Separate window (Picture-in-Picture) — a small lyrics-only window so you can keep reading the
   lyrics while looking at another tab
 · Pitch lane — draws the song's melody next to the lyrics so you can see how high each line goes
@@ -169,6 +172,11 @@ https://github.com/onpe5679/Everyric2
 - [x] `https://everyric.moref.co/privacy`가 외부에서 인증 없이 **200** (실측 2026-07-26)
 - [x] **심사자 자격증명 준비 — 필요 없음이 확정됐다.** 키 없이 전 기능이 동작한다
       (`STORE_REVIEW_NOTES.md`의 실측표). 대시보드 테스트 계정 칸은 비워 둔다
+- [x] `/privacy`의 IP 유래 제한 항목 **서버 배포 + 외부 재확인** (2026-07-28 실측:
+      브라우저 UA·UA 없음 모두 200, 본문에 솔트 해시 항목 포함)
+- [x] 다국어(1.5.x) 반영 — 상세 설명의 발음 표기(한글/로마자/가나 자동)·언어 칩 문구
+      갱신, `STORE_REVIEW_NOTES.md`에 miraheze 권한·`storage`/`notifications` 정당화
+      추가 (2026-07-28)
 
 남은 것:
 
@@ -186,5 +194,5 @@ https://github.com/onpe5679/Everyric2
       **파일 자체는 심사자가 보지 않는다**
 - [ ] Privacy practices 탭의 실제 문구를 열어 위 표의 카테고리명과 대조 (특히
       `Web browsing activity`의 "예" 판단과 `Authentication information`의 "아니오" 판단)
-- [ ] `/privacy`에 새로 넣은 IP 유래 제한 항목을 **서버에 배포**한 뒤 외부에서 다시 확인
-      (커밋 `ad709bb`에 있고 아직 배포 전이다)
+- [ ] (선택) 스크린샷 5장이 다국어 UI(언어 칩·로마자/가나 발음) 이전 화면이다 — 규격은
+      유효하므로 그대로 제출 가능하지만, 갱신하면 리스팅과 화면이 일치한다

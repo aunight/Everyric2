@@ -128,6 +128,49 @@ that module, no runtime network call).
 
 ---
 
+## `https://vocaloidlyrics.miraheze.org/*`
+
+**한국어**: 영어권 사용자를 위한 보컬로이드 가사 폴백 소스입니다(1.5.0에서 추가).
+`vocaro.wikidot.com`이 한국어 번역을 제공하는 것과 대칭으로, 이 위키(Vocaloid Lyrics
+Wiki, CC BY-SA 4.0)에서 원문·로마자 발음·영어 번역을 가져옵니다. 사용자의 번역 언어가
+영어면 이쪽을 먼저, 한국어면 vocaro를 먼저 조회합니다. 호출은 MediaWiki API
+(`/w/api.php`)와 문서 페이지 조회이며, **background service worker에서만** 발생합니다
+(`src/lib/miraheze.ts` — content script는 background 메시징을 거칩니다). 출처는 확장
+화면 푸터에 위키 이름과 원문 링크로 항상 표시합니다.
+
+**English**: A fallback lyrics source for Vocaloid songs aimed at English-speaking
+users (added in 1.5.0), symmetric to `vocaro.wikidot.com` which serves Korean
+translations. From this wiki (Vocaloid Lyrics Wiki, CC BY-SA 4.0) the extension fetches
+the original text, romaji pronunciation, and English translations. If the user's
+translation language is English this wiki is queried first; for Korean, vocaro comes
+first. Calls go to the MediaWiki API (`/w/api.php`) and article pages, and are made
+**only from the background service worker** (`src/lib/miraheze.ts`; the content script
+goes through background messaging). Attribution — the wiki's name and a link to the
+source page — is always shown in the extension's footer.
+
+---
+
+## API 권한: `storage`, `notifications`
+
+**한국어**:
+- `storage` — 설정(서버 URL·표시 언어·발음 표기 여부 등)과 패널 위치, 진행 중인 생성
+  작업 목록, 위키 조회 캐시를 `chrome.storage.local`에 저장합니다. 외부로 전송하지
+  않습니다.
+- `notifications` — 싱크 **생성**은 곡당 수십 초가 걸리므로, 완료 시 OS 알림 하나를
+  띄워 다른 탭·창에 있어도 알 수 있게 합니다(`background.ts`의 NOTIFY 처리, 같은 잡은
+  같은 id로 갱신되어 중복 알림이 없습니다). 생성을 요청한 경우에만 발생합니다.
+
+**English**:
+- `storage` — persists settings (server URL, display language, pronunciation toggle,
+  …), panel position, the list of in-flight generation jobs, and a wiki lookup cache in
+  `chrome.storage.local`. Nothing is transmitted.
+- `notifications` — sync **generation** takes tens of seconds per song, so one OS
+  notification is shown on completion so the user notices even from another tab or
+  window (NOTIFY handler in `background.ts`; the same job updates the same notification
+  id, so there are no duplicates). Only fires for generations the user requested.
+
+---
+
 ## `http://localhost:8000/*`, `http://127.0.0.1:8000/*` — **optional_host_permissions**
 
 **이 둘은 설치 시 부여되지 않습니다.** `optional_host_permissions`에 선언되어 있고,
