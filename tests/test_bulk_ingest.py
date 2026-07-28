@@ -1132,3 +1132,31 @@ def test_summary_counts_by_reason():
     assert summary["failed"] == {"job_timeout": 1}
     assert summary["aborted"] is None
     assert len(summary["songs"]) == 5
+
+
+def test_process_song_rejects_wiki_lyrics_when_parser_fallback_yields_tri_line_mix(tmp_path):
+    """행수가 어긋난 가사 표(3의 배수도 2의 배수도 아님)는 파서가 «전부 원문»으로
+    살린다 — 원문·독음·번역 3줄이 통째로 가사가 되는 실사고(2026-07-28,
+    DAr03V5IIeQ 149줄)의 재현. 혼합 스크립트 검사가 인제스트 직전에 걸러야 한다."""
+    rows = [
+        "ショーケース", "쇼케스", "쇼케이스",
+        "固定された姿のままで", "코테이사레타 스가타노 마마데", "고정된 모습 그대로",
+        "ガラスの向こう", "가라스노 무코오", "유리 너머",
+        "追加のはぐれ行",  # 11행 — 3의 배수도 2의 배수도 아니게 만드는 잉여 행
+        "하나 더 남은 한글 행",
+    ]
+    html = (
+        '<table class="wiki-content-table">'
+        + "".join(f"<tr><td>{r}</td></tr>" for r in rows)
+        + "</table>"
+    )
+    rt = _runtime(tmp_path, vocaro_fetcher=_TextFetcher(html))
+    info = _info({})  # 자막 없음 — 위키 원문 폴백 강제
+
+    with _captions(info, {}):
+        rec = bi.process_song(_SONG, rt)
+
+    assert rec.status == "skipped"
+    assert rec.reason == "mixed_script_lyrics"
+    assert rec.evidence["lyrics_foreign_ratio"] > bi.MAX_FOREIGN_SCRIPT_RATIO
+    assert rt.api.generated == []

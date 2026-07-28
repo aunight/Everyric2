@@ -901,6 +901,18 @@ def process_song(song: Song, rt: Runtime) -> SongRecord:
         return rec
     rec.evidence["lyrics_lines"] = len(lyrics_lines)
 
+    # 가사 소스와 무관한 혼합 스크립트 최종 검사 — 자막 경로는 트랙 단위로 이미 거르지만,
+    # **위키 폴백**은 행수가 어긋난 가사 표를 파서가 «전부 원문»으로 살리는 방어적 폴백
+    # (sources/vocaro.py parse_song_page) 탓에 원문·독음·번역 3줄이 통째로 가사가 될 수
+    # 있다 — 실사고 2026-07-28: DAr03V5IIeQ(149줄)·ACuO7MoDdgc(52줄), 야간 544곡 중 2곡.
+    # 그 표시는 확장에서 유효한 폴백이지만(없는 것보다 낫다) 인제스트 입력으로는 오염이다.
+    counts = yc.caption_script_counts(lyrics_lines)
+    ratio = foreign_script_ratio(expected_lang, counts)
+    if ratio > MAX_FOREIGN_SCRIPT_RATIO:
+        rec.reason = "mixed_script_lyrics"
+        rec.evidence["lyrics_foreign_ratio"] = round(ratio, 3)
+        return rec
+
     if rt.dry_run:
         rec.reason = "dry_run"
         return rec
