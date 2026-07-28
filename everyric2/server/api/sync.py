@@ -1423,7 +1423,7 @@ async def save_translation_layer(video_id: str, request: SaveTranslationLayerReq
                 saved=False, matched=matched, total=total, target_lang=request.target_lang
             )
 
-        await repo.upsert_layer(
+        saved_layer = await repo.upsert_layer(
             video_id,
             fingerprint,
             request.target_lang,
@@ -1436,8 +1436,9 @@ async def save_translation_layer(video_id: str, request: SaveTranslationLayerReq
             attribution=request.attribution.model_dump() if request.attribution else None,
             origin=request.origin,
         )
+        # None = 라벨-내용 언어 불일치로 거부됨(repository 가드) — 저장한 척하지 않는다
         return SaveTranslationLayerResponse(
-            saved=True, matched=matched, total=total, target_lang=request.target_lang
+            saved=saved_layer is not None, matched=matched, total=total, target_lang=request.target_lang
         )
 
 

@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,6 +19,33 @@ from everyric2.server.db.models import (
 
 def hash_lyrics(lyrics: str) -> str:
     return hashlib.sha256(lyrics.strip().encode()).hexdigest()[:16]
+
+
+_layer_logger = logging.getLogger(__name__)
+
+
+def layer_content_lang_mismatch(target_lang: str, lines: list[dict[str, Any]]) -> bool:
+    """레이어 라벨과 번역 본문의 언어가 명백히 어긋나는가 — 오염 저장을 막는 판정.
+
+    실제 사고(2026-07-28, OHcNQHbWrFY): ``lineMetaLang``이 빠진 생성 요청이 서버 기본값
+    ko로 폴백해 **영어 번역이 (ko, manual) 레이어로 저장**됐고, 크로스 지문 이관이 사람
+    origin이라 신뢰해 새 지문까지 복사했다 — ko 사용자 화면에 영어가 떴다.
+
+    문턱은 보수적이다: 본문이 짧으면(판정 근거 부족) 통과, 외래어·고유명사가 섞인 정상
+    번역도 통과 — ko 라벨인데 한글이 사실상 없거나(5% 미만), en·ja 라벨인데 한글이
+    과반인 명백한 오염만 막는다. (en 본문이 ja로 라벨되는 류는 이 사고 경로에서 나올 수
+    없어 — 폴백 기본값이 ko 하나다 — 범위 밖으로 둔다.)
+    """
+    text = " ".join((line.get("translation") or "") for line in lines)
+    visible = sum(1 for ch in text if not ch.isspace())
+    if visible < 20:
+        return False
+    hangul_ratio = sum(1 for ch in text if "가" <= ch <= "힣") / visible
+    if target_lang == "ko":
+        return hangul_ratio < 0.05
+    if target_lang in ("en", "ja"):
+        return hangul_ratio > 0.5
+    return False
 
 
 class SyncRepository:
@@ -451,7 +479,18 @@ class TranslationLayerRepository:
         lines: list[dict[str, Any]],
         attribution: dict[str, Any] | None,
         origin: str,
-    ) -> TranslationLayer:
+    ) -> TranslationLayer | None:
+        # 모든 레이어 쓰기(생성·지연 첨부·POST·LLM persist·이관 재기록)가 이 한 곳을
+        # 지난다 — 라벨-내용 언어 불일치는 여기서 일괄 거부한다(None 반환, 로그).
+        if layer_content_lang_mismatch(target_lang, lines):
+            _layer_logger.warning(
+                "translation layer refused: content language mismatches target %s "
+                "(video %s, origin %s) — mislabeled line_meta?",
+                target_lang,
+                video_id,
+                origin,
+            )
+            return None
         existing = await self.get_layer(video_id, fingerprint, target_lang)
         if existing:
             existing.lines = lines
