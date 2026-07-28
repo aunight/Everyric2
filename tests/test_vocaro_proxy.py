@@ -68,16 +68,20 @@ def test_match_upstream_not_found_passthrough(monkeypatch):
     assert resp.slug is None
 
 
-def test_match_upstream_error_returns_upstream_error(monkeypatch):
+def test_match_upstream_error_falls_back_to_local(monkeypatch):
+    """업스트림 오류·미발견은 확정이 아니다 — 로컬 인덱스로 폴백한다(계약 변경 2026-07-29,
+    «ホロウ» 무력화 실사고). 로컬도 미발견이면 status 없는 조용한 found=false다."""
     _set_url("http://idx.test")
 
     def boom(path, params=None):
         raise RuntimeError("timeout")
 
     monkeypatch.setattr(vocaro_api, "_upstream_get", boom)
+    monkeypatch.setattr(vocaro_api, "match", lambda title: None)
+    monkeypatch.setattr(vocaro_api, "index_status", lambda: {"total": 6550})
     resp = asyncio.run(match_title(BackgroundTasks(), title="x"))
     assert resp.found is False
-    assert resp.status == "upstream_error"
+    assert resp.status is None
 
 
 def test_reindex_upstream_mode_no_build_kick(monkeypatch):
