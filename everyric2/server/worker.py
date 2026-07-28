@@ -611,7 +611,9 @@ def _attach_ja_pron_variants(
     _attach_ja_kana_variant(seg, text, space_after, referee_tokens)
 
     pron_segs = seg.get("pron_segs") or {}
-    if "hangul" not in pron_segs:
+    # legacy pron_segments(독음 정렬의 실측 hangul 스팬)가 있으면 파생하지 않는다 —
+    # 확장은 pron_segs.hangul을 legacy보다 우선하므로, 파생본이 실측을 가리게 된다
+    if "hangul" not in pron_segs and not seg.get("pron_segments"):
         hangul_segments = _ja_hangul_segments_from_kana(seg)
         if hangul_segments:
             seg.setdefault("pron_segs", {})["hangul"] = hangul_segments

@@ -582,3 +582,13 @@ def test_ja_hangul_segments_bail_on_mora_mismatch():
     attach_pron_variants(seg)
 
     assert "hangul" not in (seg.get("pron_segs") or {})
+
+
+def test_ja_hangul_segments_not_derived_over_alignment_output():
+    # 독음 정렬의 실측 스팬(legacy pron_segments)이 있으면 파생하지 않는다 —
+    # 확장 표시 우선순위상 파생본이 실측을 가리기 때문
+    seg = _seg(NEKURA, NEKURA_HANGUL)
+    seg["pron_segments"] = [{"text": "아", "start": 0.0, "end": 0.5}]
+    attach_pron_variants(seg)
+
+    assert "hangul" not in (seg.get("pron_segs") or {})
