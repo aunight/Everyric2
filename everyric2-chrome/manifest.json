@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "default_locale": "ko",
   "name": "Everyric - Synced Lyrics",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "minimum_chrome_version": "103",
   "description": "Display time-synced lyrics for any song on YouTube. Karaoke-style lyric highlighting with community-powered lyrics timing.",
 
@@ -10,8 +10,7 @@
 
   "host_permissions": [
     "https://everyric.moref.co/*",
-    "http://vocaro.wikidot.com/*",
-    "https://vocaloidlyrics.miraheze.org/*"
+    "http://vocaro.wikidot.com/*"
   ],
 
   "optional_host_permissions": [

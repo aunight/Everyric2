@@ -128,28 +128,6 @@ that module, no runtime network call).
 
 ---
 
-## `https://vocaloidlyrics.miraheze.org/*`
-
-**한국어**: 영어권 사용자를 위한 보컬로이드 가사 폴백 소스입니다(1.5.0에서 추가).
-`vocaro.wikidot.com`이 한국어 번역을 제공하는 것과 대칭으로, 이 위키(Vocaloid Lyrics
-Wiki, CC BY-SA 4.0)에서 원문·로마자 발음·영어 번역을 가져옵니다. 사용자의 번역 언어가
-영어면 이쪽을 먼저, 한국어면 vocaro를 먼저 조회합니다. 호출은 MediaWiki API
-(`/w/api.php`)와 문서 페이지 조회이며, **background service worker에서만** 발생합니다
-(`src/lib/miraheze.ts` — content script는 background 메시징을 거칩니다). 출처는 확장
-화면 푸터에 위키 이름과 원문 링크로 항상 표시합니다.
-
-**English**: A fallback lyrics source for Vocaloid songs aimed at English-speaking
-users (added in 1.5.0), symmetric to `vocaro.wikidot.com` which serves Korean
-translations. From this wiki (Vocaloid Lyrics Wiki, CC BY-SA 4.0) the extension fetches
-the original text, romaji pronunciation, and English translations. If the user's
-translation language is English this wiki is queried first; for Korean, vocaro comes
-first. Calls go to the MediaWiki API (`/w/api.php`) and article pages, and are made
-**only from the background service worker** (`src/lib/miraheze.ts`; the content script
-goes through background messaging). Attribution — the wiki's name and a link to the
-source page — is always shown in the extension's footer.
-
----
-
 ## API 권한: `storage`, `notifications`
 
 **한국어**:
@@ -217,8 +195,13 @@ actually needed is requested** — the extension never asks for both at once.
 
 ## 확인/실측 방법 요약 (참고용)
 
-- `lrclib.net`(가사 DB), `api.everyric.com`(구버전 서버 주소, 현재 미사용)은 위
-  목록에서 **제외**했습니다.
+- `lrclib.net`(가사 DB), `vocaloidlyrics.miraheze.org`(영어권 가사 위키),
+  `api.everyric.com`(구버전 서버 주소, 현재 미사용)은 위 목록에서 **제외**했습니다.
+  - `vocaloidlyrics.miraheze.org`: 1.5.0~1.5.3에서는 host 권한으로 선언했으나,
+    MediaWiki API의 익명 CORS(`origin=*` 파라미터, 실측 2026-07-28:
+    `access-control-allow-origin: *`)로 권한 없이 응답을 읽을 수 있음을 확인하고
+    1.5.4에서 제거했습니다. 확장 코드는 이미 모든 호출에 `origin=*`를 싣고 있어
+    기능 변화가 없습니다(`src/lib/miraheze.ts`).
   - `lrclib.net`: 실제 사용 엔드포인트(`GET /api/search`)에 `Origin: chrome-extension://…`
     헤더로 요청 및 preflight(OPTIONS)를 보내 확인한 결과
     `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Headers`에 확장이 보내는
