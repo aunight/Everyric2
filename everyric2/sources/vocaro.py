@@ -130,6 +130,38 @@ def fetch_song(slug: str, fetcher: WikiFetcher | None = None) -> VocaroSong | No
     return VocaroSong(slug=slug, page_url=url, page_title=title or slug, lines=lines)
 
 
+# ── 수록곡 일람 (allsongs-*) ──────────────────────────────────────
+
+# 확장 vocaro.ts parseIndexEntries와 같은 규칙: <li><a href="/slug">제목</a></li> 쌍만.
+# href의 '#'(페이지 내 앵커)·':'(위키 시스템 페이지)은 곡 페이지가 아니므로 제외한다.
+_INDEX_ENTRY_RE = re.compile(r'<li>\s*<a\s+href="/([^"#:]+)"[^>]*>([^<]+)</a>\s*</li>')
+
+
+def parse_index_entries(page_html: str) -> list[tuple[str, str]]:
+    """수록곡 일람 페이지 HTML → (slug, 제목) 쌍 목록.
+
+    제목의 HTML 엔티티(&amp; 등)는 풀어 준다 — 사용자 검색어(실제 '&')와 대조되는
+    값이므로 원문 엔티티를 남기면 그 제목은 영영 매칭되지 않는다.
+    """
+    import html as _html
+
+    return [
+        (m.group(1), _html.unescape(m.group(2)).strip())
+        for m in _INDEX_ENTRY_RE.finditer(page_html)
+        if m.group(2).strip()
+        # 다른 일람·시스템·가이드 페이지로의 내비게이션 링크는 곡이 아니다 (vocaro.ts와 동일)
+        and not m.group(1).startswith(("allsongs", "system", "guide"))
+    ]
+
+
+def fetch_index_entries(page: str, fetcher: WikiFetcher | None = None) -> list[tuple[str, str]] | None:
+    """일람 페이지를 받아 파싱. 요청 실패는 None — 빈 목록(항목 없음)과 구분한다."""
+    page_html = (fetcher or _fetcher()).get_text(f"{BASE_URL}/{page}")
+    if page_html is None:
+        return None
+    return parse_index_entries(page_html)
+
+
 def fetch_song_page(slug: str, fetcher: WikiFetcher | None = None) -> list[SourceLine]:
     """가사 줄만 필요할 때. 못 받으면 빈 목록 — 출처 표기가 필요하면 :func:`fetch_song`."""
     song = fetch_song(slug, fetcher)

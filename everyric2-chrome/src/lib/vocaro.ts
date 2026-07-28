@@ -1,15 +1,18 @@
-// 보카로 가사 위키 (vocaro.wikidot.com) 클라이언트.
-// - 사이트가 HTTPS를 지원하지 않고 https → http로 301 리다이렉트하므로 평문 http로 접근한다
-//   (manifest host_permissions에 http://vocaro.wikidot.com/* 필요).
-// - service worker에는 DOMParser가 없어 파싱은 정규식으로 처리한다. 위키 전체가
-//   고정 템플릿(가사 표 = 원문/발음/번역 3행 1세트)이라 실용적으로 안전하다.
+// 보카로 가사 위키 (vocaro.wikidot.com) 클라이언트 — **서버 프록시 경유** (1.5.5+).
+//
+// 1.5.4까지는 이 파일이 위키를 직접 fetch했고 그래서 manifest에
+// http://vocaro.wikidot.com/* host 권한이 필요했다(위키가 CORS 헤더를 안 보낸다 —
+// 실측 2026-07-28, access-control-* 전무). 스토어 심사 부담을 줄이려고(사용자 결정)
+// 위키 조회를 서버(/api/vocaro/page·/index)로 옮기고 권한을 제거했다. 파싱도 서버가
+// 한다(everyric2/sources/vocaro.py — 이 파일의 구 파서를 포팅한 것이라 줄 나눔이 같다).
+// 이 엔드포인트가 없는 구버전 자체 호스팅 서버에서는 vocaro 폴백만 조용히 꺼진다.
+//
 // - 라이선스: 위키 편집 콘텐츠는 CC BY 4.0(출처 표기 필요), 인용된 원문 가사의
 //   저작권은 원저작자에게 있음 — UI에서 출처 페이지 링크를 항상 노출한다.
 
 import type { SourceResult } from './sources';
+import { vocaroIndex, vocaroPage, type ServerConfig } from './everyric-api';
 
-const BASE = 'http://vocaro.wikidot.com';
-const FETCH_TIMEOUT_MS = 4000;
 const INDEX_TTL_MS = 24 * 60 * 60 * 1000;
 const LICENSE = 'CC BY 4.0'; // 위키 편집 콘텐츠 라이선스 — 파일 상단 주석 참고
 
@@ -53,23 +56,23 @@ interface IndexEntry {
 }
 
 /** 제목으로 곡 페이지를 찾아 가사(원문+발음+번역)를 반환. 못 찾으면 null */
-export async function vocaroLookup(title: string): Promise<VocaroResult | null> {
+export async function vocaroLookup(server: ServerConfig, title: string): Promise<VocaroResult | null> {
   const trimmed = title.trim();
   if (!trimmed) return null;
 
   // 1) ASCII 위주 제목이면 슬러그를 직접 추측 — 요청 1회로 끝나는 경우가 많다
   const guessed = guessSlug(trimmed);
   if (guessed) {
-    const page = await fetchSongPage(guessed);
+    const page = await fetchSongPage(server, guessed);
     if (page) return page;
   }
 
   // 2) 제목 첫 글자에 해당하는 '수록곡 일람' 인덱스에서 제목 매칭
   //    (곡 슬러그는 번역자가 수동으로 지어 규칙이 없으므로 인덱스가 유일한 안정 경로)
-  const entries = await getIndexEntries(indexPageFor(trimmed));
+  const entries = await getIndexEntries(server, indexPageFor(trimmed));
   const match = entries ? findMatch(entries, trimmed) : null;
   if (match && match.slug !== guessed) {
-    return fetchSongPage(match.slug);
+    return fetchSongPage(server, match.slug);
   }
   return null;
 }
@@ -106,7 +109,7 @@ function indexPageFor(title: string): string {
 
 // ── 인덱스 조회 (24시간 캐시) ──────────────────────────────────
 
-async function getIndexEntries(page: string): Promise<IndexEntry[] | null> {
+async function getIndexEntries(server: ServerConfig, page: string): Promise<IndexEntry[] | null> {
   const key = `vocaroIdx:${page}`;
   let cached: { at: number; entries: IndexEntry[] } | undefined;
   try {
@@ -117,30 +120,18 @@ async function getIndexEntries(page: string): Promise<IndexEntry[] | null> {
     /* storage 실패는 무시하고 네트워크로 */
   }
 
-  const html = await fetchText(`/${page}`);
-  if (!html) return cached?.entries ?? null; // 네트워크 실패 시 만료된 캐시라도 사용
+  const res = await vocaroIndex(server, page);
+  // found=false(서버가 위키 조회 실패·페이지명 거절)와 null(서버 미도달·구버전 404)을
+  // 구분하지 않는다 — 어느 쪽이든 만료된 캐시라도 있으면 그것으로 매칭을 시도한다
+  if (!res?.found || !res.entries) return cached?.entries ?? null;
 
-  const entries = parseIndexEntries(html);
+  const entries: IndexEntry[] = res.entries.map(e => ({ title: e.title, slug: e.slug }));
   if (entries.length > 0) {
     try {
       await chrome.storage.local.set({ [key]: { at: Date.now(), entries } });
     } catch {
       /* 캐시 저장 실패는 무시 */
     }
-  }
-  return entries;
-}
-
-/** 수록곡 일람 페이지에서 <li><a href="/slug">제목</a></li> 쌍을 추출 */
-export function parseIndexEntries(html: string): IndexEntry[] {
-  const entries: IndexEntry[] = [];
-  const re = /<li>\s*<a\s+href="\/([^"#:]+)"[^>]*>([^<]+)<\/a>\s*<\/li>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null) {
-    const slug = m[1];
-    if (slug.startsWith('allsongs') || slug.startsWith('system') || slug.startsWith('guide')) continue;
-    const title = decodeEntities(m[2]).trim();
-    if (title) entries.push({ title, slug });
   }
   return entries;
 }
@@ -165,83 +156,19 @@ function findMatch(entries: IndexEntry[], title: string): IndexEntry | null {
   return partial?.e ?? null;
 }
 
-// ── 곡 페이지 파싱 ─────────────────────────────────────────────
+// ── 곡 페이지 조회 ─────────────────────────────────────────────
 
-export async function fetchSongPage(slug: string): Promise<VocaroResult | null> {
-  const html = await fetchText(`/${slug}`);
-  if (!html) return null;
-  const parsed = parseSongPage(html);
-  if (!parsed || parsed.lines.length === 0) return null;
-  return { pageUrl: `${BASE}/${slug}`, pageTitle: parsed.title || slug, slug, lines: parsed.lines };
-}
-
-/**
- * 곡 페이지 HTML에서 제목(info-table)과 가사(wiki-content-table)를 파싱.
- * 가사 표는 공식 가이드상 원문/발음/번역 3행 1세트 — 어긋난 표는 방어적으로 처리한다.
- */
-export function parseSongPage(html: string): { title: string; lines: VocaroLine[] } | null {
-  const table = /<table class="wiki-content-table">([\s\S]*?)<\/table>/.exec(html);
-  if (!table) return null;
-
-  const rows: string[] = [];
-  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-  let m: RegExpExecArray | null;
-  while ((m = rowRe.exec(table[1])) !== null) rows.push(cellText(m[1]));
-
-  let lines: VocaroLine[];
-  if (rows.length % 3 === 0) {
-    lines = [];
-    for (let i = 0; i < rows.length; i += 3) {
-      lines.push({ text: rows[i], pronunciation: rows[i + 1] || undefined, translation: rows[i + 2] || undefined });
-    }
-  } else if (rows.length % 2 === 0) {
-    lines = [];
-    for (let i = 0; i < rows.length; i += 2) {
-      lines.push({ text: rows[i], translation: rows[i + 1] || undefined });
-    }
-  } else {
-    lines = rows.map(text => ({ text }));
-  }
-  lines = lines.filter(l => l.text.length > 0);
-
-  const titleMatch = /<th[^>]*class="[^"]*title-cell[^"]*"[^>]*>([\s\S]*?)<\/th>/.exec(html);
-  const title = titleMatch ? cellText(titleMatch[1]) : '';
-  return { title, lines };
-}
-
-function cellText(cellHtml: string): string {
-  return decodeEntities(
-    cellHtml
-      .replace(/<span class="rt">[\s\S]*?<\/span>/g, '') // 후리가나 읽기는 원문에서 제외
-      .replace(/<br\s*\/?>/g, ' ')
-      .replace(/<[^>]+>/g, ''),
-  ).replace(/\s+/g, ' ').trim();
-}
-
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, code: string) => String.fromCodePoint(parseInt(code, 16)))
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
-
-// ── fetch 유틸 ────────────────────────────────────────────────
-
-async function fetchText(path: string): Promise<string | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${BASE}${path}`, { signal: controller.signal });
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+export async function fetchSongPage(server: ServerConfig, slug: string): Promise<VocaroResult | null> {
+  const res = await vocaroPage(server, slug);
+  if (!res?.found || !res.slug || !res.lines || res.lines.length === 0) return null;
+  return {
+    pageUrl: res.page_url ?? `http://vocaro.wikidot.com/${res.slug}`,
+    pageTitle: res.page_title || res.slug,
+    slug: res.slug,
+    lines: res.lines.map(l => ({
+      text: l.text,
+      pronunciation: l.pronunciation ?? undefined,
+      translation: l.translation ?? undefined,
+    })),
+  };
 }

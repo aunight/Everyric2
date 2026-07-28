@@ -536,3 +536,50 @@ export function vocaroMatch(
     server, `/api/vocaro/match?title=${encodeURIComponent(title)}`, undefined, 2500, sink,
   );
 }
+
+export interface VocaroPageLineDto {
+  text: string;
+  pronunciation?: string | null;
+  translation?: string | null;
+}
+
+export interface VocaroPageResponse {
+  found: boolean;
+  slug?: string | null;
+  page_url?: string | null;
+  page_title?: string | null;
+  lines?: VocaroPageLineDto[];
+}
+
+export interface VocaroIndexEntryDto {
+  slug: string;
+  title: string;
+}
+
+export interface VocaroIndexResponse {
+  found: boolean;
+  entries?: VocaroIndexEntryDto[];
+}
+
+/**
+ * 위키 곡 페이지 프록시 — 1.5.5부터 vocaro host 권한 없이 서버가 대신 조회한다
+ * (위키는 CORS 헤더가 없어 확장이 직접 읽을 수 없다). 이 엔드포인트가 없는 구버전
+ * 자체 호스팅 서버는 404 → null이 되고, vocaro 폴백만 조용히 꺼진다.
+ * 타임아웃은 서버의 위키 조회(예의 간격+백오프)까지 감싼 값이다.
+ */
+export function vocaroPage(
+  server: ServerConfig, slug: string, sink?: FailureSink,
+): Promise<VocaroPageResponse | null> {
+  return request<VocaroPageResponse>(
+    server, `/api/vocaro/page?slug=${encodeURIComponent(slug)}`, undefined, 10000, sink,
+  );
+}
+
+/** 수록곡 일람 프록시 — 한국어 독음 제목 매칭용 (slug, 제목) 쌍. 위 vocaroPage와 같은 사정. */
+export function vocaroIndex(
+  server: ServerConfig, page: string, sink?: FailureSink,
+): Promise<VocaroIndexResponse | null> {
+  return request<VocaroIndexResponse>(
+    server, `/api/vocaro/index?page=${encodeURIComponent(page)}`, undefined, 10000, sink,
+  );
+}

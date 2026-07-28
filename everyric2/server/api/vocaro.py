@@ -10,12 +10,14 @@
 
 import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, BackgroundTasks, Query
 from pydantic import BaseModel
 
 from everyric2.config.settings import get_settings
 from everyric2.server.vocaro_index import BASE_URL, build_index, index_status, is_building, match
+from everyric2.sources import vocaro as vocaro_source
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,79 @@ async def match_title(background_tasks: BackgroundTasks, title: str = Query(...,
         return VocaroMatchResponse(found=False, status="index_empty")
 
     return VocaroMatchResponse(found=False)
+
+
+# ── 위키 페이지 프록시 (확장 1.5.5+) ─────────────────────────────
+#
+# 확장이 vocaro.wikidot.com host 권한을 제거하면서(스토어 심사 부담 축소 — 사용자 결정)
+# 위키 조회가 이 두 경로로 옮겨 왔다. 위키는 CORS 헤더를 보내지 않아 확장이 권한 없이
+# 직접 읽을 수 없다(실측 2026-07-28). 조회는 예의 있는 공유 조회기(호출 간격·백오프,
+# sources.base.WikiFetcher)를 스레드에서 태운다. 실패·비가사 페이지는 4xx가 아니라
+# found=false다 — 확장은 조용히 다음 가사 소스로 넘어간다.
+
+#: 곡 슬러그 — 번역자가 손으로 짓는 소문자·숫자·하이픈. 인덱스 href 규칙('#'·':' 제외)과
+#: 확장 guessSlug가 만드는 값의 합집합만 허용한다.
+_PAGE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,199}$")
+#: 수록곡 일람 페이지명 — allsongs-{a..z} | allsongs-h{1..14}(한글 초성) | num | symbols
+_INDEX_PAGE_RE = re.compile(r"^allsongs-(?:[a-z]|h(?:1[0-4]|[1-9])|num|symbols)$")
+
+
+class VocaroPageLine(BaseModel):
+    text: str
+    pronunciation: str | None = None
+    translation: str | None = None
+
+
+class VocaroPageResponse(BaseModel):
+    found: bool
+    slug: str | None = None
+    page_url: str | None = None
+    page_title: str | None = None
+    lines: list[VocaroPageLine] = []
+
+
+class VocaroIndexEntryModel(BaseModel):
+    slug: str
+    title: str
+
+
+class VocaroIndexResponse(BaseModel):
+    found: bool
+    entries: list[VocaroIndexEntryModel] = []
+
+
+@router.get("/page", response_model=VocaroPageResponse)
+async def song_page(slug: str = Query(..., min_length=2, max_length=200)):
+    """슬러그로 곡 페이지를 받아 파싱해 준다 — 원문/발음/번역 줄 목록 + 출처."""
+    if not _PAGE_SLUG_RE.match(slug):
+        return VocaroPageResponse(found=False)
+    song = await asyncio.to_thread(vocaro_source.fetch_song, slug)
+    if song is None:
+        return VocaroPageResponse(found=False)
+    return VocaroPageResponse(
+        found=True,
+        slug=song.slug,
+        page_url=song.page_url,
+        page_title=song.page_title,
+        lines=[
+            VocaroPageLine(text=ln.text, pronunciation=ln.pronunciation, translation=ln.translation)
+            for ln in song.lines
+        ],
+    )
+
+
+@router.get("/index", response_model=VocaroIndexResponse)
+async def index_listing(page: str = Query(..., min_length=1, max_length=32)):
+    """수록곡 일람 페이지의 (slug, 제목) 쌍 — 확장의 한국어 독음 제목 매칭용."""
+    if not _INDEX_PAGE_RE.match(page):
+        return VocaroIndexResponse(found=False)
+    entries = await asyncio.to_thread(vocaro_source.fetch_index_entries, page)
+    if entries is None:
+        return VocaroIndexResponse(found=False)
+    return VocaroIndexResponse(
+        found=True,
+        entries=[VocaroIndexEntryModel(slug=slug, title=title) for slug, title in entries],
+    )
 
 
 @router.post("/reindex", response_model=VocaroReindexResponse)

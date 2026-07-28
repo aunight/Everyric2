@@ -253,11 +253,12 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       return { data: getServerLog() };
 
     case 'VOCARO_LOOKUP': {
-      const direct = await vocaroLookup(message.payload.title);
+      const server = await getServerConfig();
+      const direct = await vocaroLookup(server, message.payload.title);
       if (direct) return { data: direct };
       // 일본어 원제는 클라이언트의 한국어 독음 인덱스로 못 찾는다 — 서버 원제 인덱스 폴백
-      const matched = await vocaroMatch(await getServerConfig(), message.payload.title);
-      return { data: matched?.found && matched.slug ? await fetchSongPage(matched.slug) : null };
+      const matched = await vocaroMatch(server, message.payload.title);
+      return { data: matched?.found && matched.slug ? await fetchSongPage(server, matched.slug) : null };
     }
 
     case 'MIRAHEZE_LOOKUP': {
@@ -315,7 +316,7 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
     }
 
     case 'VOCARO_PAGE':
-      return { data: await fetchSongPage(message.payload.slug) };
+      return { data: await fetchSongPage(await getServerConfig(), message.payload.slug) };
 
     // 자막 **본문**은 서버(yt-dlp) 경유 — 워치 페이지에서 긁은 timedtext URL은
     // POT(proof-of-origin) 강제로 브라우저 플레이어 밖에선 빈 응답이 온다 (실측).
@@ -341,8 +342,10 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
   }
 }
 
-// E2E 스모크 테스트가 SW 컨텍스트에서 직접 호출하기 위한 노출 — 프로덕션 동작에는 영향 없음
-(globalThis as { __vocaroLookup?: typeof vocaroLookup }).__vocaroLookup = vocaroLookup;
+// E2E 스모크 테스트가 SW 컨텍스트에서 직접 호출하기 위한 노출 — 프로덕션 동작에는 영향 없음.
+// 서버 프록시 전환(1.5.5) 후에도 테스트는 제목 하나만 넘긴다 — 서버 설정은 여기서 해석한다.
+(globalThis as { __vocaroLookup?: (title: string) => ReturnType<typeof vocaroLookup> }).__vocaroLookup =
+  async title => vocaroLookup(await getServerConfig(), title);
 
 /** 우선순위: Everyric 서버(단어 타이밍 보존) → (skipLrclib가 아니면) LRCLIB 싱크 → LRCLIB 일반 */
 async function fetchLyricsChain(
@@ -440,8 +443,8 @@ async function searchCandidates(query: { title: string; artist: string; duration
       url: wikiMatch.page_url ?? `http://vocaro.wikidot.com/${wikiMatch.slug}`,
     });
   } else {
-    // 서버가 없거나 미스 — 클라이언트 독음 인덱스로 한 번 더 (페이지까지 확보되면 그 제목 사용)
-    const direct = await vocaroLookup(query.title);
+    // 서버 원제 인덱스가 미스 — 독음 인덱스 매칭으로 한 번 더 (페이지까지 확보되면 그 제목 사용)
+    const direct = await vocaroLookup(await getServerConfig(), query.title);
     if (direct) {
       candidates.push({ source: 'vocaro', slug: direct.slug, title: direct.pageTitle, url: direct.pageUrl });
     }

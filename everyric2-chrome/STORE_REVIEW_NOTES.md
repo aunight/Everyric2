@@ -104,29 +104,6 @@ time-synced lyrics while a YouTube video plays) does not work without this host.
 
 ---
 
-## `http://vocaro.wikidot.com/*`
-
-**한국어**: 보컬로이드(Vocaloid) 곡의 가사 폴백 소스입니다. 저작권 있는 정식
-음원이 일반 가사 DB(LRCLIB)나 자체 서버에 없을 때, 커뮤니티가 정리한 보카로 가사
-위키에서 원문·발음·번역을 가져옵니다. 이 사이트는 HTTPS를 지원하지 않고 `https://`
-요청을 `http://`로 리다이렉트하므로 평문 `http://`로 등록했습니다. 실측 결과 이
-사이트는 CORS 응답 헤더(`Access-Control-Allow-Origin`)를 전혀 보내지 않아
-`host_permissions` 없이는 확장이 응답을 읽을 수 없습니다(요청 자체는 가지만 응답이
-차단됨). 호출은 background service worker에서만 발생하며, YouTube 페이지에 삽입되는
-content script에서는 이 호스트를 호출하지 않습니다(타입 참조만 있음).
-
-**English**: This is a fallback lyrics source for Vocaloid songs. When a song isn't
-in the main lyrics database (LRCLIB) or our own server, the extension fetches
-original text, pronunciation, and translation from a community-maintained Vocaloid
-lyrics wiki. The site does not support HTTPS (it redirects `https://` to `http://`),
-so it is registered as plain `http://`. We measured this endpoint directly: it sends
-no `Access-Control-Allow-Origin` header at all, so without `host_permissions` the
-extension's fetch would succeed but the response would be blocked by CORS. This host
-is only called from the background service worker — not from the content script
-injected into YouTube pages (the content script only imports TypeScript types from
-that module, no runtime network call).
-
----
 
 ## API 권한: `storage`, `notifications`
 
@@ -195,8 +172,13 @@ actually needed is requested** — the extension never asks for both at once.
 
 ## 확인/실측 방법 요약 (참고용)
 
-- `lrclib.net`(가사 DB), `vocaloidlyrics.miraheze.org`(영어권 가사 위키),
-  `api.everyric.com`(구버전 서버 주소, 현재 미사용)은 위 목록에서 **제외**했습니다.
+- `lrclib.net`(가사 DB), `vocaro.wikidot.com`(한국어권 가사 위키),
+  `vocaloidlyrics.miraheze.org`(영어권 가사 위키), `api.everyric.com`(구버전 서버 주소,
+  현재 미사용)은 위 목록에서 **제외**했습니다.
+  - `vocaro.wikidot.com`: 1.5.4까지 host 권한으로 선언했으나(위키가 CORS 헤더를 전혀
+    보내지 않아 직접 조회에 필요했음), 1.5.5에서 위키 조회를 백엔드 서버 프록시
+    (`/api/vocaro/page`·`/index`)로 옮기고 권한을 제거했습니다. 확장은 이제 이
+    호스트에 어떤 요청도 보내지 않습니다.
   - `vocaloidlyrics.miraheze.org`: 1.5.0~1.5.3에서는 host 권한으로 선언했으나,
     MediaWiki API의 익명 CORS(`origin=*` 파라미터, 실측 2026-07-28:
     `access-control-allow-origin: *`)로 권한 없이 응답을 읽을 수 있음을 확인하고
