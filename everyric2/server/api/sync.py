@@ -2,13 +2,14 @@ import asyncio
 import copy
 import logging
 import re
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from everyric2.config.settings import get_settings
-from everyric2.server import title_match
+from everyric2.server import media_cache, title_match
 
 # 리스 회수는 워커 API가 소유한다 (레지스트리가 거기 있다). api/worker는 api/sync를
 # 임포트하지 않으므로 순환이 없다 — 요청마다 함수 내 임포트를 반복하지 않게 최상위로 둔다.
@@ -1121,6 +1122,38 @@ async def save_user_offset(video_id: str, request: UserOffsetRequest):
     return {"video_id": video_id, "offset_sec": offset}
 
 
+# ── 무다운로드 링크 재료 ①: 최근 조회의 가사 지문 기억 ───────────
+#
+# 확장은 GET /api/sync/{id}?lyrics_hash=…(가사 확보 시)를 먼저 부르고, 싱크가 없으면
+# link-candidates를 잇달아 부른다. 확장 동결 제약으로 link-candidates 요청에 지문을 실을 수
+# 없으므로, 두 호출을 서버 메모리로 잇는다 — 재시작 소실은 무해하다(다음 조회가 다시 채운다).
+_RECENT_LYRICS_HASH: dict[str, tuple[str, float]] = {}
+_LYRICS_HASH_TTL_SEC = 3600.0
+_LYRICS_HASH_MAX = 4096
+
+
+def _remember_lyrics_hash(video_id: str, lyrics_hash: str) -> None:
+    now = time.time()
+    if len(_RECENT_LYRICS_HASH) >= _LYRICS_HASH_MAX:
+        cutoff = now - _LYRICS_HASH_TTL_SEC
+        for k in [k for k, (_, ts) in _RECENT_LYRICS_HASH.items() if ts < cutoff]:
+            _RECENT_LYRICS_HASH.pop(k, None)
+        while len(_RECENT_LYRICS_HASH) >= _LYRICS_HASH_MAX:  # 전부 살아 있으면 오래된 것부터
+            _RECENT_LYRICS_HASH.pop(next(iter(_RECENT_LYRICS_HASH)))
+    _RECENT_LYRICS_HASH[video_id] = (lyrics_hash, now)
+
+
+def _recall_lyrics_hash(video_id: str) -> str | None:
+    row = _RECENT_LYRICS_HASH.get(video_id)
+    if not row:
+        return None
+    h, ts = row
+    if time.time() - ts > _LYRICS_HASH_TTL_SEC:
+        _RECENT_LYRICS_HASH.pop(video_id, None)
+        return None
+    return h
+
+
 class LinkCandidate(BaseModel):
     video_id: str
     title: str | None = None
@@ -1225,7 +1258,19 @@ async def find_link_candidates(
         if await SyncLinkRepository(session).get(video_id):
             return LinkCandidatesResponse(video_id=video_id, status="linked")
 
-        # (b) 제목이 채워진 코퍼스를 전수 스캔해 상위 후보를 뽑는다 (자기 자신 제외)
+        # (b) 무다운로드 1순위 — 가사 지문: 같은 lyrics_hash의 싱크를 가진 다른 영상이
+        # 있으면 제목 유사도와 무관하게 최상위 후보다. 지문은 직전 GET /api/sync가 서버
+        # 메모리에 남긴 것을 이어받는다(확장 동결 — 요청 모양 불변). 판정이 아니라 후보다:
+        # 링크에는 오프셋이 필요하고 그건 반주 상관만 계산할 수 있다.
+        fingerprint_hit = None
+        recalled = _recall_lyrics_hash(video_id)
+        if recalled:
+            fingerprint_hit = await sync_repo.find_other_video_by_lyrics_hash(
+                recalled, video_id
+            )
+
+        # (c) 제목이 채워진 코퍼스를 전수 스캔해 상위 후보를 뽑는다 (자기 자신 제외).
+        # rank_matches의 문서빈도 억제가 프로듀서명·가수명·잡토큰 조각 오탐을 거른다
         rows = await sync_repo.list_titled(limit=server.link_candidate_scan_limit)
         entries = [(r.video_id, r.title or "") for r in rows if r.video_id != video_id]
         ranked = title_match.rank_matches(
@@ -1241,6 +1286,16 @@ async def find_link_candidates(
             )
             for vid, score in ranked
         ]
+        if fingerprint_hit is not None:
+            candidates = [
+                LinkCandidate(
+                    video_id=fingerprint_hit.video_id,
+                    title=fingerprint_hit.title,
+                    artist=fingerprint_hit.artist,
+                    score=1.0,
+                ),
+                *[c for c in candidates if c.video_id != fingerprint_hit.video_id],
+            ][:5]
         if not candidates:
             return LinkCandidatesResponse(video_id=video_id, status="none")
         if not server.auto_link_candidates:
@@ -1248,7 +1303,23 @@ async def find_link_candidates(
                 video_id=video_id, status="disabled", candidates=candidates
             )
 
-        # (c) 최상위 후보 1건만 인프로세스로 제출한다 (여러 후보 순차 재시도는 넣지 않는다).
+        # (d) 자동 제출 게이트 — 무다운로드 원칙. 상관을 다운로드 없이 돌릴 수 있는 경우
+        # = 양쪽 오디오가 미디어 캐시에 있을 때뿐이므로, 그때만 잡을 만든다. 미스면 후보만
+        # 반환하고 유튜브는 접촉하지 않는다 — «연결 실패는 허용되는 결과지만 유튜브 접촉은
+        # 아니다»(unite 요청 2026-07-29). status는 확장이 이미 조용히 처리하는 none을 쓴다.
+        # 실측: 공개 후 실사용자 영상의 캐시 적중률 11% — 이 게이트가 자동 제출의 89%를
+        # 다운로드로 잇던 경로를 끊는다.
+        if server.link_require_cached_pair:
+            cover_cached, cand_cached = await asyncio.gather(
+                asyncio.to_thread(media_cache.lookup_cached, video_id),
+                asyncio.to_thread(media_cache.lookup_cached, candidates[0].video_id),
+            )
+            if not (cover_cached and cand_cached):
+                return LinkCandidatesResponse(
+                    video_id=video_id, status="none", candidates=candidates
+                )
+
+        # (e) 최상위 후보 1건만 제출한다 (여러 후보 순차 재시도는 넣지 않는다).
         # 무엇을 제출할지는 _dispatch_candidate_followup 한 곳에서만 정해진다
         kind, status, job_id = await _dispatch_candidate_followup(
             session, video_id, candidates[0].video_id, x_api_key
@@ -1293,6 +1364,9 @@ async def get_sync(
     _apply_translation_lang 참고). 안 주면 기존 필드 그대로다(구버전 클라이언트 호환).
     available_langs는 lang 유무와 무관하게 항상 채워진다."""
     _validate_video_id(video_id)
+    if lyrics_hash:
+        # 무다운로드 링크 재료 — 싱크 유무와 무관하게 남긴다(뒤이은 link-candidates가 쓴다)
+        _remember_lyrics_hash(video_id, lyrics_hash)
     async with get_session() as session:
         repo = SyncRepository(session)
         user_offset = await VideoOffsetRepository(session).get(video_id)

@@ -47,6 +47,24 @@ def _lookup(url: str, key: str, video_id: str) -> dict:
     return resp.json()
 
 
+def lookup_cached(video_id: str) -> bool:
+    """캐시에 원본 미디어가 있는지 **조회만** 한다(추출 없음) — 링크 자동 제출 게이트용.
+
+    미설정/오류/미스 전부 False. 경로 가독성까지는 보지 않는다(히트 후 추출 단계가
+    재확인한다). 동기 함수라 async 문맥에서는 asyncio.to_thread로 감싸서 부른다.
+    """
+    from everyric2.config.settings import get_settings
+
+    server = get_settings().server
+    if not server.media_cache_url:
+        return False
+    try:
+        data = _lookup(server.media_cache_url, server.media_cache_key, video_id)
+    except Exception:
+        return False
+    return bool(data.get("found"))
+
+
 async def prepare_cached_audio(
     video_id: str, job_id: str, max_audio_sec: int
 ) -> tuple[str | None, str | None]:

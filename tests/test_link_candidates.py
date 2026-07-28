@@ -91,6 +91,19 @@ async def _count_link_jobs(sm) -> int:
         return len((await s.execute(select(LinkJob))).scalars().all())
 
 
+@pytest.fixture(autouse=True)
+def _cached_pair_everywhere(monkeypatch):
+    """기본값: 미디어 캐시 완비로 가정 — 캐시 게이트(link_require_cached_pair)가 기본 켜짐이라
+    기존 제출 계열 테스트가 게이트에 걸리지 않게 한다. 게이트 자체를 검증하는 테스트만
+    개별적으로 미스를 흉내 낸다. 가사 지문 메모리도 테스트 간 격리한다."""
+    from everyric2.server.api import sync as sync_api
+
+    monkeypatch.setattr(sync_api.media_cache, "lookup_cached", lambda _vid: True)
+    sync_api._RECENT_LYRICS_HASH.clear()
+    yield
+    sync_api._RECENT_LYRICS_HASH.clear()
+
+
 # ── title_match: 정규화·잡토큰 제거 ───────────────────────────────
 
 
@@ -208,6 +221,45 @@ def test_rank_matches_orders_exact_before_partial_and_honours_min_score():
     # 하한을 올리면 부분 겹침 후보가 탈락한다
     tight = title_match.rank_matches("【初音ミク】熱異常", entries, min_score=0.6)
     assert [key for key, _ in tight] == ["v_exact"]
+
+
+def test_strip_noise_tokens_normalizes_decorative_cover_font():
+    """𝖢𝖮𝖵𝖤𝖱(수학 산세리프)는 NFKC 후에야 cover다 — 정규화 전에 잡토큰을 제거하던 순서
+    탓에 살아남아 헛 후보를 만들었다 (실측 unite 2026-07-29)."""
+    assert title_match.normalize_title(title_match.strip_noise_tokens("로키 𝖢𝖮𝖵𝖤𝖱")) == "로키"
+
+
+def test_candidate_queries_drops_pure_noise_fragments_only_in_drop_noise_mode():
+    """«[MV] A곡»과 «[MV] B곡»이 mv==mv로 만점 매칭되던 경로 차단 — 잡토큰만으로 이루어진
+    조각은 후보에서 뺀다. 인덱스 경로(drop_noise=False)의 기존 동작은 그대로 보존한다."""
+    link_mode = title_match.candidate_queries("[MV] 熱異常", drop_noise=True)
+    assert "mv" not in link_mode
+    assert "熱異常" in link_mode
+    index_mode = title_match.candidate_queries("[MV] 熱異常", drop_noise=False)
+    assert "mv" in index_mode
+
+
+def test_rank_matches_df_suppresses_shared_producer_and_singer_fragments():
+    """실측 오탐(unite 2026-07-29): «ARTIST - 곡명» 관례에서 아티스트 조각이 제목 앞머리라
+    priority까지 낮아 만점 오탐이 정탐을 이겼다. 코퍼스 여러 곡이 공유하는 조각(프로듀서명·
+    가수명)은 문서빈도 억제가 매칭에서 뺀다 — 진짜 커버쌍(공유 조각 없음)은 그대로 산다."""
+    entries = [
+        ("v1", "DECO*27 - ルーキー feat. 初音ミク"),
+        ("v2", "DECO*27 - モニタリング feat. 初音ミク"),
+        ("v3", "DECO*27 - ラビットホール feat. 初音ミク"),
+        ("v4", "DECO*27 - ヴァンパイア feat. 初音ミク"),
+        ("v5", "DECO*27 - サラマンダー feat. 初音ミク"),
+        ("v6", "Orangestar - DAYBREAK FRONTLINE (feat. IA)"),
+    ]
+    wrong = title_match.rank_matches("DECO*27 - 勘違い性反希望症 feat. 初音ミク", entries)
+    assert wrong == []
+    right = title_match.rank_matches("DAYBREAK FRONTLINE / 텐코 시부키 cover", entries)
+    assert [k for k, _ in right] == ["v6"]
+    # 억제를 끄면 예전 오탐이 재현된다 — 이 테스트가 지키는 것이 무엇인지의 대조군
+    legacy = title_match.rank_matches(
+        "DECO*27 - 勘違い性反希望症 feat. 初音ミク", entries, max_fragment_df=None
+    )
+    assert legacy and legacy[0][1] == 1.0
 
 
 # ── 후보 탐색 엔드포인트 ──────────────────────────────────────────
@@ -547,5 +599,79 @@ def test_synclink_upsert_persists_rate_on_insert():
                 await s.commit()
             async with sm() as s:
                 assert (await SyncLinkRepository(s).get(COVER)).rate == 1.25
+
+    asyncio.run(body())
+
+
+# ── 무다운로드 재설계 (unite 요청 2026-07-29) ─────────────────────
+
+
+def test_fingerprint_candidate_outranks_title_matching():
+    """② 가사 지문 — 직전 GET /api/sync가 남긴 lyrics_hash와 같은 지문의 싱크를 가진 다른
+    영상은 제목이 전혀 달라도 최상위 후보가 된다 (다운로드 0, 확장 요청 모양 불변)."""
+
+    async def body():
+        async with _env(auto_link_candidates=False) as sm:
+            await _seed_sync(sm, SOURCE, title="全然違う表記の原曲", lyrics_hash="FPHASH")
+            with contextlib.suppress(HTTPException):
+                await get_sync(COVER, lyrics_hash="FPHASH")
+            resp = await find_link_candidates(COVER, title="제목으로는 절대 못 맞출 문자열")
+            assert resp.status == "disabled"
+            assert resp.candidates[0].video_id == SOURCE
+            assert resp.candidates[0].score == 1.0
+
+    asyncio.run(body())
+
+
+def test_fingerprint_recall_expires_after_ttl():
+    """TTL이 지난 지문 기억은 후보를 만들지 않는다 — 오래전 다른 가사로 조회한 흔적이
+    엉뚱한 원곡을 물어 오면 안 된다."""
+
+    async def body():
+        async with _env(auto_link_candidates=False) as sm:
+            await _seed_sync(sm, SOURCE, title=None, lyrics_hash="FPHASH")
+            from everyric2.server.api import sync as sync_api
+
+            sync_api._RECENT_LYRICS_HASH[COVER] = ("FPHASH", 0.0)  # 아주 오래된 기억
+            resp = await find_link_candidates(COVER, title="무관한 제목")
+            assert resp.candidates == []
+
+    asyncio.run(body())
+
+
+def test_cache_gate_blocks_submission_without_cached_pair(monkeypatch):
+    """④ 캐시 쌍 게이트 — 한쪽이라도 미디어 캐시에 없으면 잡을 만들지 않는다(후보만 반환).
+    실측: 실사용자 영상 캐시 적중 11% — 이 게이트가 자동 제출의 89%가 다운로드로 이어지던
+    경로를 끊는다. status는 확장이 이미 조용히 처리하는 none을 쓴다."""
+
+    async def body():
+        async with _env() as sm:
+            await _seed_sync(sm, SOURCE, title=SOURCE_TITLE)
+            from everyric2.server.api import sync as sync_api
+
+            monkeypatch.setattr(sync_api.media_cache, "lookup_cached", lambda _vid: False)
+            resp = await find_link_candidates(COVER, title=COVER_TITLE)
+            assert resp.status == "none"
+            assert [c.video_id for c in resp.candidates] == [SOURCE]
+            assert await _count_link_jobs(sm) == 0
+
+    asyncio.run(body())
+
+
+def test_cache_gate_off_restores_legacy_submission(monkeypatch):
+    async def body():
+        async with _env(link_require_cached_pair=False) as sm:
+            await _seed_sync(sm, SOURCE, title=SOURCE_TITLE)
+            from everyric2.server.api import sync as sync_api
+
+            # 게이트를 끄면 캐시 조회 자체를 하지 않는다
+            monkeypatch.setattr(
+                sync_api.media_cache,
+                "lookup_cached",
+                lambda _vid: (_ for _ in ()).throw(AssertionError("게이트 off인데 캐시 조회")),
+            )
+            resp = await find_link_candidates(COVER, title=COVER_TITLE)
+            assert resp.status == "submitted"
+            assert await _count_link_jobs(sm) == 1
 
     asyncio.run(body())

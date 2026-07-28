@@ -122,6 +122,17 @@ async def _count_jobs(sm) -> int:
 # ── ① 만료 리스 스윕이 claim 없이도 돈다 ──────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _cached_pair_everywhere(monkeypatch):
+    """기본값: 미디어 캐시 완비로 가정 — link-candidates의 캐시 쌍 게이트(기본 켜짐)가
+    이 모듈이 검증하는 예산·한도 기전과 무관하게 제출을 막지 않도록 한다.
+    게이트 자체는 test_link_candidates.py가 검증한다."""
+    monkeypatch.setattr(sync_api.media_cache, "lookup_cached", lambda _vid: True)
+    sync_api._RECENT_LYRICS_HASH.clear()
+    yield
+    sync_api._RECENT_LYRICS_HASH.clear()
+
+
 def test_lease_sweeper_requeues_a_dead_workers_job_without_any_claim():
     """워커 하나가 잡을 물고 죽은 뒤 **아무도 claim하지 않아도** 잡이 회수돼야 한다.
 

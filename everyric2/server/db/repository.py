@@ -69,6 +69,25 @@ class SyncRepository:
         )
         return result.scalars().first()
 
+    async def find_other_video_by_lyrics_hash(
+        self, lyrics_hash: str, exclude_video_id: str
+    ) -> SyncResult | None:
+        """같은 가사 지문(lyrics_hash)의 싱크를 가진 **다른** 영상 — 무다운로드 링크 후보.
+
+        커버가 원곡과 같은 위키/LRCLIB 가사를 쓰면 확장이 보내는 lyrics_hash가 문자열
+        수준에서 일치한다 — 제목 유사도보다 훨씬 강한 «같은 곡» 신호다(다운로드 0).
+        최신 행 우선. 판정이 아니라 후보다 — 오프셋은 여전히 반주 상관이 계산해야 한다.
+        """
+        result = await self.session.execute(
+            select(SyncResult)
+            .where(
+                SyncResult.lyrics_hash == lyrics_hash,
+                SyncResult.video_id != exclude_video_id,
+            )
+            .order_by(SyncResult.created_at.desc())
+        )
+        return result.scalars().first()
+
     async def get_by_audio_hash(self, audio_hash: str) -> SyncResult | None:
         result = await self.session.execute(
             select(SyncResult)

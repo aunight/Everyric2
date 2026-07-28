@@ -1113,17 +1113,33 @@ def _worker_link_fail(base: str, key: str, worker_id: str, link_id: str, error: 
         pass
 
 
-def _download_audio_for_link(video_id: str, tag: str):
-    """링크 검증용 오디오 확보 — 미디어 캐시 우선, 미스 시 yt-dlp (반환: (AudioData, 정리할 Path)).
+class LinkAudioCacheMissError(Exception):
+    """링크 검증 오디오가 미디어 캐시에 없다 — 무다운로드 원칙에 따라 판정을 포기한다.
 
-    시드 쌍은 대부분 캐시 코퍼스 영상이라 캐시 우선이면 배치에서 유튜브 접촉(403 리스크)이
-    사실상 사라진다 — 실측: 소량 배치 5쌍 중 1쌍이 yt-dlp 403으로 실패했던 사고의 재발 방지."""
+    연결 실패는 허용되는 결과지만 유튜브 접촉은 아니다(unite 요청 2026-07-29). 링크 검증
+    1건 = 다운로드 2회라, 다운로드로 폴백하면 «원곡 재사용으로 아낀다»는 링크의 존재
+    이유(커버 신규 싱크 = 1회)를 스스로 배반한다."""
+
+
+def _download_audio_for_link(video_id: str, tag: str):
+    """링크 검증용 오디오 확보 — 미디어 캐시 전용이 기본 (반환: (AudioData, 정리할 Path)).
+
+    캐시 미스는 link_cache_only=True(기본)면 LinkAudioCacheMissError로 판정 포기,
+    False면 예전처럼 yt-dlp 폴백. 시드 쌍은 대부분 캐시 코퍼스 영상이라 캐시 우선이면
+    배치에서 유튜브 접촉(403 리스크)이 사실상 사라진다 — 실측: 소량 배치 5쌍 중 1쌍이
+    yt-dlp 403으로 실패했던 사고의 재발 방지. 공개 후 실사용자 후보는 캐시 적중 11%뿐이라
+    폴백을 열어 두면 자동 제출의 89%가 다운로드로 이어진다(그 게이트가 이 기본값이다)."""
     from everyric2.audio.loader import AudioLoader
     from everyric2.server.media_cache import fetch_cached_audio_sync
 
     cached = fetch_cached_audio_sync(video_id, tag)
     if cached:
         return AudioLoader().load(cached), cached
+
+    from everyric2.config.settings import get_settings
+
+    if get_settings().server.link_cache_only:
+        raise LinkAudioCacheMissError(video_id)
 
     from everyric2.audio.downloader import YouTubeDownloader
 
@@ -1203,6 +1219,14 @@ async def _process_link_job(base: str, key: str, worker_id: str, link_job: dict)
     )
     try:
         match, offset, confidence = await asyncio.to_thread(_run_link_validation, link_job)
+    except LinkAudioCacheMissError as e:
+        # 판정 포기 — 오류가 아니라 무다운로드 원칙의 정상 종결. 쌍은 쿨다운에 들어가
+        # 재제출이 억제되고, 확장은 실패 잡을 링크 없음으로 조용히 처리한다.
+        console.print(f"[yellow]링크 판정 포기(캐시 미스, 다운로드 안 함):[/yellow] {e}")
+        await asyncio.to_thread(
+            _worker_link_fail, base, key, worker_id, link_id, f"cache_miss_no_download:{e}"
+        )
+        return
     except Exception as e:
         console.print(f"[red]링크 검증 오류:[/red] {e}")
         await asyncio.to_thread(_worker_link_fail, base, key, worker_id, link_id, str(e))

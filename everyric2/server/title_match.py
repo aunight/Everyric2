@@ -62,8 +62,22 @@ def normalize_title(title: str) -> str:
 
 
 def strip_noise_tokens(title: str) -> str:
-    """MV/Official/Cover/歌ってみた 류 업로드 잡토큰 제거 (곡명 자체는 건드리지 않는다)."""
-    return _NOISE_TOKEN_RE.sub(" ", title)
+    """MV/Official/Cover/歌ってみた 류 업로드 잡토큰 제거 (곡명 자체는 건드리지 않는다).
+
+    제거 전에 NFKC로 정규화한다 — 장식 서체(수학 산세리프 «𝖢𝖮𝖵𝖤𝖱» 류)는 NFKC를 거쳐야
+    ASCII cover가 되어 패턴에 걸린다. 실측(unite 2026-07-29): 정규화 전 제거 순서 탓에
+    «𝖢𝖮𝖵𝖤𝖱» 잡토큰이 살아남아 헛 후보를 만들었다. 공백은 보존하므로 \\b 경계는 유효하다.
+    """
+    return _NOISE_TOKEN_RE.sub(" ", unicodedata.normalize("NFKC", title))
+
+
+def _is_pure_noise(raw: str) -> bool:
+    """조각이 잡토큰만으로 이루어졌는가 — «MV»·«Official MV»·«𝖢𝖮𝖵𝖤𝖱» 류.
+
+    이런 조각이 후보로 살아남으면 «[MV] A곡»과 «[MV] B곡»이 mv==mv로 만점 매칭된다
+    (실측 unite 2026-07-29: 매칭 조각 mv·officialmv). normalize_title이 공백을 지운 뒤에는
+    \\b 경계가 무력해 정규식으로 못 거르므로, 공백이 살아 있는 원시 조각 단계에서 거른다."""
+    return not normalize_title(strip_noise_tokens(raw))
 
 
 def candidate_queries(title: str, drop_noise: bool = False) -> list[str]:
@@ -81,7 +95,7 @@ def candidate_queries(title: str, drop_noise: bool = False) -> list[str]:
 
     def add(raw: str) -> None:
         q = normalize_title(raw)
-        if len(q) >= 2 and q not in seen:
+        if len(q) >= 2 and q not in seen and not (drop_noise and _is_pure_noise(raw)):
             seen.add(q)
             out.append(q)
 
@@ -98,15 +112,8 @@ def candidate_queries(title: str, drop_noise: bool = False) -> list[str]:
     return out
 
 
-def match_score(a: str, b: str, drop_noise: bool = True) -> tuple[float, int] | None:
-    """두 제목의 유사도 (score, priority). 매칭이 없으면 None.
-
-    score: 1.0 = 어떤 후보 변형끼리 정규화 정확 일치, 0.5~1.0 = 상호 포함 시 길이비.
-    priority: 매칭된 두 후보의 우선순위 인덱스 합 (작을수록 원제에 가까운 변형끼리 맞음).
-    동점 정렬의 tie-break용 — 가수명 조각끼리 우연히 겹친 매칭을 뒤로 민다.
-    """
-    qa = candidate_queries(a, drop_noise=drop_noise)
-    qb = candidate_queries(b, drop_noise=drop_noise)
+def _score_query_lists(qa: list[str], qb: list[str]) -> tuple[float, int] | None:
+    """후보 리스트 두 개의 유사도 (score, priority). match_score/rank_matches가 공유한다."""
     best: tuple[float, int] | None = None
     for i, x in enumerate(qa):
         for j, y in enumerate(qb):
@@ -124,21 +131,62 @@ def match_score(a: str, b: str, drop_noise: bool = True) -> tuple[float, int] | 
     return best
 
 
+def match_score(a: str, b: str, drop_noise: bool = True) -> tuple[float, int] | None:
+    """두 제목의 유사도 (score, priority). 매칭이 없으면 None.
+
+    score: 1.0 = 어떤 후보 변형끼리 정규화 정확 일치, 0.5~1.0 = 상호 포함 시 길이비.
+    priority: 매칭된 두 후보의 우선순위 인덱스 합 (작을수록 원제에 가까운 변형끼리 맞음).
+    동점 정렬의 tie-break용 — 가수명 조각끼리 우연히 겹친 매칭을 뒤로 민다.
+
+    주의: «ARTIST - 곡명» 관례에서는 아티스트 조각이 제목 앞머리라 priority가 오히려 곡명
+    조각보다 낮다(실측 unite 2026-07-29: deco27 매칭 priority 4 < 진짜 곡명 12). 이 함수
+    단독으로는 그 오탐을 못 거른다 — 코퍼스가 있는 rank_matches의 문서빈도 억제가 담당한다.
+    """
+    return _score_query_lists(
+        candidate_queries(a, drop_noise=drop_noise), candidate_queries(b, drop_noise=drop_noise)
+    )
+
+
 def rank_matches(
     query_title: str,
     entries: Sequence[tuple[T, str]],
     min_score: float = 0.6,
     limit: int = 5,
+    max_fragment_df: int | None = 4,
 ) -> list[tuple[T, float]]:
     """(키, 제목) 목록을 질의 제목과의 유사도로 정렬해 상위 limit개 반환.
 
     코퍼스가 작아(수십~수백 곡) 전수 스캔으로 충분하다 — 인덱스/근사 검색은 넣지 않았다.
+
+    max_fragment_df: 문서빈도(DF) 억제 — 이보다 많은 항목이 공유하는 조각은 매칭에서 뺀다.
+    실패 조각 세 부류(프로듀서명 deco27·稲葉曇, 가수명 初音ミク, 잡토큰 잔재)는 성질이
+    같다: **코퍼스에서 여러 곡이 공유하는 조각**이다. 사전 관리 없이 한 규칙으로 덮는다.
+    실측(unite 2026-07-29, 코퍼스 634곡): DF≤4에서 헛 후보 20→13건·정탐 손실 0.
+    각 제목의 첫 후보(전체 정규화)는 DF와 무관하게 남겨 정확 일치 경로는 잃지 않는다.
+    None이면 끈다(기존 동작).
     """
-    scored: list[tuple[float, int, int, T]] = []
+    prepared: list[tuple[int, T, list[str]]] = []
     for order, (key, title) in enumerate(entries):
         if not title:
             continue
-        hit = match_score(query_title, title)
+        prepared.append((order, key, candidate_queries(title, drop_noise=True)))
+
+    qa = candidate_queries(query_title, drop_noise=True)
+    if max_fragment_df is not None:
+        df: dict[str, int] = {}
+        for _, _, qs in prepared:
+            for q in set(qs):
+                df[q] = df.get(q, 0) + 1
+
+        def prune(qs: list[str]) -> list[str]:
+            return [q for i, q in enumerate(qs) if i == 0 or df.get(q, 0) <= max_fragment_df]
+
+        prepared = [(order, key, prune(qs)) for order, key, qs in prepared]
+        qa = prune(qa)
+
+    scored: list[tuple[float, int, int, T]] = []
+    for order, key, qb in prepared:
+        hit = _score_query_lists(qa, qb)
         if hit is None or hit[0] < min_score:
             continue
         score, priority = hit

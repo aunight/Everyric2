@@ -1114,6 +1114,21 @@ class ServerSettings(BaseSettings):
         "(link_match_threshold·link_min_offset_margin)가 그대로 담당한다 — 제목이 맞았다는 "
         "이유만으로 링크가 만들어지는 경로는 없다.",
     )
+    link_cache_only: bool = Field(
+        default=True,
+        description="링크 검증 오디오를 미디어 캐시에서만 조달할지. True면 캐시 미스에서 "
+        "yt-dlp로 폴백하지 않고 판정을 포기한다(무다운로드 원칙 — 연결 실패는 허용되는 "
+        "결과지만 유튜브 접촉은 아니다). 링크 검증 1건 = 다운로드 2회로, 아끼려는 수단"
+        "(원곡 싱크 재사용)이 안 아끼는 것(커버 신규 싱크 = 1회)보다 비싸지는 자기모순의 "
+        "차단이기도 하다. unite 요청 2026-07-29(무다운로드 재설계) 반영.",
+    )
+    link_require_cached_pair: bool = Field(
+        default=True,
+        description="link-candidates 자동 제출 전에 커버·원곡 양쪽이 미디어 캐시에 있는지 "
+        "확인할지. True면 한쪽이라도 미스면 잡을 만들지 않는다(후보 목록만 반환). 실측: "
+        "공개 후 실사용자 영상의 캐시 적중률 11% — 이 게이트 없이는 자동 제출의 89%가 "
+        "다운로드로 이어진다.",
+    )
     link_candidate_min_title_score: float = Field(
         default=0.6,
         description="링크 후보로 인정하는 제목 유사도 하한 (1.0=정규화 정확 일치, 그 미만은 "
