@@ -282,7 +282,7 @@ cd everyric2-chrome && npm run build   # 확장 (tsc + vite)
 
 ## 크레딧·라이선스
 
-- **코드**: [Apache License 2.0](LICENSE) — 상업적 이용 포함 자유. 다만 이 소스로 **공개 서비스를 운영하는 경우 원작자(onpe)에게 [저장소 이슈](https://github.com/onpe5679/Everyric2/issues)로 알려 주시길 요청**합니다 (라이선스 조건이 아닌 비구속 요청 — [NOTICE](NOTICE) 참고 / This is a non-binding courtesy request, not a license condition — see [NOTICE](NOTICE))
+- **코드**: [Apache License 2.0](LICENSE) — 상업적 이용 포함 자유. 다만 이 소스로 **공개 서비스를 운영하는 경우 원작자(onpe)에게 알려 주시길 요청**합니다: 이메일 `perion5679@naver.com` · 디스코드 `onpe` (라이선스 조건이 아닌 비구속 요청 — [NOTICE](NOTICE) 참고 / This is a non-binding courtesy request, not a license condition — see [NOTICE](NOTICE))
 - **가사·발음·번역 출처**: [보카로 가사 위키](http://vocaro.wikidot.com/) (CC BY 4.0), [VocaloidLyrics Wiki](https://vocaloidlyrics.miraheze.org/) (CC BY-SA 4.0), [LRCLIB](https://lrclib.net/) — 확장이 조회·저장 시 출처를 함께 표기합니다
 - 정렬: [MMS wav2vec2](https://huggingface.co/facebook/mms-300m) — 모델 가중치 라이선스(CC-BY-NC)는 상업 배포 시 별도 확인 필요
 - 멜로디: RMVPE (추론 코드 MIT 포팅, 가중치 별도 다운로드), [torchfcpe](https://github.com/CNChTu/FCPE)
