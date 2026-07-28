@@ -110,3 +110,62 @@ def test_parse_index_entries_extracts_pairs_and_unescapes():
         '<li><a href="/empty-title">  </a></li></ul>'
     )
     assert parse_index_entries(html) == [("roki", "로키"), ("rock-and-roll", "락 & 롤")]
+
+
+# ── /match — 업스트림 미발견은 확정이 아니다 (로컬 인덱스 폴백) ───
+
+
+def test_match_falls_back_to_local_index_when_upstream_misses(monkeypatch):
+    """실측(2026-07-29, «ホロウ»): 업스트림 소형 인덱스의 found:false가 그대로 확정돼
+    6,550곡 로컬 크롤 인덱스가 무력화됐다 — 확장은 자막 폴백(오검출 ASR·번역 자막)으로
+    밀려났다. 업스트림 미발견·오류는 로컬 매칭으로 이어져야 한다."""
+    from fastapi import BackgroundTasks
+
+    from everyric2.server.vocaro_index import SongEntry
+
+    monkeypatch.setattr(vocaro_api, "_song_index_url", lambda: "http://upstream.test")
+    monkeypatch.setattr(vocaro_api, "_upstream_get", lambda path, params=None: {"found": False})
+    monkeypatch.setattr(
+        vocaro_api, "match", lambda title: SongEntry(slug="hollow", ko="홀로우", ja="ホロウ")
+    )
+    resp = asyncio.run(vocaro_api.match_title(BackgroundTasks(), title="ホロウ"))
+    assert resp.found is True
+    assert resp.slug == "hollow"
+
+
+def test_match_upstream_error_also_falls_back_to_local(monkeypatch):
+    from fastapi import BackgroundTasks
+
+    from everyric2.server.vocaro_index import SongEntry
+
+    monkeypatch.setattr(vocaro_api, "_song_index_url", lambda: "http://upstream.test")
+
+    def _boom(path, params=None):
+        raise RuntimeError("upstream down")
+
+    monkeypatch.setattr(vocaro_api, "_upstream_get", _boom)
+    monkeypatch.setattr(
+        vocaro_api, "match", lambda title: SongEntry(slug="hollow", ko="홀로우", ja="ホロウ")
+    )
+    resp = asyncio.run(vocaro_api.match_title(BackgroundTasks(), title="ホロウ"))
+    assert resp.found is True
+    assert resp.slug == "hollow"
+
+
+def test_match_upstream_hit_short_circuits_local(monkeypatch):
+    from fastapi import BackgroundTasks
+
+    monkeypatch.setattr(vocaro_api, "_song_index_url", lambda: "http://upstream.test")
+    monkeypatch.setattr(
+        vocaro_api,
+        "_upstream_get",
+        lambda path, params=None: {"found": True, "slug": "up-slug", "ja": "上流曲"},
+    )
+    monkeypatch.setattr(
+        vocaro_api,
+        "match",
+        lambda title: (_ for _ in ()).throw(AssertionError("업스트림 히트인데 로컬 조회")),
+    )
+    resp = asyncio.run(vocaro_api.match_title(BackgroundTasks(), title="上流曲"))
+    assert resp.found is True
+    assert resp.slug == "up-slug"

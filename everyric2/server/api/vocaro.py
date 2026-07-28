@@ -72,21 +72,25 @@ def _upstream_get(path: str, params: dict | None = None) -> dict:
 
 @router.get("/match", response_model=VocaroMatchResponse)
 async def match_title(background_tasks: BackgroundTasks, title: str = Query(..., min_length=1)):
-    # 업스트림 모드: 외부 곡 인덱스로 프록시하고 응답을 1:1 매핑한다 (확장 응답 형태 무변경)
+    # 업스트림 모드: 외부 곡 인덱스를 1차로 묻되, **미발견·오류는 확정이 아니다** — 로컬
+    # 크롤 인덱스(6,550곡)로 폴백한다. 실측(2026-07-29, iTKM_3mdBsM «ホロウ»): 업스트림
+    # 인덱스는 로컬보다 훨씬 작아, 미발견을 그대로 돌려주면 로컬이 찾을 수 있는 곡까지
+    # 못 찾은 것으로 확정돼 확장이 자막 폴백(오검출 ASR·번역 자막)으로 밀려난다.
     if _song_index_url():
         try:
             data = await asyncio.to_thread(_upstream_get, "/match", {"title": title})
         except Exception as e:
-            logger.info("외부 곡 인덱스 매칭 실패 — 미발견으로 폴백: %s", e)
-            return VocaroMatchResponse(found=False, status="upstream_error")
-        return VocaroMatchResponse(
-            found=bool(data.get("found")),
-            slug=data.get("slug"),
-            page_url=data.get("page_url"),
-            ko=data.get("ko"),
-            ja=data.get("ja"),
-            status=data.get("status"),
-        )
+            logger.info("외부 곡 인덱스 매칭 실패 — 로컬 인덱스로 폴백: %s", e)
+            data = None
+        if data and data.get("found"):
+            return VocaroMatchResponse(
+                found=True,
+                slug=data.get("slug"),
+                page_url=data.get("page_url"),
+                ko=data.get("ko"),
+                ja=data.get("ja"),
+                status=data.get("status"),
+            )
 
     result = match(title)
     if result:

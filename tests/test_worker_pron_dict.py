@@ -541,3 +541,44 @@ def test_job_target_lang_defaults_to_ko():
     assert job_target_lang(_Job()) == "ko"  # 컬럼이 없던 시절의 잡 행
     assert job_target_lang(_Job("")) == "ko"
     assert job_target_lang(_Job(" en ")) == "en"
+
+
+# ---------------------------------------------------------------------------
+# ja 채택 곡의 hangul 음절 카라오케 파생 (실측 xvH0hNzMjhg — 독음 정렬이 저신뢰로
+# 밀려 ja 원문 정렬이 채택되면 pron_segs가 romaji·kana뿐이었다)
+# ---------------------------------------------------------------------------
+
+
+def test_ja_hangul_segments_derive_from_kana_moras():
+    seg = _seg(NEKURA, NEKURA_HANGUL)
+    attach_pron_variants(seg)
+
+    segs = seg["pron_segs"]["hangul"]
+    kana = seg["pron_segs"]["kana"]
+    # 음절 텍스트를 이으면 표기와 같다 (공백 위치는 kana 모라 공백 규칙을 따르므로 제외)
+    assert "".join(s["text"] for s in segs) == NEKURA_HANGUL.replace(" ", "")
+    # 시간축은 kana 모라 세그의 첫/끝과 일치하고 단조롭다
+    assert segs[0]["start"] == kana[0]["start"]
+    assert segs[-1]["end"] == kana[-1]["end"]
+    for prev, cur in zip(segs, segs[1:]):
+        assert cur["start"] >= prev["end"]
+
+
+def test_ja_hangul_segments_merge_final_consonant_moras():
+    # 받침으로 실현되는 모라(칸→カ+ン)는 그 음절 하나의 스팬으로 병합된다
+    seg = _seg("乾杯", "칸파이")
+    attach_pron_variants(seg)
+
+    kana = seg["pron_segs"]["kana"]
+    segs = seg["pron_segs"]["hangul"]
+    assert [s["text"] for s in segs] == ["칸", "파", "이"]
+    assert segs[0]["start"] == kana[0]["start"]
+    assert segs[0]["end"] == kana[1]["end"]
+
+
+def test_ja_hangul_segments_bail_on_mora_mismatch():
+    # 표기 모라 수가 kana 세그와 어긋나면 조용히 포기 — 틀린 카라오케보다 없는 쪽
+    seg = _seg(NEKURA, "아루")
+    attach_pron_variants(seg)
+
+    assert "hangul" not in (seg.get("pron_segs") or {})

@@ -610,6 +610,62 @@ def _attach_ja_pron_variants(
 
     _attach_ja_kana_variant(seg, text, space_after, referee_tokens)
 
+    pron_segs = seg.get("pron_segs") or {}
+    if "hangul" not in pron_segs:
+        hangul_segments = _ja_hangul_segments_from_kana(seg)
+        if hangul_segments:
+            seg.setdefault("pron_segs", {})["hangul"] = hangul_segments
+
+
+def _ja_hangul_segments_from_kana(seg: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """ja 곡 세그: 한글 음절 시각을 kana 모라 세그에서 파생 — 독음 정렬 없이도 hangul 카라오케.
+
+    독음(ko) 정렬이 저신뢰로 밀려 ja 원문 정렬이 채택된 곡(합성보컬 posterior 바닥 —
+    실측 2026-07-29 xvH0hNzMjhg)은 pron_segs가 romaji·kana뿐이라, 한국어 UI(기본 hangul
+    표기)에서 음절 카라오케가 죽는다. hangul 표기는 같은 읽기(가나 모라 열)를 음절로
+    합친 것이고, 받침으로 실현되는 모라(ン/ッ 등)는 그 음절에 2모라로 귀속된다
+    (``hangul_line_moras``, 한→ハ+ン) — 그래서 모라 수가 kana 세그 수와 일치하면
+    음절별 모라 그룹의 시간 스팬을 그대로 hangul 음절 시각으로 쓸 수 있다.
+
+    불일치(장음 축약·표기 차이·라틴 음차 등)면 None — 틀린 시각으로 엉뚱한 글자를
+    점등시키는 것보다 표기만 남기고 그라데이션 폴백이 낫다(``_ja_mora_segments``와
+    같은 실패 규약).
+    """
+    hangul = ((seg.get("pron") or {}).get("hangul") or "").strip()
+    kana_segs = (seg.get("pron_segs") or {}).get("kana")
+    if not hangul or not kana_segs:
+        return None
+    try:
+        from everyric2.text.ko_reading import hangul_line_moras
+
+        moras = hangul_line_moras(hangul)
+    except Exception:
+        logger.exception("hangul mora decomposition failed; skipping hangul segs")
+        return None
+    if not moras or len(moras) != len(kana_segs):
+        return None
+
+    out: list[dict[str, Any]] = []
+    i = 0
+    while i < len(moras):
+        _, cs, ce = moras[i]
+        j = i
+        # 같은 (char_start, char_end)를 공유하는 연속 모라 = 같은 한글 음절(받침 실현 포함)
+        while j + 1 < len(moras) and moras[j + 1][1] == cs and moras[j + 1][2] == ce:
+            j += 1
+        entry: dict[str, Any] = {
+            "text": hangul[cs:ce],
+            "start": kana_segs[i]["start"],
+            "end": kana_segs[j]["end"],
+        }
+        # 공백은 kana 모라 공백(문절)이 아니라 **hangul 표기 자신의** 공백 위치를 따른다 —
+        # «표시=세그» 불변식(_rebuild == display)은 표기별로 성립해야 한다
+        if ce < len(hangul) and hangul[ce].isspace():
+            entry["space"] = True
+        out.append(entry)
+        i = j + 1
+    return out or None
+
 
 def _attach_ja_kana_variant(
     seg: dict[str, Any], text: str, space_after: list[bool], referee_tokens: list | None
