@@ -345,7 +345,12 @@ function isLikelyMusicVideo(): boolean {
   const genre = document.querySelector<HTMLMetaElement>('meta[itemprop="genre"]');
   if (genre?.content && videoId && microdataMatchesCurrentVideo(videoId)) {
     const g = genre.content.trim().toLowerCase();
-    return g === 'music' || g === '음악';
+    if (g === 'music' || g === '음악') return true;
+    // 비음악 장르는 **차단하지 않고** 3·4단계로 넘긴다 — 실측(2026-07-28, 대량 렌더
+    // E2E 22곡 중 10곡): 게임 공식 채널의 보카로 MV(仮死化=Gaming)·개인 채널 오리지널
+    // 곡(People & Blogs)이 장르 하나로 잘려 패널이 아예 안 열렸다. 장르는 양성 신호로만
+    // 쓰고, 음성 판정은 아래 채널·제목 휴리스틱이 최종으로 한다(오탐 방지 근거는 4단계
+    // 주석의 규칙이 그대로 담당).
   }
   // 3) 자동 생성 음악 채널(" - Topic")
   const channel = document.querySelector('ytd-watch-metadata ytd-channel-name a')?.textContent?.trim() ?? '';
@@ -368,7 +373,15 @@ function isLikelyMusicVideo(): boolean {
   //   · feat.·ft. — 원래부터 있던 항목이라 그대로 두었다(내가 넣은 것이 아니다).
   //   · 아티스트 구분자 '/'·'-' — 음악에 흔하지만 비음악 제목에도 흔해 오탐만 늘린다.
   //   · Lyric Video·MV — 이미 lyrics?·M\/?V가 잡는다(중복 추가 안 함).
+  //   · 보카로 가수명 — 게임 채널·개인 채널 업로드는 장르(Gaming·People & Blogs)와
+  //     제목 표기(MV 등) 어느 쪽에도 안 걸리는 경우가 실측됐다(仮死化 / Vivid BAD
+  //     SQUAD × MEIKO, かなしばりに遭ったら / 歌愛ユキ…). 가수명이 제목에 있으면 사실상
+  //     곡이다 — 게임 실황 제목에 캐릭터명이 뜨는 오탐 가능성은 있으나, 그 경우 패널이
+  //     "가사 없음"으로 열리는 소음 대 곡인데 안 열리는 침묵의 교환에서 전자를 택한다
+  //     (어젯밤 대량 인제스트로 이 부류의 곡이 코퍼스에 대거 들어왔다).
   const title = document.title;
+  const VOCALOID_SINGERS = /(初音ミク|鏡音リン|鏡音レン|巡音ルカ|\bMEIKO\b|\bKAITO\b|\bGUMI\b|歌愛ユキ|ナースロボ|重音テト|音街ウナ|可不|星界|裏命|狐子|Hatsune\s*Miku|하츠네\s*미쿠)/;
+  if (VOCALOID_SINGERS.test(title)) return true;
   return /(M\/?V|Official\s*(Music\s*)?Video|Music\s*Video|뮤직\s*비디오|가사|lyrics?|\bcover(ed)?\b|커버|불러보았다|歌ってみた|オリジナル曲|ボカロ|feat\.|ft\.|【[^】]*(MV|PV|오리지널|Original)[^】]*】|[【\[(（][^】\])）]*(?:Official|公式)[^】\])）]*[】\])）])/i.test(title);
 }
 
