@@ -1,8 +1,8 @@
 {
   "ae": {
-    "version": "2.1.0",
-    "zxpUrl": "https://github.com/onpe5679/Everyric2/releases/download/ae-v2.1.0/Everyric-Studio-2.1.0.zxp",
-    "releaseUrl": "https://github.com/onpe5679/Everyric2/releases/tag/ae-v2.1.0",
+    "version": "2.2.0",
+    "zxpUrl": "https://github.com/onpe5679/Everyric2/releases/download/ae-v2.2.0/Everyric-Studio-2.2.0.zxp",
+    "releaseUrl": "https://github.com/onpe5679/Everyric2/releases/tag/ae-v2.2.0",
     "engineRange": ">=0.1.0 <1.0.0"
   },
   "engine": {
