@@ -68,7 +68,7 @@ PRIVACY_HTML = """<!doctype html>
 <body>
 
 <h1>Everyric 개인정보처리방침</h1>
-<p class="updated">마지막 갱신 __UPDATED__ · Chrome 확장 &ldquo;Everyric - Synced Lyrics for YouTube&rdquo;</p>
+<p class="updated">마지막 갱신 __UPDATED__ · Chrome 확장 &ldquo;Everyric - Synced Lyrics&rdquo;</p>
 
 <p class="lead">
 아래 내용은 확장 소스 코드를 직접 읽고 확인한 사실만 담았습니다.
@@ -228,7 +228,7 @@ API 키를 포함한 설정값은 <strong>암호화되지 않은 평문으로</s
 <hr class="lang">
 
 <h1>Everyric Privacy Policy</h1>
-<p class="updated">Last updated __UPDATED__ · Chrome extension &ldquo;Everyric - Synced Lyrics for YouTube&rdquo;</p>
+<p class="updated">Last updated __UPDATED__ · Chrome extension &ldquo;Everyric - Synced Lyrics&rdquo;</p>
 
 <p class="lead">
 Everything below was verified by reading the extension's source code directly.

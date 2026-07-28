@@ -16,11 +16,15 @@
 
 ---
 
-## 이름 (그대로 유지, 36자 / 제한 75자)
+## 이름 (24자 / 제한 75자)
 
 ```
-Everyric - Synced Lyrics for YouTube
+Everyric - Synced Lyrics
 ```
+
+이름에서 "for YouTube"를 뺐다(2026-07-28, 사용자 결정) — CWS와 YouTube가 모두 Google
+소유라 **이름의 상표 사용**은 반려 위험이 크다. 호환 대상 서술은 설명문에서 하는 것이
+Google 상표 가이드에 부합한다(짧은 설명의 "on YouTube"는 서술이라 유지).
 
 ## 짧은 설명 (manifest description, 122자 / 제한 132자 — 그대로 유지)
 
