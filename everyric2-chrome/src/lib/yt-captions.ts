@@ -147,15 +147,44 @@ export function guessLanguagesFromText(text: string): string[] {
 }
 
 /**
+ * 제목에 섞인 문자 체계들의 언어 후보 **합집합**. guessLanguagesFromText(우선순위 단일값)와
+ * 달리 «일어 원제 + 한글 장식» 같은 혼합 제목에서 양쪽을 다 남긴다 — ASR 모순 판정은
+ * "그 언어의 문자가 하나라도 있는가"가 기준이라 합집합이 맞다. 한자는 ja·zh 둘 다 후보.
+ */
+export function titleScripts(text: string): Set<string> {
+  const out = new Set<string>();
+  if (/[぀-ゟ゠-ヿ]/.test(text)) out.add('ja');
+  if (/[가-힣]/.test(text)) out.add('ko');
+  if (/[Ѐ-ӿ]/.test(text)) out.add('ru');
+  if (/[؀-ۿ]/.test(text)) out.add('ar');
+  if (/[฀-๿]/.test(text)) out.add('th');
+  if (/[ऀ-ॿ]/.test(text)) out.add('hi');
+  if (/[一-鿿]/.test(text)) {
+    out.add('ja');
+    out.add('zh');
+  }
+  return out;
+}
+
+/**
  * 이 영상의 "노래 언어" 자막 트랙을 고른다. 못 정하면 null(폴백 포기).
  *
  * 판정 규칙과 근거:
- * 1. **asr 트랙의 언어 = 원어.** 유튜브는 영상에서 실제로 들리는 언어에 대해서만
- *    자동 생성 자막을 만든다. 번역 자막은 captionTracks에 나오지 않으므로(요청 시
- *    translationLanguages로 생성) asr은 원어의 강한 신호다.
+ * 1. **asr 트랙의 언어 = 원어의 신호이되, 절대 신호가 아니다.** 유튜브는 들리는 언어에
+ *    자동 생성 자막을 만들지만, 합성보컬(보카로 등) 일본어 곡을 한국어로 오검출하는
+ *    사례가 실재한다(실측 2026-07-29: j-o7v9Enk0I·iTKM_3mdBsM 둘 다 ja 곡인데 ko ASR).
+ *    그래서 제목의 문자 체계가 asr 언어와 **모순**되면 asr을 원어 신호로 쓰지 않는다.
  * 2. 원어를 알아냈으면 **같은 언어의 수동작성 트랙을 우선**한다 — asr은 가사에서
  *    특히 부정확하다(멜로디·반주 때문). 정확한 코드 일치 > 기본 언어 일치 순.
- * 3. asr이 없을 때:
+ *    단, 그 일치가 제목과 모순되면(iTKM: ja 곡 제목 + ko 수동) 그 수동 트랙은 번역
+ *    자막일 가능성이 높다 — 제목 언어의 수동 트랙이 있으면 그것, 없으면 포기한다
+ *    (번역문으로 생성까지 이어지면 원어 오디오에 번역을 정렬한 오염 싱크가 나온다).
+ * 3. asr이 ko인데 ko 수동은 없고 **ja 수동 트랙이 하나** 있으면(제목이 모순되지 않는
+ *    한) 그 ja 수동을 쓴다 — 실측된 오검출 클래스(합성보컬 ja 곡 → ko ASR)만 구제하는
+ *    좁은 규칙이다. 임의 조합으로 넓히면 «ko 곡 + en 번역 수동만» 같은 영상에서 번역
+ *    자막을 원문으로 오채택하는 회귀가 생긴다(j-o7v9: 라틴 제목이라 문자 힌트가 없어도
+ *    ja 수동이 정답이었다 — 업로더가 단 유일한 자막은 원어 가사라는 4a의 prior).
+ * 4. asr이 없을 때:
  *    a. 수동작성 트랙이 하나뿐이면 그것. 업로더가 자기 영상에 단 유일한 자막은
  *       원어 가사일 가능성이 압도적이다.
  *    b. 여러 개면 곡 제목의 문자 체계로 추정해 일치하는 트랙을 쓴다.
@@ -167,9 +196,39 @@ export function selectLyricTrack(tracks: YtCaptionTrack[], title = ''): YtCaptio
   const asr = tracks.find(t => t.auto);
 
   if (asr) {
-    return manual.find(t => t.lang === asr.lang)
-      ?? manual.find(t => t.baseLang === asr.baseLang)
-      ?? asr;
+    // 모순 판정은 **합집합**으로 한다 — guessLanguagesFromText는 우선순위 단일값이라
+    // «ロキ … 불러봤다»(일어 원제+한글) 같은 한국어 커버 제목이 ['ja']로 읽혀, 정상
+    // ko 자막을 모순으로 오판한다. 제목에 그 문자가 섞여 있기만 하면 모순이 아니다.
+    const scripts = titleScripts(title);
+    const asrContradictsTitle = scripts.size > 0 && !scripts.has(asr.baseLang);
+    const exact = manual.find(t => t.lang === asr.lang)
+      ?? manual.find(t => t.baseLang === asr.baseLang);
+    if (exact) {
+      if (asrContradictsTitle) {
+        // asr도 그와 일치한 수동도 제목과 모순 — 번역 자막 의심 (규칙 2 단서).
+        // 실측 iTKM_3mdBsM: ja 곡(ホロウ)인데 ko ASR 오검출 + ko 수동(번역)이 exact로
+        // 잡혀 번역문이 원문 가사 행세를 했다. 제목 언어 수동이 없으면 포기가 맞다.
+        return manual.find(t => scripts.has(t.baseLang)) ?? null;
+      }
+      return exact;
+    }
+    if (asrContradictsTitle) {
+      const titleHit = manual.find(t => scripts.has(t.baseLang));
+      if (titleHit) return titleHit;
+    }
+    // 규칙 3 — 관측된 오검출 클래스에 한정한 구제: ko ASR + 유일 ja 수동 트랙.
+    // 실측 j-o7v9Enk0I(라틴 제목이라 문자 힌트 없음): ja 곡을 ko로 오검출, ja 수동이
+    // 정답이었다. 다른 조합(예: ko 곡 + en 번역 수동만)까지 넓히면 번역 오채택
+    // 회귀가 생기므로, 실측된 짝(합성보컬 ja곡→ko 오검출)만 구제한다.
+    if (
+      asr.baseLang === 'ko'
+      && manual.length === 1
+      && manual[0].baseLang === 'ja'
+      && (scripts.size === 0 || scripts.has('ja'))
+    ) {
+      return manual[0];
+    }
+    return asr;
   }
   if (manual.length === 1) return manual[0];
   if (manual.length === 0) return null;
