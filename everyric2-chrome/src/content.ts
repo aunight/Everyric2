@@ -2941,6 +2941,29 @@ function notifyJobDone(jobId: string, title: string, message: string): void {
   void sendToBackground({ type: 'NOTIFY', payload: { id: `ey-job-${jobId}`, title, message } });
 }
 
+/** 서버 진행 단계명 → 표시 라벨 i18n 키.
+ *
+ *  서버는 단계명을 한국어 고정 문자열로 보낸다(worker.py STAGE_WINDOWS). 그대로 표시하면
+ *  ① en/ja 사용자도 한국어 단계명을 보고 ② "다운로드"가 확장이 유튜브 콘텐츠를 받는
+ *  것처럼 읽힌다(실제 오디오 취득 주체는 서버 — 스토어 심사 오해 소지, 사용자 지적).
+ *  그래서 서버 문자열을 **식별자**로 취급해 여기서 라벨로 바꾼다. 모르는 값은 원문
+ *  그대로 표시한다 — 서버가 단계를 추가해도 깨지지 않는 전방 호환. */
+const STAGE_LABEL_KEYS: Record<string, string> = {
+  '다운로드': 'content.genChip.stage_audioPrep',
+  '캐시 확인': 'content.genChip.stage_cacheCheck',
+  '보컬 분리': 'content.genChip.stage_vocalSep',
+  '번역 대기': 'content.genChip.stage_metaWait',
+  '전사 정렬': 'content.genChip.stage_align',
+  '타이밍 보정': 'content.genChip.stage_timing',
+  '멜로디 분석': 'content.genChip.stage_melody',
+  '저장': 'content.genChip.stage_save',
+};
+
+function stageLabel(stage: string): string {
+  const key = STAGE_LABEL_KEYS[stage];
+  return key ? t(key) : stage;
+}
+
 /** 진행 칩 갱신 — 현재 영상 잡의 진행률, 그 외 영상 잡은 건수로 요약.
  *  메인 패널과 PiP 양쪽에 같은 문구를 밀어넣는다 (닫혀 있는 쪽은 no-op) — PiP만 보며
  *  '싱크 생성'을 누른 사용자에게 지금까지 진행 표시가 아예 없었다. */
@@ -2953,10 +2976,9 @@ function updateGenChip(): void {
     text = t('content.genChip.preparing');
   } else if (cur) {
     // 단계명이 오면 "보컬 분리 60% · 전체 68%"처럼 무슨 과정인지 함께 보여준다
-    // (cur.stage 자체는 서버가 주는 값이라 여기서 번역하지 않는다 — 서버 i18n은 범위 밖)
     const state = cur.queueLabel
       ?? (cur.stage
-        ? t('content.genChip.stageProgress', [cur.stage, String(cur.stageProgress ?? 0), String(cur.progress)])
+        ? t('content.genChip.stageProgress', [stageLabel(cur.stage), String(cur.stageProgress ?? 0), String(cur.progress)])
         : t('content.genChip.percentOnly', [String(cur.progress)]));
     text = t('content.genChip.transcribing', [state, others > 0 ? t('content.genChip.othersSuffix', [String(others)]) : '']);
   } else if (others > 0) {
@@ -2968,7 +2990,7 @@ function updateGenChip(): void {
     .map(([v, j]) => ({
       title: j.title ?? v,
       state: j.queueLabel
-        ?? (j.stage ? t('content.genChip.stageOnly', [j.stage, String(j.stageProgress ?? 0)]) : t('content.genChip.percentOnly', [String(j.progress)])),
+        ?? (j.stage ? t('content.genChip.stageOnly', [stageLabel(j.stage), String(j.stageProgress ?? 0)]) : t('content.genChip.percentOnly', [String(j.progress)])),
       isCurrent: v === currentVideoId,
     }))
     .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent));

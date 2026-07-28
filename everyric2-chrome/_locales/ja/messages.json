@@ -1362,6 +1362,30 @@
   "content_genChip_preparing": {
     "message": "同期生成の準備中 — AI翻訳・読み方をリクエスト中…"
   },
+  "content_genChip_stage_audioPrep": {
+    "message": "音源準備"
+  },
+  "content_genChip_stage_cacheCheck": {
+    "message": "キャッシュ確認"
+  },
+  "content_genChip_stage_vocalSep": {
+    "message": "ボーカル分離"
+  },
+  "content_genChip_stage_metaWait": {
+    "message": "翻訳待ち"
+  },
+  "content_genChip_stage_align": {
+    "message": "歌詞アライメント"
+  },
+  "content_genChip_stage_timing": {
+    "message": "タイミング補正"
+  },
+  "content_genChip_stage_melody": {
+    "message": "メロディ解析"
+  },
+  "content_genChip_stage_save": {
+    "message": "保存"
+  },
   "content_genChip_stageProgress": {
     "message": "$P1$ $P2$% · 全体 $P3$%",
     "placeholders": {

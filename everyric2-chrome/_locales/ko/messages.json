@@ -1362,6 +1362,30 @@
   "content_genChip_preparing": {
     "message": "싱크 생성 준비 중 — AI 번역·독음 요청…"
   },
+  "content_genChip_stage_audioPrep": {
+    "message": "오디오 준비"
+  },
+  "content_genChip_stage_cacheCheck": {
+    "message": "캐시 확인"
+  },
+  "content_genChip_stage_vocalSep": {
+    "message": "보컬 분리"
+  },
+  "content_genChip_stage_metaWait": {
+    "message": "번역 대기"
+  },
+  "content_genChip_stage_align": {
+    "message": "가사 정렬"
+  },
+  "content_genChip_stage_timing": {
+    "message": "타이밍 보정"
+  },
+  "content_genChip_stage_melody": {
+    "message": "멜로디 분석"
+  },
+  "content_genChip_stage_save": {
+    "message": "저장"
+  },
   "content_genChip_stageProgress": {
     "message": "$P1$ $P2$% · 전체 $P3$%",
     "placeholders": {

@@ -1362,6 +1362,30 @@
   "content_genChip_preparing": {
     "message": "Preparing to generate sync — requesting AI translation & pronunciation…"
   },
+  "content_genChip_stage_audioPrep": {
+    "message": "Preparing audio"
+  },
+  "content_genChip_stage_cacheCheck": {
+    "message": "Checking cache"
+  },
+  "content_genChip_stage_vocalSep": {
+    "message": "Separating vocals"
+  },
+  "content_genChip_stage_metaWait": {
+    "message": "Waiting for translation"
+  },
+  "content_genChip_stage_align": {
+    "message": "Aligning lyrics"
+  },
+  "content_genChip_stage_timing": {
+    "message": "Refining timing"
+  },
+  "content_genChip_stage_melody": {
+    "message": "Analyzing melody"
+  },
+  "content_genChip_stage_save": {
+    "message": "Saving"
+  },
   "content_genChip_stageProgress": {
     "message": "$P1$ $P2$% · overall $P3$%",
     "placeholders": {
