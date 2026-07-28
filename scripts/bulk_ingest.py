@@ -92,6 +92,10 @@ class Song:
     slug: str
     ko: str
     ja: str | None
+    #: 인계(handoff) 모드 — 영상이 이미 정해진 곡. 검색을 건너뛰고 이 영상 하나를
+    #: 단일 후보로 기존 채점(pick_video)에 태운다. 채점을 생략하지 않는 이유:
+    #: 제목 부분일치로 얻은 슬러그가 오매칭이면 엉뚱한 가사를 정렬하게 되기 때문.
+    pinned_video_id: str | None = None
 
     @property
     def original_title(self) -> str:
@@ -121,6 +125,37 @@ def load_skip_file(path: Path) -> tuple[set[str], set[str]]:
         {str(x) for x in (data.get("slugs") or [])},
         {str(x) for x in (data.get("video_ids") or [])},
     )
+
+
+def load_handoff_songs(path: Path, corpus: list[Song]) -> list[Song]:
+    """인계 프로브 JSONL(video_id·slug·match)을 영상 고정 곡 목록으로.
+
+    받는 형식은 probe688 계열 산출물 — 한 줄에 ``{"video_id", "slug", "match", ...}``.
+    슬러그 매칭이 된 행만 쓴다(``match``가 exact/substring). 같은 슬러그가 여러 영상에
+    걸리면 첫 행만 남긴다 — 곡당 싱크 하나가 목표라 나머지는 중복이다.
+    """
+    by_slug = {s.slug: s for s in corpus}
+    out: list[Song] = []
+    seen_slugs: set[str] = set()
+    seen_videos: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        slug = row.get("slug")
+        video_id = row.get("video_id")
+        if not slug or not video_id or row.get("match") not in ("exact", "substring"):
+            continue
+        base = by_slug.get(slug)
+        if base is None or slug in seen_slugs or video_id in seen_videos:
+            continue
+        seen_slugs.add(slug)
+        seen_videos.add(video_id)
+        out.append(
+            Song(slug=base.slug, ko=base.ko, ja=base.ja, pinned_video_id=str(video_id))
+        )
+    return out
 
 
 # ── 처리 이력 (재실행 멱등) ────────────────────────────────────────
@@ -526,9 +561,16 @@ class YtdlpSearch:
         self.block_streak = 0
 
     def search(self, query: str) -> list[dict[str, Any]]:
+        return self._dump_json(f"ytsearch{self.count}:{query}")
+
+    def fetch_video(self, video_id: str) -> list[dict[str, Any]]:
+        """영상 하나의 메타만 — 인계 모드에서 검색 대신 단일 후보를 만든다."""
+        return self._dump_json(f"https://www.youtube.com/watch?v={video_id}")
+
+    def _dump_json(self, target: str) -> list[dict[str, Any]]:
         cmd = [
             self.binary,
-            f"ytsearch{self.count}:{query}",
+            target,
             "--dump-json",
             "--no-download",
             "--no-warnings",
@@ -542,7 +584,7 @@ class YtdlpSearch:
         except FileNotFoundError as e:
             raise SystemExit(f"yt-dlp를 실행할 수 없습니다 ({self.binary}): {e}") from e
         except subprocess.TimeoutExpired:
-            logger.warning("yt-dlp 검색 시간초과 - %s", query)
+            logger.warning("yt-dlp 메타 조회 시간초과 - %s", target)
             return []
 
         stderr = proc.stderr or ""
@@ -849,8 +891,12 @@ def process_song(song: Song, rt: Runtime) -> SongRecord:
         "producer": producer,
     }
 
-    # ② 영상 해석
-    entries = rt.search.search(song.ja)
+    # ② 영상 해석 — 인계 곡은 정해진 영상 하나를 단일 후보로 같은 채점에 태운다
+    if song.pinned_video_id:
+        entries = rt.search.fetch_video(song.pinned_video_id)
+        rec.evidence["pinned_video"] = song.pinned_video_id
+    else:
+        entries = rt.search.search(song.ja)
     chosen, evidence = pick_video(song.ja, entries, producer)
     rec.evidence["candidates"] = evidence
     if chosen is None:
@@ -1111,6 +1157,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=25, help="이 청크에서 처리할 곡 수 (기본 25)")
     ap.add_argument("--offset", type=int, default=0, help="코퍼스에서 건너뛸 곡 수")
     ap.add_argument("--corpus", default=DEFAULT_CORPUS_PATH)
+    ap.add_argument(
+        "--handoff-file",
+        help="인계 프로브 JSONL(video_id·slug·match) — 코퍼스 순회 대신 이 목록의 "
+        "슬러그 매칭 곡만, 영상을 고정해 처리한다",
+    )
     ap.add_argument("--skip-file", help="슬러그/영상 id 스킵 목록 JSON")
     ap.add_argument("--state-file", default=DEFAULT_STATE_PATH)
     ap.add_argument("--db", default=DEFAULT_DB_PATH, help="중복 대조용 읽기 전용 DB")
@@ -1157,6 +1208,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     songs = load_corpus(corpus_path)
+    if args.handoff_file:
+        songs = load_handoff_songs(Path(args.handoff_file), songs)
     skip_slugs: set[str] = set()
     skip_videos: set[str] = set()
     if args.skip_file:
@@ -1166,7 +1219,8 @@ def main(argv: list[str] | None = None) -> int:
         s for s in songs[args.offset : args.offset + max(0, args.limit)] if s.slug not in skip_slugs
     ]
     logger.info(
-        "코퍼스 %d곡 중 %d..%d 구간 %d곡 처리%s",
+        "%s %d곡 중 %d..%d 구간 %d곡 처리%s",
+        "인계 목록" if args.handoff_file else "코퍼스",
         len(songs),
         args.offset,
         args.offset + args.limit,

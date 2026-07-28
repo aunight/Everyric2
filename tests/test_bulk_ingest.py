@@ -335,6 +335,22 @@ def test_search_timeout_yields_no_candidates_rather_than_dying():
     assert bi.YtdlpSearch(runner=runner).search("ダミー曲") == []
 
 
+def test_fetch_video_requests_the_single_video_url_with_the_same_flags():
+    seen = []
+
+    def runner(cmd, timeout):
+        seen.append(cmd)
+        return _FakeProc(stdout=json.dumps(_entry(video_id="pinnedvid11")))
+
+    search = bi.YtdlpSearch(runner=runner, cookie_file=Path("cookies.txt"))
+    entries = search.fetch_video("pinnedvid11")
+
+    assert entries[0]["id"] == "pinnedvid11"
+    cmd = seen[0]
+    assert "https://www.youtube.com/watch?v=pinnedvid11" in cmd
+    assert "--dump-json" in cmd and "--no-download" in cmd and "--cookies" in cmd
+
+
 # ── 자막 원문 게이트 ───────────────────────────────────────────────
 
 _JA_LINES = ["だみーいちぎょうめ", "だみーにぎょうめ", "だみーさんぎょうめ", "だみーよんぎょうめ"]
@@ -682,9 +698,17 @@ class _FakeSearch:
         self.error = error
         self.block_streak = 0
         self.queries: list[str] = []
+        self.fetched: list[str] = []
 
     def search(self, query):
         self.queries.append(query)
+        if self.error:
+            self.block_streak += 1
+            raise self.error
+        return self.entries
+
+    def fetch_video(self, video_id):
+        self.fetched.append(video_id)
         if self.error:
             self.block_streak += 1
             raise self.error
@@ -862,6 +886,71 @@ def test_song_without_an_original_title_is_skipped_before_any_network_call(tmp_p
 
     assert rec.reason == "no_original_title"
     assert rt.search.queries == []
+
+
+# ── 인계(handoff) 모드 — 영상 고정 곡 ─────────────────────────────
+
+
+_PINNED_SONG = bi.Song(
+    slug="dummy-slug", ko="더미 곡", ja="ダミー曲", pinned_video_id="pinnedvid11"
+)
+
+
+def test_pinned_song_skips_search_and_resolves_the_given_video(tmp_path):
+    search = _FakeSearch(
+        entries=[
+            _entry(video_id="pinnedvid11", title="ダミー曲 / ダミーP feat. 初音ミク", channel="ダミーP - Topic")
+        ]
+    )
+    rt = _runtime(tmp_path, search=search, dry_run=True)
+    info = _info({"ja": _JA_LINES})
+
+    with _captions(info, {"ja": _JA_LINES}):
+        rec = bi.process_song(_PINNED_SONG, rt)
+
+    assert rec.reason == "dry_run"
+    assert rec.video_id == "pinnedvid11"
+    assert rec.evidence["pinned_video"] == "pinnedvid11"
+    assert search.queries == []  # 검색은 한 번도 부르지 않는다
+    assert search.fetched == ["pinnedvid11"]
+
+
+def test_pinned_song_still_rejects_a_title_mismatch(tmp_path):
+    """슬러그 부분일치 오매칭 방어 — 영상이 정해져 있어도 채점은 그대로 통과해야 한다."""
+    search = _FakeSearch(entries=[_entry(video_id="pinnedvid11", title="全然違う曲", channel="誰か")])
+    rt = _runtime(tmp_path, search=search)
+
+    rec = bi.process_song(_PINNED_SONG, rt)
+
+    assert rec.reason == "no_confident_video"
+    assert rec.evidence["candidates"][0]["rejected"] == "title_mismatch"
+    assert rt.api.generated == []
+
+
+def test_load_handoff_songs_keeps_matched_rows_and_dedupes(tmp_path):
+    corpus = [
+        bi.Song(slug="dummy-slug", ko="더미 곡", ja="ダミー曲"),
+        bi.Song(slug="other-slug", ko="다른 곡", ja="別曲"),
+    ]
+    rows = [
+        {"video_id": "aaaaaaaaaaa", "slug": "dummy-slug", "match": "exact"},
+        {"video_id": "bbbbbbbbbbb", "slug": "dummy-slug", "match": "substring"},  # 슬러그 중복
+        {"video_id": "aaaaaaaaaaa", "slug": "other-slug", "match": "exact"},  # 영상 중복
+        {"video_id": "ccccccccccc", "slug": "other-slug", "match": "substring"},
+        {"video_id": "ddddddddddd", "match": "no_match"},
+        {"video_id": "eeeeeeeeeee", "match": "unavailable", "error": "http_404"},
+        {"video_id": "fffffffffff", "slug": "not-in-corpus", "match": "exact"},
+    ]
+    path = tmp_path / "handoff.jsonl"
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+
+    songs = bi.load_handoff_songs(path, corpus)
+
+    assert [(s.slug, s.pinned_video_id) for s in songs] == [
+        ("dummy-slug", "aaaaaaaaaaa"),
+        ("other-slug", "ccccccccccc"),
+    ]
+    assert songs[0].ja == "ダミー曲"  # 제목은 코퍼스 것을 쓴다 — 검색·대조 규칙과 같은 기준
 
 
 def test_an_existing_sync_response_is_not_polled_as_a_job(tmp_path):
