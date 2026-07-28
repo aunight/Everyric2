@@ -385,6 +385,122 @@ try {
     "a zero-width piece means the font has no glyph for it; the measurement cannot be trusted",
   );
 
+  const langOutfile = path.join(temp, "lang.mjs");
+  await build({
+    entryPoints: [path.join(root, "src/panel/lang.ts")],
+    outfile: langOutfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+  });
+  const { resolveScript, resolvedPronunciation, normalizePronVariants, selectableLanguages, withTranslationLanguage } =
+    await import(`${pathToFileURL(langOutfile).href}?v=${Date.now()}`);
+
+  // 'auto' 결정표는 확장(src/lib/lang.ts)과 같아야 한다 — 두 클라이언트가 같은 곡에서
+  // 다른 표기를 보이면 안 된다.
+  assert.equal(resolveScript({ pronunciationScript: "auto", translationLanguage: "en" }), "romaji");
+  assert.equal(resolveScript({ pronunciationScript: "auto", translationLanguage: "ja" }), "kana");
+  assert.equal(resolveScript({ pronunciationScript: "auto", translationLanguage: "ko" }), "hangul");
+  assert.equal(resolveScript({ pronunciationScript: "kana", translationLanguage: "ko" }), "kana", "an explicit script wins over the table");
+
+  // 핵심 계약: 레거시 pronunciation은 항상 한글 값이라 hangul일 때만 폴백한다.
+  // 이걸 어기면 romaji·kana를 보는 사용자에게 한글 독음이 샌다.
+  const dictLine = { text: "君の名前", start: 0, end: 1, atoms: [], pronunciation: "키미노 나마에", pron: { romaji: "kimi no namae", kana: "きみのなまえ" } };
+  assert.equal(resolvedPronunciation(dictLine, "romaji"), "kimi no namae");
+  assert.equal(resolvedPronunciation(dictLine, "kana"), "きみのなまえ");
+  assert.equal(resolvedPronunciation(dictLine, "hangul"), "키미노 나마에", "hangul falls back to the legacy slot");
+  const legacyOnly = { text: "君の名前", start: 0, end: 1, atoms: [], pronunciation: "키미노 나마에" };
+  assert.equal(resolvedPronunciation(legacyOnly, "hangul"), "키미노 나마에");
+  assert.equal(resolvedPronunciation(legacyOnly, "romaji"), undefined, "a romaji reader must never be handed the hangul reading");
+  assert.equal(resolvedPronunciation(legacyOnly, "kana"), undefined, "a kana reader must never be handed the hangul reading");
+
+  assert.deepEqual(normalizePronVariants({ hangul: "가", romaji: "ga", kana: "が" }), { hangul: "가", romaji: "ga", kana: "が" });
+  assert.equal(normalizePronVariants({ romaji: "" }), undefined, "empty strings are not a reading");
+  assert.equal(normalizePronVariants({ romaji: 12 }), undefined);
+  assert.equal(normalizePronVariants(null), undefined);
+  assert.equal(normalizePronVariants(["a"]), undefined);
+
+  assert.deepEqual(selectableLanguages({ availableLangs: ["ko", "en", "zz"], lines: [] }), ["ko", "en"], "unknown languages are dropped");
+  assert.deepEqual(selectableLanguages({ lines: [{ translation: "번역" }] }), ["ko"], "a legacy document only ever held Korean");
+  assert.deepEqual(selectableLanguages({ lines: [{}] }), []);
+
+  const multi = {
+    translationLang: "ko",
+    translationsByLang: { en: ["first", null], ja: ["いち", "に"] },
+    lines: [
+      { text: "A", start: 0, end: 1, atoms: [], translation: "가" },
+      { text: "B", start: 1, end: 2, atoms: [], translation: "나" },
+    ],
+  };
+  const asEnglish = withTranslationLanguage(multi, "en");
+  assert.equal(asEnglish.translationLang, "en");
+  assert.equal(asEnglish.lines[0].translation, "first");
+  assert.equal(asEnglish.lines[1].translation, undefined, "a line without a translation in that language must not keep the old one");
+  assert.equal(multi.lines[1].translation, "나", "the original document is left untouched");
+  assert.equal(withTranslationLanguage(multi, "zz").translationLang, "ko", "an unknown language leaves the document alone");
+
+  // 서버 신버전 응답 모양 그대로 통과시켜 본다.
+  const multilingual = normalizeSyncPayload({
+    language: "ja",
+    translation_lang: "en",
+    available_langs: ["ko", "en", "ja"],
+    translations_by_lang: { ko: ["너의 이름"], en: ["your name"] },
+    timestamps: [
+      {
+        text: "君の名前",
+        start: 10,
+        end: 12,
+        translation: "your name",
+        pronunciation: "키미노 나마에",
+        pron: { hangul: "키미노 나마에", romaji: "kimi no namae", kana: "きみのなまえ" },
+        words: Array.from("君の名前").map((word, index) => ({ word, start: 10 + index * 0.5, end: 10.5 + index * 0.5 })),
+      },
+    ],
+  });
+  assert.equal(multilingual.translationLang, "en");
+  assert.deepEqual(multilingual.availableLangs, ["ko", "en", "ja"]);
+  assert.equal(multilingual.lines[0].pron.romaji, "kimi no namae");
+  assert.equal(multilingual.translationsByLang.ko[0], "너의 이름");
+  const backToKorean = withTranslationLanguage(multilingual, "ko");
+  assert.equal(backToKorean.lines[0].translation, "너의 이름", "switching language needs no refetch");
+
+  // 커팅 화면의 발음도 같은 규칙을 따른다.
+  const romajiSession = buildCutSession(
+    { index: 1, name: "L", inPoint: 10, outPoint: 12, text: "君の名前", sourceTextKeys: 0, locked: false },
+    multilingual,
+    "romaji",
+  );
+  assert.equal(romajiSession.pronunciation, "kimi no namae");
+  const legacyDocument = normalizeSyncPayload({
+    timestamps: [{ text: "君の名前", start: 10, end: 12, pronunciation: "키미노 나마에",
+      words: Array.from("君の名前").map((word, index) => ({ word, start: 10 + index * 0.5, end: 10.5 + index * 0.5 })) }],
+  });
+  const legacyRomaji = buildCutSession(
+    { index: 1, name: "L", inPoint: 10, outPoint: 12, text: "君の名前", sourceTextKeys: 0, locked: false },
+    legacyDocument,
+    "romaji",
+  );
+  assert.equal(legacyRomaji.pronunciation, undefined, "an old sync shows no reading rather than the wrong script");
+  const legacyHangul = buildCutSession(
+    { index: 1, name: "L", inPoint: 10, outPoint: 12, text: "君の名前", sourceTextKeys: 0, locked: false },
+    legacyDocument,
+    "hangul",
+  );
+  assert.equal(legacyHangul.pronunciation, "키미노 나마에", "the Korean reader still sees the legacy reading");
+
+  // 발음 표시는 반드시 resolvedPronunciation을 거쳐야 한다. line.pronunciation을 직접
+  // 읽는 표시 코드가 생기면 romaji·kana 사용자에게 한글이 새기 시작한다.
+  const cutterSource = fs.readFileSync(path.join(root, "src/panel/cutter.ts"), "utf8");
+  assert.ok(cutterSource.includes("resolvedPronunciation(match.line, script)"), "the cut view must resolve the reading through the shared contract");
+  assert.ok(
+    !/line\.pronunciation|match\.line\.pronunciation/.test(cutterSource.replace(/resolvedPronunciation\([^)]*\)/g, "")),
+    "nothing may read the legacy pronunciation slot directly",
+  );
+  const serverClientSource = fs.readFileSync(path.join(root, "src/panel/server-client.ts"), "utf8");
+  assert.ok(serverClientSource.includes("?lang=${encodeURIComponent(lang)}"), "the lookup must pass the requested translation language");
+  assert.ok(serverClientSource.includes("translations_by_lang"), "the multilingual payload must be carried through");
+
   const storeOutfile = path.join(temp, "sync-store.mjs");
   await build({
     entryPoints: [path.join(root, "src/panel/sync-store.ts")],

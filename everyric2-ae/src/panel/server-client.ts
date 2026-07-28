@@ -20,6 +20,12 @@ interface SyncLookupResponse {
   quality_score?: number;
   attribution?: { name?: string; url?: string };
   linked?: { source_video_id?: string; offset_sec?: number; verified?: boolean };
+  /** 세그먼트 translation이 실제로 어느 언어인지 — lang을 준 요청에만 채워진다. */
+  translation_lang?: string | null;
+  /** 이 싱크로 서빙 가능한 번역 언어 목록. */
+  available_langs?: string[] | null;
+  /** 언어별 번역 배열 — 재조회 없이 언어를 갈아끼우는 데 쓴다. */
+  translations_by_lang?: Record<string, Array<string | null>> | null;
 }
 
 /**
@@ -64,6 +70,7 @@ export async function fetchServerSync(
   serverUrl: string,
   videoIdOrUrl: string,
   apiKey?: string,
+  lang?: string,
 ): Promise<ServerSyncResult> {
   const base = normalizeServerUrl(serverUrl);
   if (!base) throw new Error("서버 주소가 비어 있습니다.");
@@ -75,7 +82,9 @@ export async function fetchServerSync(
   try {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (apiKey) headers["X-API-Key"] = apiKey;
-    const response = await fetch(`${base}/api/sync/${videoId}`, {
+    // lang을 주면 그 언어 번역 레이어가 세그먼트에 얹혀 온다. 안 주면 구버전과 같은 응답.
+    const query = lang ? `?lang=${encodeURIComponent(lang)}` : "";
+    const response = await fetch(`${base}/api/sync/${videoId}${query}`, {
       headers,
       cache: "no-store",
       signal: controller.signal,
@@ -86,7 +95,13 @@ export async function fetchServerSync(
       throw new Error("이 영상의 싱크가 서버에 없습니다.");
     }
     const document = normalizeSyncPayload(
-      { timestamps: payload.timestamps, language: payload.language },
+      {
+        timestamps: payload.timestamps,
+        language: payload.language,
+        translation_lang: payload.translation_lang ?? undefined,
+        available_langs: payload.available_langs ?? undefined,
+        translations_by_lang: payload.translations_by_lang ?? undefined,
+      },
       `서버 · ${videoId}`,
     );
     return {

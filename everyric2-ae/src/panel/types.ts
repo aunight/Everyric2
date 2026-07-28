@@ -5,13 +5,27 @@ export interface TimingAtom {
   confidence?: number;
 }
 
+/** 발음 표기 종류. 서버가 한 줄에 여러 표기를 함께 실어 보낸다. */
+export type PronScript = "hangul" | "romaji" | "kana";
+
+/** 번역 대상 언어. 서버의 translation_layers가 다루는 언어들. */
+export type TranslationLanguage = "ko" | "en" | "ja";
+
+export type PronVariants = Partial<Record<PronScript, string>>;
+
 export interface SyncLine {
   text: string;
   start: number;
   end: number;
   confidence?: number;
   translation?: string;
+  /**
+   * 레거시 발음 슬롯 — **항상 한글 값**이다. 표시할 때 직접 읽지 말고
+   * `resolvedPronunciation()`을 거쳐야 한다(romaji·kana 사용자에게 한글이 새지 않도록).
+   */
   pronunciation?: string;
+  /** 표기별 발음. 서버 신버전이 채운다. */
+  pron?: PronVariants;
   atoms: TimingAtom[];
 }
 
@@ -20,6 +34,12 @@ export interface SyncDocument {
   language: string;
   sourceLabel: string;
   duration: number;
+  /** 이 싱크로 서빙 가능한 번역 언어 — 서버가 알려준 목록. */
+  availableLangs?: string[];
+  /** 지금 lines[].translation이 어느 언어인지. */
+  translationLang?: string;
+  /** 언어별 번역 배열({lang: [줄 순서대로]}) — 재조회 없이 언어를 갈아끼우는 데 쓴다. */
+  translationsByLang?: Record<string, Array<string | null>>;
 }
 
 export type MatchQuality = "exact" | "substring" | "time" | "none";
@@ -207,6 +227,10 @@ export interface AppSettings {
   /** 이미 만들어진 싱크를 영상 ID로 조회할 서버. */
   serverUrl: string;
   serverApiKey: string;
+  /** 서버에서 받아올 번역 언어. */
+  translationLanguage: TranslationLanguage;
+  /** 발음 표기. 'auto'면 번역 언어를 따른다(en→romaji, ja→kana, 그 밖→hangul). */
+  pronunciationScript: PronScript | "auto";
 }
 
 export interface HostResult {

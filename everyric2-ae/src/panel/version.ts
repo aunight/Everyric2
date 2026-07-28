@@ -1,4 +1,4 @@
-export const PANEL_VERSION = "2.1.0";
+export const PANEL_VERSION = "2.2.0";
 
 // 이 패널이 지원하는 everyric2 엔진 버전 범위. 릴리즈 시 latest.json의 engineRange와 함께 관리한다.
 export const SUPPORTED_ENGINE_RANGE = ">=0.1.0 <1.0.0";

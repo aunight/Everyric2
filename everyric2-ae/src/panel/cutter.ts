@@ -1,4 +1,5 @@
-import type { CutPiece, CutPoint, CutReveal, CharTiming, CutSession, MatchQuality, SyncDocument, SyncLine, TextLayerInfo, TimingAtom } from "./types";
+import { resolvedPronunciation } from "./lang";
+import type { CutPiece, CutPoint, CutReveal, CharTiming, CutSession, MatchQuality, PronScript, SyncDocument, SyncLine, TextLayerInfo, TimingAtom } from "./types";
 
 /** 컷끼리, 그리고 컷과 레이어 경계 사이에 최소한 남겨 두는 간격(초). 30fps 한 프레임. */
 const MIN_PIECE_SEC = 1 / 30;
@@ -201,9 +202,16 @@ export function cutBlocker(layer: TextLayerInfo): string | undefined {
   return undefined;
 }
 
-export function buildCutSession(layer: TextLayerInfo, document: SyncDocument | null): CutSession {
+export function buildCutSession(
+  layer: TextLayerInfo,
+  document: SyncDocument | null,
+  script: PronScript = "hangul",
+): CutSession {
   const blocked = cutBlocker(layer);
   const match = document ? matchLine(layer, document) : null;
+  // 발음은 고른 표기로만 보여준다. 표기가 없으면 줄 자체를 생략한다 —
+  // 레거시 슬롯은 한글 값이라 romaji·kana 사용자에게 주면 안 된다.
+  const pronunciation = match ? resolvedPronunciation(match.line, script) : undefined;
   const atoms = match?.atoms ?? [];
   const chars = assignCharTimings(
     layer.text,
@@ -223,7 +231,7 @@ export function buildCutSession(layer: TextLayerInfo, document: SyncDocument | n
     chars,
     matchQuality: match?.quality ?? "none",
     ...(match ? { lineText: match.line.text } : {}),
-    ...(match?.line.pronunciation ? { pronunciation: match.line.pronunciation } : {}),
+    ...(pronunciation ? { pronunciation } : {}),
     ...(match?.line.translation ? { translation: match.line.translation } : {}),
     ...(blocked ? { blocked } : {}),
   };

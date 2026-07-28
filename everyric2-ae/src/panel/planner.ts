@@ -1,3 +1,4 @@
+import { normalizePronVariants } from "./lang";
 import type {
   Density,
   FillAssignment,
@@ -99,6 +100,9 @@ export function normalizeSyncPayload(payload: unknown, sourceLabel = "JSON"): Sy
       ...(confidence === undefined ? {} : { confidence }),
       ...(typeof candidate.translation === "string" ? { translation: candidate.translation } : {}),
       ...(typeof candidate.pronunciation === "string" ? { pronunciation: candidate.pronunciation } : {}),
+      // 표기별 발음(hangul/romaji/kana). 구버전 서버·로컬 JSON에는 없고, 그때는 위의
+      // 레거시 한글 슬롯이 hangul 표기로만 폴백된다.
+      ...(normalizePronVariants(candidate.pron) ? { pron: normalizePronVariants(candidate.pron)! } : {}),
     });
   }
 
@@ -112,11 +116,22 @@ export function normalizeSyncPayload(payload: unknown, sourceLabel = "JSON"): Sy
     language = payload.language;
   }
 
+  const root = isRecord(payload) ? payload : {};
+  const availableLangs = Array.isArray(root.available_langs)
+    ? root.available_langs.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+  const translationsByLang = isRecord(root.translations_by_lang)
+    ? (root.translations_by_lang as Record<string, Array<string | null>>)
+    : undefined;
+
   return {
     lines,
     language,
     sourceLabel,
     duration: Math.max(...lines.map((line) => line.end)),
+    ...(availableLangs && availableLangs.length > 0 ? { availableLangs } : {}),
+    ...(typeof root.translation_lang === "string" ? { translationLang: root.translation_lang } : {}),
+    ...(translationsByLang ? { translationsByLang } : {}),
   };
 }
 

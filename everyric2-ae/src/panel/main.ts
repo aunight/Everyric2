@@ -10,6 +10,7 @@ import {
 import { installEngine } from "./engine-install";
 import { inspectEnvironment, readJsonFile, runLocalSync } from "./local-sync";
 import { normalizeSyncPayload, planLayerFill, planLineLyrics, planTypography } from "./planner";
+import { resolveScript, selectableLanguages, withTranslationLanguage } from "./lang";
 import { fetchServerSync } from "./server-client";
 import { compKey, forgetSyncForComp, loadSyncForComp, saveSyncForComp } from "./sync-store";
 import { fetchLatestManifest, openExternal, panelUpdate, RELEASES_URL } from "./updater";
@@ -56,6 +57,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   cutReveal: "cumulative",
   serverUrl: "https://everyric.moref.co",
   serverApiKey: "",
+  translationLanguage: "ko",
+  pronunciationScript: "auto",
 };
 
 function element<T extends HTMLElement>(id: string): T {
@@ -303,6 +306,12 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     forgetSync: "저장된 싱크 지우기",
     statusSyncRestored: "이 컴포지션에 저장해 둔 싱크 {count}줄을 불러왔습니다.",
     statusSyncForgotten: "이 컴포지션의 저장된 싱크를 지웠습니다.",
+    translationLangLabel: "번역 언어",
+    pronScriptLabel: "발음 표기",
+    pronScriptAuto: "자동 (번역 언어 기준)",
+    pronScriptHangul: "한글",
+    statusLangUnavailable: "이 곡에는 {lang} 번역이 아직 없습니다. 준비된 언어: {available}",
+    statusLangNeedsRefetch: "{lang} 번역은 서버에서 다시 받아야 합니다. 준비된 언어: {available}",
   },
   ja: {
     settingsAria: "設定",
@@ -490,6 +499,12 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     forgetSync: "保存した同期データを削除",
     statusSyncRestored: "このコンポジションに保存された同期データ {count} 行を読み込みました。",
     statusSyncForgotten: "このコンポジションの保存済み同期データを削除しました。",
+    translationLangLabel: "翻訳言語",
+    pronScriptLabel: "発音表記",
+    pronScriptAuto: "自動（翻訳言語に合わせる）",
+    pronScriptHangul: "ハングル",
+    statusLangUnavailable: "この曲には{lang}の翻訳がまだありません。利用可能: {available}",
+    statusLangNeedsRefetch: "{lang}の翻訳はサーバーから取得し直す必要があります。利用可能: {available}",
   },
   en: {
     settingsAria: "Settings",
@@ -677,6 +692,12 @@ const UI_TEXT: Record<UiLocale, LocaleDictionary> = {
     forgetSync: "Forget stored sync",
     statusSyncRestored: "Restored {count} lines stored for this composition.",
     statusSyncForgotten: "Removed the sync stored for this composition.",
+    translationLangLabel: "Translation",
+    pronScriptLabel: "Pronunciation",
+    pronScriptAuto: "Auto (follows translation)",
+    pronScriptHangul: "Hangul",
+    statusLangUnavailable: "This song has no {lang} translation yet. Available: {available}",
+    statusLangNeedsRefetch: "The {lang} translation has to be fetched from the server again. Available: {available}",
   },
 };
 
@@ -755,6 +776,16 @@ class EveryricStudioPanel {
     this.bindClick("loadCutLayerBtn", () => this.loadCutLayer());
     this.bindClick("applyCutBtn", () => this.applyCut());
     this.bindCutStage();
+    element<HTMLSelectElement>("translationLangSelect").addEventListener("change", () => {
+      this.captureSettings(false);
+      this.switchTranslationLanguage();
+    });
+    element<HTMLSelectElement>("pronScriptSelect").addEventListener("change", () => {
+      this.captureSettings(false);
+      // 표기는 이미 받아 둔 값 중에서 고르는 것이라 다시 그리기만 하면 된다.
+      if (this.cutSession) this.reloadCutSessionForScript();
+      this.renderCut();
+    });
     ["keepCutPositionCheck", "cutRevealSelect"].forEach((id) => {
       element<HTMLElement>(id).addEventListener("change", () => {
         this.captureSettings(false);
@@ -894,6 +925,10 @@ class EveryricStudioPanel {
     this.setText("#view-sync .section-heading p", "syncIntro");
     this.setText("#loadJsonBtn", "loadJson");
     this.setText("#fetchServerBtn", "fetchServer");
+    this.setLabelText("translationLangSelect", "translationLangLabel");
+    this.setLabelText("pronScriptSelect", "pronScriptLabel");
+    this.setOptionText("pronScriptSelect", "auto", "pronScriptAuto");
+    this.setOptionText("pronScriptSelect", "hangul", "pronScriptHangul");
     element<HTMLInputElement>("videoUrlInput").placeholder = this.t("videoUrlPlaceholder");
     this.setLabelHint("serverUrlInput", "serverUrlHint");
     this.setLabelHint("serverApiKeyInput", "serverKeyHint");
@@ -1048,6 +1083,8 @@ class EveryricStudioPanel {
     element<HTMLSelectElement>("cutRevealSelect").value = this.settings.cutReveal;
     element<HTMLInputElement>("serverUrlInput").value = this.settings.serverUrl;
     element<HTMLInputElement>("serverApiKeyInput").value = this.settings.serverApiKey;
+    element<HTMLSelectElement>("translationLangSelect").value = this.settings.translationLanguage;
+    element<HTMLSelectElement>("pronScriptSelect").value = this.settings.pronunciationScript;
     this.renderPresetState();
     this.applyLocaleToUI();
   }
@@ -1085,6 +1122,8 @@ class EveryricStudioPanel {
       cutReveal: element<HTMLSelectElement>("cutRevealSelect").value as AppSettings["cutReveal"],
       serverUrl: element<HTMLInputElement>("serverUrlInput").value.trim() || DEFAULT_SETTINGS.serverUrl,
       serverApiKey: element<HTMLInputElement>("serverApiKeyInput").value.trim(),
+      translationLanguage: element<HTMLSelectElement>("translationLangSelect").value as AppSettings["translationLanguage"],
+      pronunciationScript: element<HTMLSelectElement>("pronScriptSelect").value as AppSettings["pronunciationScript"],
     };
     this.saveSettings();
     if (close) {
@@ -1404,6 +1443,52 @@ class EveryricStudioPanel {
     }
   }
 
+  /**
+   * 번역 언어를 바꾼다. 서버가 언어별 번역을 함께 줬으면 재조회 없이 갈아끼우고,
+   * 없으면 다시 받아야 한다고 알린다(로컬 JSON으로 불러온 문서가 그렇다).
+   */
+  private switchTranslationLanguage(): void {
+    const current = this.syncDocument;
+    if (!current) return;
+    const lang = this.settings.translationLanguage;
+    if (current.translationLang === lang) return;
+    const table = current.translationsByLang?.[lang];
+    if (!table) {
+      const available = selectableLanguages(current);
+      this.statusKey("ready", "statusLangNeedsRefetch", {
+        lang,
+        available: available.length > 0 ? available.join(", ") : "-",
+      });
+      return;
+    }
+    this.setSyncDocument(withTranslationLanguage(current, lang));
+    this.reloadCutSessionForScript();
+    this.renderCut();
+  }
+
+  /** 표기·언어가 바뀌면 지금 보고 있는 커팅 세션의 발음도 다시 뽑는다. */
+  private reloadCutSessionForScript(): void {
+    const session = this.cutSession;
+    if (!session) return;
+    const layer: TextLayerInfo = {
+      index: session.layerIndex,
+      name: session.layerName,
+      inPoint: session.inPoint,
+      outPoint: session.outPoint,
+      text: session.text,
+      sourceTextKeys: 0,
+      locked: false,
+    };
+    const rebuilt = buildCutSession(layer, this.syncDocument, resolveScript(this.settings));
+    // 찍어 둔 컷은 글자 인덱스 기준이라 그대로 살린다 — 글자 수가 같으면 유효하다.
+    if (rebuilt.chars.length === session.chars.length) {
+      this.cutSession = rebuilt;
+    } else {
+      this.cutSession = rebuilt;
+      this.cutPoints = [];
+    }
+  }
+
   private forgetStoredSync(): void {
     forgetSyncForComp(this.comp?.projectPath, this.comp?.compId);
     this.statusKey("ready", "statusSyncForgotten");
@@ -1418,8 +1503,20 @@ class EveryricStudioPanel {
     }
     this.setBusyKey(true, "statusServerFetching");
     try {
-      const result = await fetchServerSync(this.settings.serverUrl, query, this.settings.serverApiKey);
+      const result = await fetchServerSync(
+        this.settings.serverUrl,
+        query,
+        this.settings.serverApiKey,
+        this.settings.translationLanguage,
+      );
       this.setSyncDocument(result.document);
+      const available = selectableLanguages(result.document);
+      if (available.length > 0 && available.indexOf(this.settings.translationLanguage) < 0) {
+        this.addProgress("warn", this.t("statusLangUnavailable", {
+          lang: this.settings.translationLanguage,
+          available: available.join(", "),
+        }));
+      }
       if (result.attribution?.name) this.addProgress("info", `${this.t("cutTransLabel")} · ${result.attribution.name}`);
       if (result.linked?.source_video_id) {
         // 빌려온 싱크는 다른 영상 기준이라, 오프셋이 맞는지 사용자가 알아야 한다.
@@ -1888,7 +1985,7 @@ class EveryricStudioPanel {
         this.renderCut();
         return;
       }
-      this.cutSession = buildCutSession(layer, this.syncDocument);
+      this.cutSession = buildCutSession(layer, this.syncDocument, resolveScript(this.settings));
       this.cutPoints = [];
       this.renderCut();
       this.statusKey("ready", "statusCutLoaded", { name: layer.name, count: this.cutSession.chars.length });
@@ -1904,7 +2001,7 @@ class EveryricStudioPanel {
       );
       const layer = (response.layers ?? [])[0];
       if (!response.ok || !layer) throw new Error(response.error || this.t("statusCutNoSelection"));
-      this.cutSession = buildCutSession(layer, this.syncDocument);
+      this.cutSession = buildCutSession(layer, this.syncDocument, resolveScript(this.settings));
       this.cutPoints = [];
       this.lastCutSelectionSignature = this.cutSelectionSignature(layer);
       this.renderCut();
