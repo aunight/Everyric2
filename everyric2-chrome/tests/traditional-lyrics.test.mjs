@@ -104,4 +104,21 @@ test('non-Chinese captions remain unchanged', () => {
   assert.deepEqual(normalizeTraditionalLyricsData(input), input);
 });
 
-export { contentSource, neteaseSource };
+test('all loaded lyrics normalize before currentData assignment', () => {
+  assert.match(
+    contentSource,
+    /import \{ normalizeTraditionalLyricsData \} from '\.\/lib\/traditional-lyrics';/,
+  );
+  assert.match(
+    contentSource,
+    /function applyLyricsData[\s\S]*stripProductionCredits\(data\)[\s\S]*normalizeTraditionalLyricsData\(data\)[\s\S]*currentData = data/,
+  );
+});
+
+test('NetEase reuses the common OpenCC converter', () => {
+  assert.match(
+    neteaseSource,
+    /import \{ toTraditionalText \} from '\.\/traditional-lyrics\.ts';/,
+  );
+  assert.doesNotMatch(neteaseSource, /Converter\(\{ from: 'cn', to: 'tw' \}\)/);
+});

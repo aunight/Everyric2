@@ -1,16 +1,13 @@
-import { Converter } from 'opencc-js';
-
 import type { LyricsData, LyricLine } from '../types';
 import { parseLRC } from './lyrics-parser.ts';
 import type { NeteaseLyric } from './netease';
+import { toTraditionalText } from './traditional-lyrics.ts';
 import { detectLyricLanguage } from './translation-visibility.ts';
 
-const toTraditional = Converter({ from: 'cn', to: 'tw' });
-
 function traditionalizeLine(line: LyricLine): void {
-  line.text = toTraditional(line.text);
+  line.text = toTraditionalText(line.text);
   for (const word of line.words ?? []) {
-    word.word = toTraditional(word.word);
+    word.word = toTraditionalText(word.word);
   }
 }
 
@@ -33,7 +30,7 @@ export function neteaseToLyricsData(
       if (translatedLine.time == null || !translatedLine.text) continue;
       trByTime.set(
         Math.round(translatedLine.time * 100),
-        toTraditional(translatedLine.text),
+        toTraditionalText(translatedLine.text),
       );
     }
     for (const [index, line] of lines.entries()) {

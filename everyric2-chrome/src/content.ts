@@ -12,6 +12,7 @@ import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
 import { matchWikiLinesToSegments, resolveScript, resolvedPronunciation } from './lib/lang';
 import { isSameLanguageTarget } from './lib/translation-visibility';
+import { normalizeTraditionalLyricsData } from './lib/traditional-lyrics';
 import { lyricsSourceOrder } from './lib/lyrics-source-priority';
 import { normalizeScoringSettingsPatch } from './lib/scoring-settings';
 import { setUiLanguage, t } from './lib/i18n';
@@ -2254,7 +2255,11 @@ function applyLyricsData(data: LyricsData | null): void {
   const panel = ensureOverlay();
   if (data) {
     data = stripProductionCredits(data);
-    if (data.lines.length === 0) data = null;
+    if (data.lines.length > 0) {
+      data = normalizeTraditionalLyricsData(data);
+    } else {
+      data = null;
+    }
   }
   currentData = data;
   lastLineIndex = -1;
