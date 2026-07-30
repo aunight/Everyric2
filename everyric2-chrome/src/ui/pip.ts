@@ -3,6 +3,7 @@ import type { MicSample } from '../lib/mic-pitch';
 import { ScoreTracker } from '../lib/karaoke-score';
 import { buildMicTraceSegments, type MicTracePoint } from '../lib/mic-trace';
 import { resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
+import { lyricsForScoring } from '../lib/scoring-lyrics.ts';
 import { t } from '../lib/i18n';
 import { unknownStatus } from '../lib/server-status';
 import type { ThemeName } from '../lib/theme';
@@ -1019,10 +1020,11 @@ export class PipController {
   }
 
   setLines(lines: LyricLine[]): void {
-    this.lines = lines;
+    const scoringLines = lyricsForScoring(lines);
+    this.lines = scoringLines;
     this.index = -1;
-    this.songLanguage = detectLyricLanguage(lines.map(line => line.text));
-    this.pitch = collectPitchData(lines, this.pronScript, this.songLanguage);
+    this.songLanguage = detectLyricLanguage(scoringLines.map(line => line.text));
+    this.pitch = collectPitchData(scoringLines, this.pronScript, this.songLanguage);
     // 곡(멜로디)이 실제로 바뀌었을 때만 채점을 리셋한다 — setLines는 같은 곡에서도
     // 번역·발음 도착 때마다 다시 불리므로(content:1597) 무조건 리셋하면 부르던 점수가
     // 매번 0으로 돌아간다. 멜로디 서명이 다르면 이전 곡 점수를 flush하고 새로 센다.

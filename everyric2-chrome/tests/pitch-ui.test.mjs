@@ -21,7 +21,10 @@ function ruleBody(selector) {
 }
 
 test('Chinese pitch labels use original lyric text and do not expose pronunciation cycling', () => {
-  assert.match(pipSource, /detectLyricLanguage\(lines\.map\(line => line\.text\)\)/);
+  assert.match(
+    pipSource,
+    /detectLyricLanguage\(scoringLines\.map\(line => line\.text\)\)/,
+  );
   assert.match(pitchLabelSource, /word\.word[\s\S]*?songLanguage === 'zh'/);
   assert.match(pipSource, /display\(this\.pronScriptBtn,\s*lane && this\.songLanguage !== 'zh'\)/);
 });

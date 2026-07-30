@@ -100,4 +100,13 @@ test('mixed lines keep visible text, matching words, translation, and pitch note
   assert.equal(result[0]?.notes?.length, 3);
 });
 
-export { pipSource };
+test('PiP stores and scores the sanitized same-index lyric view', () => {
+  assert.match(
+    pipSource,
+    /import \{ lyricsForScoring \} from '\.\.\/lib\/scoring-lyrics\.ts';/,
+  );
+  assert.match(
+    pipSource,
+    /setLines\(lines: LyricLine\[\]\): void \{[\s\S]*const scoringLines = lyricsForScoring\(lines\);[\s\S]*this\.lines = scoringLines;[\s\S]*collectPitchData\(scoringLines,/,
+  );
+});
