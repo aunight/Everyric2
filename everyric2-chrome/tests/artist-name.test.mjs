@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
   artistForDisplay,
   primaryArtistForSearch,
 } from '../src/lib/artist-name.ts';
+
+const songDetectorSource = readFileSync(
+  new URL('../src/lib/song-detector.ts', import.meta.url),
+  'utf8',
+);
 
 test('display artist removes only a trailing YouTube Topic suffix', () => {
   assert.equal(artistForDisplay('Artist - Topic'), 'Artist');
@@ -50,4 +56,20 @@ test('artist normalization safely handles blank and malformed input', () => {
   assert.equal(primaryArtistForSearch(undefined), '');
   assert.equal(primaryArtistForSearch(' feat. Guest'), '');
   assert.equal(primaryArtistForSearch('  Main   Artist   feat.   Guest  '), 'Main Artist');
+});
+
+test('all detected artist display paths use the shared display normalizer', () => {
+  assert.match(
+    songDetectorSource,
+    /import \{ artistForDisplay \} from '\.\/artist-name'/,
+  );
+  assert.match(
+    songDetectorSource,
+    /function displayArtist\(value: string \| null \| undefined\): string \| null/,
+  );
+  assert.equal(
+    songDetectorSource.match(/artist:\s*displayArtist\(/g)?.length,
+    3,
+  );
+  assert.doesNotMatch(songDetectorSource, /\.replace\(\/ - Topic\$\/i/);
 });

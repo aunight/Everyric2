@@ -1,4 +1,5 @@
 import type { SongInfo } from '../types';
+import { artistForDisplay } from './artist-name';
 import { parseSongTitle } from './song-title';
 
 export function getCurrentVideoId(): string | null {
@@ -35,6 +36,10 @@ function textOf(selector: string): string {
   return document.querySelector(selector)?.textContent?.trim() ?? '';
 }
 
+function displayArtist(value: string | null | undefined): string | null {
+  return artistForDisplay(value) || null;
+}
+
 export function detectSong(): SongInfo | null {
   const videoId = getCurrentVideoId();
   if (!videoId) return null;
@@ -49,7 +54,7 @@ export function detectSong(): SongInfo | null {
     const split = parseSongTitle(meta.title);
     return {
       title: split.title,
-      artist: split.artist ?? (meta.artist || null),
+      artist: displayArtist(split.artist ?? meta.artist),
       videoId,
       duration,
     };
@@ -63,7 +68,7 @@ export function detectSong(): SongInfo | null {
       const parsed = parseSongTitle(title);
       return {
         title: parsed.title,
-        artist: parsed.artist ?? artist,
+        artist: displayArtist(parsed.artist ?? artist),
         videoId,
         duration,
       };
@@ -75,11 +80,11 @@ export function detectSong(): SongInfo | null {
     || document.title.replace(/ - YouTube$/, '').trim();
   if (!rawTitle || rawTitle === 'YouTube') return null;
 
-  const channel = textOf('#owner #channel-name a').replace(/ - Topic$/i, '').trim() || null;
+  const channel = textOf('#owner #channel-name a') || null;
   const split = parseSongTitle(rawTitle);
   return {
     title: split.title,
-    artist: split.artist ?? channel,
+    artist: displayArtist(split.artist ?? channel),
     videoId,
     duration,
   };
