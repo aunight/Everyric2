@@ -5,7 +5,7 @@ export interface SongInfo {
   duration: number;
 }
 
-/** 가라오케 음정 바용 노트 — 서버(FCPE)가 음절 구간을 반음 양자화한 결과 */
+/** 가라오케 음정 바용 노트 — 서버(RMVPE/FCPE)가 음절 구간을 반음 양자화한 결과 */
 export interface NoteSegment {
   midi: number;
   start: number;

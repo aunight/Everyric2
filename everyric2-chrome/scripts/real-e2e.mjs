@@ -1,7 +1,7 @@
 // 실서버(:8000) + 실제 YouTube 영상으로 전체 사용자 여정을 검증하는 E2E.
 //
 //   빈 상태(가사 없음) → "다시 검색"에 한국어 곡명 입력 → 보카로 가사 위키 히트(원문+번역)
-//   → "싱크 생성"(위키 가사) → 실서버 yt-dlp 다운로드 + CTC 정렬 + FCPE 멜로디
+//   → "싱크 생성"(위키 가사) → 실서버 yt-dlp 다운로드 + CTC 정렬 + RMVPE 멜로디
 //   → 싱크 가사 + 단어 하이라이트 → PiP 음정 바 픽셀 검증
 //
 // 사전 조건: 실서버가 :8000에 떠 있어야 한다 (mock-server 아님!).
@@ -136,7 +136,7 @@ try {
     const root = document.getElementById('everyric-root')?.shadowRoot;
     Array.from(root.querySelectorAll('.ey-generate-btn')).find(b => b.textContent.includes('싱크 생성')).click();
   });
-  console.log('generate clicked — waiting for real server job (download + CTC + FCPE)...');
+  console.log('generate clicked — waiting for real server job (download + CTC + RMVPE)...');
 
   // 진행 표시 확인 (비치명 — 빠르게 지나갈 수 있음)
   try {
@@ -191,7 +191,7 @@ try {
   await page.screenshot({ path: resolve(__dirname, '../e2e-2-synced.png') });
   console.log('screenshot: e2e-2-synced.png');
 
-  // 6) PiP + 음정 바 (FCPE notes가 실제로 그려지는지)
+  // 6) PiP + 음정 바 (RMVPE notes가 실제로 그려지는지)
   await page.locator('[title="PiP 창으로 보기"]').click();
   await page.waitForTimeout(3000);
   const pip = await page.evaluate(() => {
@@ -216,7 +216,7 @@ try {
   check(pip.open, 'PiP 열림', pip.currentLine);
   if (pip.pron) console.log('PASS: PiP 발음 표기 =', JSON.stringify(pip.pron));
   else console.log('WARN: 현재 라인에 발음 표기 없음 (해당 라인이 발음 없는 라인일 수 있음)');
-  check(pip.pitch.present && pip.pitch.visible && pip.pitch.drawnPx > 50, '가라오케 음정 바 (실제 FCPE notes)', pip.pitch);
+  check(pip.pitch.present && pip.pitch.visible && pip.pitch.drawnPx > 50, '가라오케 음정 바 (실제 RMVPE notes)', pip.pitch);
   try {
     const pipPage = ctx.pages().find(p => p !== page);
     if (pipPage) {

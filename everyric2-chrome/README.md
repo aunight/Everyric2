@@ -89,9 +89,12 @@ uvicorn everyric2.server.main:app --port 8000
 한 번 허용**해야 합니다 — 그 호스트 권한은 `optional_host_permissions`라서 설치 시 부여되지
 않습니다(기본 서버를 쓰는 사용자에게 불필요한 권한을 주지 않기 위한 것입니다).
 
-가라오케 노트의 음정 정확도를 위해 서버는 demucs 보컬 분리 후 FCPE로 f0를
-추출합니다 (`uv pip install demucs` 필요 — 없으면 믹스에서 추출로 폴백하는데,
-반주 피치가 섞여 정확도가 크게 떨어집니다. CPU 기준 곡당 약 1분 추가).
+가라오케 노트의 음정 정확도를 위해 서버는 demucs 보컬 분리 후 RMVPE로 f0를
+추출합니다. 저장소 루트에서 `pip install -e ".[separator,dereverb]"`를 실행하고
+`python scripts/download_rmvpe.py`로 검증된 가중치를 받아야 합니다. RMVPE가 없거나
+깨졌을 때 FCPE로 조용히 바뀌지 않습니다. 고품질 분리는
+`EVERYRIC_AUDIO_DEMUCS_MODEL=htdemucs_ft`, 음정 입력에만 쓰는 선택형 잔향 억제는
+`EVERYRIC_MELODY_DEREVERB=true`로 켭니다.
 번역은 `GEMINI_API_KEY`가 있으면 Gemini, 없으면 무료 구글 웹 번역으로 폴백합니다.
 
 ## 구조
@@ -132,5 +135,5 @@ node scripts/real-e2e.mjs          # 실서버(:8000) + 실제 영상 전체 여
 ```
 
 `real-e2e.mjs`는 실서버가 :8000에 떠 있어야 하며, 기본값으로 로키 공식 MV에서
-「빈 상태 → "로키" 재검색 → 보카로 위키(발음/번역) → 싱크 생성(다운로드+CTC+FCPE)
+「빈 상태 → "로키" 재검색 → 보카로 위키(발음/번역) → 싱크 생성(다운로드+CTC+RMVPE)
 → 하이라이트 → PiP 음정 바 → 넓은 창 레이아웃」을 순서대로 검증합니다.

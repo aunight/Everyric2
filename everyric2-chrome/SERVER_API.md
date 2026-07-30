@@ -51,7 +51,10 @@
 - 줄 순서는 무관 (확장이 start 기준 정렬)
 - 빈 text 줄은 무시됨
 - `notes`: 라인 구간의 멜로디를 반음(MIDI 번호) 단위로 양자화한 것. 이 저장소의
-  FastAPI 서버는 FCPE 기반으로 자동 생성한다 (`EVERYRIC_MELODY_ENABLED`, 기본 켜짐).
+  FastAPI 서버는 기본적으로 RMVPE 기반으로 자동 생성한다
+  (`EVERYRIC_MELODY_ENABLED`, 기본 켜짐). RMVPE 權重需先用
+  `python scripts/download_rmvpe.py` 下載並驗證；只有明確設定
+  `EVERYRIC_MELODY_F0_MODEL=fcpe` 時才使用 FCPE。
   word 레벨에 `notes`를 넣어도 확장이 동일하게 표시한다.
 - `pronunciation`/`translation`: 생성 요청의 `line_meta`로 들어온 값이 저장된 것.
   확장은 translation이 있으면 해당 곡에서 서버 기계번역을 호출하지 않는다.
