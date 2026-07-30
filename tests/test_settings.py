@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from everyric2.config.settings import (
     AudioSettings,
     ModelSettings,
@@ -53,9 +56,18 @@ class TestAudioSettings:
         test_dir = tmp_path / "everyric_test"
 
         # Monkey-patch the default
-        settings = AudioSettings(temp_dir=test_dir)
+        AudioSettings(temp_dir=test_dir)
 
         assert test_dir.exists()
+
+    def test_fine_tuned_demucs_is_an_explicit_high_quality_option(self):
+        settings = AudioSettings(demucs_model="htdemucs_ft")
+
+        assert settings.demucs_model == "htdemucs_ft"
+
+    def test_unknown_demucs_model_is_rejected_before_subprocess_launch(self):
+        with pytest.raises(ValidationError):
+            AudioSettings(demucs_model="made-up-model")
 
 
 class TestOutputSettings:

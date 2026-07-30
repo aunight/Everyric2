@@ -56,7 +56,18 @@ class AudioSettings(BaseSettings):
     target_sample_rate: int = Field(default=24000, description="Target sample rate for model input")
 
     # Demucs settings
-    demucs_model: str = Field(default="htdemucs", description="Demucs model for vocal separation")
+    demucs_model: Literal[
+        "htdemucs",
+        "htdemucs_ft",
+        "htdemucs_6s",
+        "mdx",
+        "mdx_extra",
+        "mdx_extra_q",
+    ] = Field(
+        default="htdemucs",
+        description="Demucs model for vocal separation. htdemucs is the fast default; "
+        "htdemucs_ft is the optional fine-tuned high-quality model (about 4x slower).",
+    )
     demucs_shifts: int = Field(
         default=0,
         description="Demucs --shifts (random equivariant-stabilization shifts). The CLI "
@@ -894,8 +905,8 @@ class MelodySettings(BaseSettings):
         default="rmvpe",
         description="f0 estimation backend. rmvpe (DeepUnet+BiGRU, singing-pitch SOTA) "
         "measured lower subharmonic lock-on (-12 semitone mass ratio 0.44 vs FCPE's 0.69) "
-        "and fewer large frame-to-frame jumps on a real karaoke track A/B; falls back to "
-        "FCPE automatically if the rmvpe.pt weights are missing or fail to load.",
+        "and fewer large frame-to-frame jumps on real singing-track A/B tests. Backend "
+        "selection is strict: missing or invalid RMVPE weights never fall back to FCPE.",
     )
     rmvpe_model_path: Path = Field(
         default=Path(__file__).resolve().parents[2] / "models" / "rmvpe" / "rmvpe.pt",
@@ -911,6 +922,29 @@ class MelodySettings(BaseSettings):
     )
     threshold: float = Field(
         default=0.006, description="FCPE unvoiced detection threshold"
+    )
+    dereverb: bool = Field(
+        default=False,
+        description="Apply optional NARA-WPE dereverberation only to the waveform sent to "
+        "RMVPE/FCPE. The shared Demucs vocal stem and CTC alignment audio stay unchanged.",
+    )
+    dereverb_taps: int = Field(
+        default=10,
+        ge=1,
+        le=30,
+        description="WPE prediction filter taps for pitch-only dereverberation.",
+    )
+    dereverb_delay: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="WPE guard delay in STFT frames.",
+    )
+    dereverb_iterations: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Offline WPE refinement iterations.",
     )
     f0_min: float = Field(default=65.0, description="Minimum f0 in Hz (~C2)")
     f0_max: float = Field(default=1100.0, description="Maximum f0 in Hz (~C6)")

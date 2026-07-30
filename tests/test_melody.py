@@ -1,8 +1,11 @@
 """Melody extraction (f0 → MIDI notes) tests."""
 
+import builtins
+
 import numpy as np
 import pytest
 
+from everyric2.melody import extractor as extractor_module
 from everyric2.melody.extractor import (
     F0Track,
     MelodyExtractor,
@@ -256,3 +259,128 @@ class TestRmvpeIntegration:
         assert count == 1
         assert timestamps[0]["notes"][0]["midi"] == 69  # A4
         assert extractor._backend == "rmvpe"  # FCPE로 조용히 폴백되지 않았는지 확인
+
+
+class TestPitchBackendContract:
+    def test_rmvpe_availability_does_not_depend_on_torchfcpe(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        weights = tmp_path / "rmvpe.pt"
+        weights.write_bytes(b"placeholder")
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "torchfcpe":
+                raise ImportError("torchfcpe intentionally unavailable")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+        extractor = MelodyExtractor(
+            extractor_module.MelodySettings(
+                f0_model="rmvpe",
+                rmvpe_model_path=weights,
+                separate_vocals=False,
+            )
+        )
+
+        assert extractor.is_available() is True
+
+    def test_missing_rmvpe_weights_raise_instead_of_falling_back(self, tmp_path):
+        missing = tmp_path / "missing-rmvpe.pt"
+        extractor = MelodyExtractor(
+            extractor_module.MelodySettings(
+                f0_model="rmvpe",
+                rmvpe_model_path=missing,
+                separate_vocals=False,
+                device="cpu",
+            )
+        )
+
+        with pytest.raises(
+            extractor_module.PitchBackendUnavailableError,
+            match="download_rmvpe.py",
+        ):
+            extractor._get_model()
+        assert extractor._backend is None
+
+    def test_rmvpe_load_failure_never_constructs_fcpe(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import torchfcpe
+
+        import everyric2.melody.rmvpe as rmvpe_module
+
+        weights = tmp_path / "rmvpe.pt"
+        weights.write_bytes(b"invalid")
+        fcpe_called = False
+
+        class BrokenRmvpe:
+            def __init__(self, *_args, **_kwargs):
+                raise RuntimeError("bad RMVPE weights")
+
+        def fake_fcpe(*_args, **_kwargs):
+            nonlocal fcpe_called
+            fcpe_called = True
+            return object()
+
+        monkeypatch.setattr(rmvpe_module, "RMVPEPredictor", BrokenRmvpe)
+        monkeypatch.setattr(torchfcpe, "spawn_bundled_infer_model", fake_fcpe)
+        extractor = MelodyExtractor(
+            extractor_module.MelodySettings(
+                f0_model="rmvpe",
+                rmvpe_model_path=weights,
+                separate_vocals=False,
+                device="cpu",
+            )
+        )
+
+        with pytest.raises(
+            extractor_module.PitchBackendUnavailableError,
+            match="failed to load",
+        ):
+            extractor._get_model()
+        assert fcpe_called is False
+        assert extractor._backend is None
+
+
+def test_dereverb_changes_only_the_local_f0_waveform(monkeypatch):
+    from everyric2.audio.loader import AudioData
+    from everyric2.config.settings import MelodySettings
+
+    original_waveform = np.linspace(-0.2, 0.2, 1600, dtype=np.float32)
+    audio = AudioData(
+        waveform=original_waveform.copy(),
+        sample_rate=16000,
+        duration=0.1,
+    )
+    captured: dict[str, np.ndarray] = {}
+
+    def fake_dereverb(waveform, sample_rate, **_kwargs):
+        assert sample_rate == 16000
+        return np.asarray(waveform, dtype=np.float32) + 0.25
+
+    def fake_infer_chunk(waveform):
+        captured["waveform"] = waveform.copy()
+        return np.zeros(10, dtype=np.float64)
+
+    monkeypatch.setattr(
+        "everyric2.audio.dereverb.dereverb_for_pitch",
+        fake_dereverb,
+    )
+    extractor = MelodyExtractor(
+        MelodySettings(
+            separate_vocals=False,
+            f0_model="fcpe",
+            dereverb=True,
+        )
+    )
+    monkeypatch.setattr(extractor, "_infer_f0_chunk", fake_infer_chunk)
+
+    extractor._infer_f0(audio)
+
+    assert np.allclose(captured["waveform"], original_waveform + 0.25)
+    assert np.array_equal(audio.waveform, original_waveform)

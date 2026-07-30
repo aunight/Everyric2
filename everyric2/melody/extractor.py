@@ -6,12 +6,12 @@
   2. 정렬 결과의 각 단어/음절 [start, end) 구간에서 f0 프레임을 잘라
      MIDI 반음으로 양자화하고, 안정 구간(run)별로 대표 노트를 만든다.
 
-f0 백엔드는 MelodySettings.f0_model로 선택한다 (기본 rmvpe, 가중치 없으면 FCPE로
-자동 폴백). 두 백엔드 모두 폴리포닉 믹스에서도 동작하지만, 반주가 큰 곡에서는
+f0 백엔드는 MelodySettings.f0_model로 선택한다 (기본 rmvpe). 선택한 백엔드는 엄격하게
+지켜지며 RMVPE 가중치가 없거나 깨졌다고 FCPE로 바뀌지 않는다. 두 백엔드 모두
+폴리포닉 믹스에서도 동작하지만, 반주가 큰 곡에서는
 기타/베이스 피치가 노트에 섞인다 — 그래서 기본적으로 demucs로 보컬을 분리한 뒤
 f0를 뽑는다 (EVERYRIC_MELODY_SEPARATE_VOCALS, demucs 미설치·실패 시 믹스로 폴백).
-torchfcpe 미설치 시 조용히 비활성화된다 (RMVPE만으로는 폴백 경로가 없어 최소
-torchfcpe는 필요).
+FCPE를 명시적으로 선택했을 때만 torchfcpe가 필요하다.
 """
 
 import logging
@@ -26,6 +26,10 @@ from everyric2.config.settings import MelodySettings, get_settings
 logger = logging.getLogger(__name__)
 
 MELODY_SAMPLE_RATE = 16000
+
+
+class PitchBackendUnavailableError(RuntimeError):
+    """Raised when the explicitly selected f0 backend cannot be used."""
 
 
 @dataclass
@@ -456,7 +460,7 @@ def anchor_spans_from_words(words: list[dict], seg_end: float) -> list[tuple[flo
 
 
 class MelodyExtractor:
-    """FCPE 기반 멜로디 추출기. 모델은 최초 사용 시 lazy 로드."""
+    """RMVPE/FCPE 기반 멜로디 추출기. 모델은 최초 사용 시 lazy 로드."""
 
     def __init__(self, config: MelodySettings | None = None):
         self.config = config or get_settings().melody
@@ -468,6 +472,13 @@ class MelodyExtractor:
         self.last_key: dict | None = None
 
     def is_available(self) -> bool:
+        if self.config.f0_model == "rmvpe":
+            try:
+                from everyric2.melody.rmvpe import is_available
+
+                return is_available() and self.config.rmvpe_model_path.is_file()
+            except ImportError:
+                return False
         try:
             import torchfcpe  # noqa: F401
 
@@ -482,26 +493,28 @@ class MelodyExtractor:
             device = resolve_device(self.config.device)
 
             if self.config.f0_model == "rmvpe":
-                try:
-                    from everyric2.melody.rmvpe import RMVPEPredictor
+                from everyric2.melody.rmvpe import RMVPEPredictor
 
-                    model_path = self.config.rmvpe_model_path
-                    if not model_path.exists():
-                        raise FileNotFoundError(str(model_path))
+                model_path = self.config.rmvpe_model_path
+                if not model_path.is_file():
+                    raise PitchBackendUnavailableError(
+                        f"RMVPE weights not found at {model_path}. "
+                        "Run `.venv/bin/python scripts/download_rmvpe.py` first."
+                    )
+                try:
                     self._model = RMVPEPredictor(str(model_path), device=device)
                     self._backend = "rmvpe"
-                except Exception:
-                    logger.warning(
-                        "RMVPE backend unavailable (weights missing or load failed); "
-                        "falling back to FCPE",
-                        exc_info=True,
-                    )
-
-            if self._model is None:
+                    logger.info("Melody f0 backend loaded: RMVPE on %s", device)
+                except Exception as exc:
+                    raise PitchBackendUnavailableError(
+                        f"RMVPE failed to load from {model_path}: {exc}"
+                    ) from exc
+            else:
                 from torchfcpe import spawn_bundled_infer_model
 
                 self._model = spawn_bundled_infer_model(device=device)
                 self._backend = "fcpe"
+                logger.info("Melody f0 backend loaded: FCPE on %s", device)
         return self._model
 
     def _maybe_separate(self, audio: AudioData) -> AudioData:
@@ -545,6 +558,17 @@ class MelodyExtractor:
                 waveform, orig_sr=audio.sample_rate, target_sr=MELODY_SAMPLE_RATE
             )
         waveform = np.ascontiguousarray(waveform, dtype=np.float32)
+        if self.config.dereverb:
+            from everyric2.audio.dereverb import dereverb_for_pitch
+
+            waveform = dereverb_for_pitch(
+                waveform,
+                MELODY_SAMPLE_RATE,
+                taps=self.config.dereverb_taps,
+                delay=self.config.dereverb_delay,
+                iterations=self.config.dereverb_iterations,
+            )
+            logger.info("Pitch-only WPE dereverb applied before %s inference", self.config.f0_model)
 
         from everyric2.audio.chunking import plan_chunk_windows, stitch_chunk_outputs
 

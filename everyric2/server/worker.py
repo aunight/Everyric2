@@ -3834,7 +3834,11 @@ def _run_alignment(
                 else:
                     logger.info("MPS melody inference serialized after CTC to limit unified memory")
             else:
-                logger.warning("Melody enabled but torchfcpe is not installed; skipping")
+                logger.warning(
+                    "Melody enabled but configured %s backend is unavailable; skipping "
+                    "(RMVPE requires verified weights from scripts/download_rmvpe.py)",
+                    settings.melody.f0_model,
+                )
                 melody_extractor = None
 
         # line_meta(발음·번역)가 아직 안 왔으면 여기서 기다린다 — 위의 오디오 로드·CTC 모델
