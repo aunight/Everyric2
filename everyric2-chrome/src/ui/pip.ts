@@ -18,7 +18,10 @@ import {
   appendTimedSpans,
   buildKanjiRubyReadings,
 } from './karaoke';
-import { buildNoteHitSegments, type NoteHitSegment } from './note-hit';
+import {
+  buildDetectedPitchBars,
+  type DetectedPitchBar,
+} from './detected-pitch-bars';
 import { attachPitchNoteLabels } from './pitch-labels';
 import {
   applyServerGate,
@@ -2019,8 +2022,8 @@ export class PipController {
           ? this.scoreTracker.feed(sample.at, t, rawMidi)
           : null;
 
-        // 命中音符模式保留本曲已唱區段；否則超過麥克風 4 秒緩衝後顏色會憑空消失。
-        if (this.scoring && judgement !== null && sample.at > this.lastScoreVisualAt) {
+        // 音符條模式保留所有可靠麥克風樣本，包括沒有同時間目標音符的實際音高。
+        if (this.scoring && sample.at > this.lastScoreVisualAt) {
           this.lastScoreVisualAt = sample.at;
           this.scoreVisualPoints.push({ t, midi: rawMidi, judgement });
           if (this.scoreVisualPoints.length > 12_000) {
@@ -2037,33 +2040,22 @@ export class PipController {
       }
     }
 
-    const noteHitColor = (judgement: NoteHitSegment['judgement']) =>
-      judgement === 'hit' ? '#ffd54f'
-      : judgement === 'near' ? '#ffca28'
-      : '#ef5350';
-    const visibleHitPoints = this.scoreVisualPoints.filter(
+    const visiblePitchPoints = this.scoreVisualPoints.filter(
       point => point.t >= t0 - 0.15 && point.t <= t0 + W + 0.15,
     );
-    const noteHits = this.scoring && this.micDisplayMode === 'notes'
-      ? buildNoteHitSegments(visibleHitPoints, notes)
+    const detectedPitchBars = this.scoring && this.micDisplayMode === 'notes'
+      ? buildDetectedPitchBars(visiblePitchPoints)
       : [];
-    const hitsByNote = new Map<number, NoteHitSegment[]>();
-    for (const segment of noteHits) {
-      const existing = hitsByNote.get(segment.noteIndex);
-      if (existing) existing.push(segment);
-      else hitsByNote.set(segment.noteIndex, [segment]);
-    }
 
-    // ── 目標音符 + 日 K 命中覆蓋 + 原文／發音。頁面模式不把窗外文字推回邊緣。
+    // ── 灰色目標音符 + 原文／發音。實際麥克風音高會在下一層獨立繪製。
     const edgePad = this.pitchScrollMode === 'page' ? 0 : 0.5;
     const visibleNotes = notes
-      .map((note, noteIndex) => ({ note, noteIndex }))
-      .filter(({ note }) => note.end > t0 - edgePad && note.start < t0 + W + edgePad);
+      .filter(note => note.end > t0 - edgePad && note.start < t0 + W + edgePad);
     const noteH = Math.max(5, Math.min(13, semiPx * 1.6));
     const noteR = Math.min(noteH / 2, 4);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const { note: n, noteIndex } of visibleNotes) {
+    for (const n of visibleNotes) {
       const x1 = x(n.start);
       const x2 = x(n.end);
       const w = Math.max(3, x2 - x1 - 1);
@@ -2082,16 +2074,6 @@ export class PipController {
         ctx.globalAlpha = 0.65 * this.pitchLineOpacity;
         ctx.beginPath();
         ctx.roundRect(x1, top, sungW, noteH, noteR);
-        ctx.fill();
-      }
-      // 唱過的短區段直接畫在目標音符上：準確金、接近黃、失誤紅。
-      for (const hit of hitsByNote.get(noteIndex) ?? []) {
-        const hitX = x(hit.start);
-        const hitW = Math.max(2, x(hit.end) - hitX);
-        ctx.fillStyle = noteHitColor(hit.judgement);
-        ctx.globalAlpha = 0.96;
-        ctx.beginPath();
-        ctx.roundRect(hitX, top, hitW, noteH, Math.min(noteR, hitW / 2));
         ctx.fill();
       }
       ctx.globalAlpha = 1;
@@ -2147,6 +2129,38 @@ export class PipController {
         ctx.fillText(n.lyric, labelX, lyricY);
       }
       ctx.textAlign = 'center';
+    }
+
+    // ── 音符條模式：顏色只表示判定，垂直位置永遠取自麥克風實際音高。
+    if (this.micDisplayMode === 'notes' && detectedPitchBars.length > 0) {
+      const pitchBarColor = (judgement: DetectedPitchBar['judgement']) =>
+        judgement === 'hit' ? '#ffd54f'
+        : judgement === 'near' ? '#ff9800'
+        : judgement === 'miss' ? '#ef5350'
+        : '#4dd0e1';
+
+      ctx.save();
+      for (const bar of detectedPitchBars) {
+        let displayMidi = bar.midi;
+        while (displayMidi < lo && displayMidi + 12 <= hi + 6) displayMidi += 12;
+        while (displayMidi > hi && displayMidi - 12 >= lo - 6) displayMidi -= 12;
+        if (displayMidi < lo - 1 || displayMidi > hi + 1) continue;
+
+        const barX = x(bar.start);
+        const barW = Math.max(3, x(bar.end) - barX);
+        const barTop = y(displayMidi) - noteH / 2;
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.beginPath();
+        ctx.roundRect(barX - 1, barTop - 1, barW + 2, noteH + 2, noteR);
+        ctx.fill();
+        ctx.globalAlpha = 0.98;
+        ctx.fillStyle = pitchBarColor(bar.judgement);
+        ctx.beginPath();
+        ctx.roundRect(barX, barTop, barW, noteH, Math.min(noteR, barW / 2));
+        ctx.fill();
+      }
+      ctx.restore();
     }
 
     // ── 線條軌跡模式：保留實際音高移動與準確度顏色，不再退回粒子點。

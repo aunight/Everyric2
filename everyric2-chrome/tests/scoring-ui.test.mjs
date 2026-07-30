@@ -41,29 +41,46 @@ test('breaths and implausible pitch jumps break the line', async () => {
   ]), []);
 });
 
-test('judged microphone points become clipped target-note hit segments', async () => {
-  const { buildNoteHitSegments } = await optionalImport('../src/ui/note-hit.ts');
-  assert.equal(typeof buildNoteHitSegments, 'function');
-  const notes = [{ midi: 60, start: 1, end: 1.5 }];
+test('detected pitch bars preserve microphone midi instead of target midi', async () => {
+  const { buildDetectedPitchBars } =
+    await optionalImport('../src/ui/detected-pitch-bars.ts');
+  assert.equal(typeof buildDetectedPitchBars, 'function');
   const points = [
-    { t: 1, midi: 60, judgement: 'hit' },
-    { t: 1.05, midi: 60.1, judgement: 'hit' },
-    { t: 1.1, midi: 61.1, judgement: 'near' },
+    { t: 1, midi: 61.1, judgement: 'near' },
+    { t: 1.05, midi: 61.2, judgement: 'near' },
   ];
 
-  assert.deepEqual(buildNoteHitSegments(points, notes), [
-    { noteIndex: 0, midi: 60, start: 1, end: 1.1, judgement: 'hit' },
-    { noteIndex: 0, midi: 60, start: 1.1, end: 1.18, judgement: 'near' },
+  assert.deepEqual(buildDetectedPitchBars(points), [
+    { midi: 61, start: 1, end: 1.13, judgement: 'near' },
   ]);
 });
 
-test('points outside target notes never paint note bars', async () => {
-  const { buildNoteHitSegments } = await optionalImport('../src/ui/note-hit.ts');
-  assert.equal(typeof buildNoteHitSegments, 'function');
-  assert.deepEqual(buildNoteHitSegments(
-    [{ t: 3, midi: 60, judgement: null }],
-    [{ midi: 60, start: 1, end: 2 }],
-  ), []);
+test('reliable points outside target-note windows still become pitch bars', async () => {
+  const { buildDetectedPitchBars } =
+    await optionalImport('../src/ui/detected-pitch-bars.ts');
+  assert.equal(typeof buildDetectedPitchBars, 'function');
+  assert.deepEqual(buildDetectedPitchBars([
+    { t: 3, midi: 64.2, judgement: null },
+  ]), [
+    { midi: 64, start: 3, end: 3.08, judgement: null },
+  ]);
+});
+
+test('pitch, judgement, and timing gaps split detected pitch bars', async () => {
+  const { buildDetectedPitchBars } =
+    await optionalImport('../src/ui/detected-pitch-bars.ts');
+  assert.equal(typeof buildDetectedPitchBars, 'function');
+  assert.deepEqual(buildDetectedPitchBars([
+    { t: 1, midi: 60.1, judgement: 'hit' },
+    { t: 1.05, midi: 61.1, judgement: 'hit' },
+    { t: 1.1, midi: 61.2, judgement: 'miss' },
+    { t: 1.4, midi: 61.2, judgement: 'miss' },
+  ]), [
+    { midi: 60, start: 1, end: 1.05, judgement: 'hit' },
+    { midi: 61, start: 1.05, end: 1.1, judgement: 'hit' },
+    { midi: 61, start: 1.1, end: 1.18, judgement: 'miss' },
+    { midi: 61, start: 1.4, end: 1.48, judgement: 'miss' },
+  ]);
 });
 
 test('enabling scoring also enables microphone pitch', async () => {
@@ -106,11 +123,16 @@ test('legacy microphone display modes migrate to trace and new installs use note
   assert.match(settingsSource, /micDisplayMode:\s*'notes'/);
 });
 
-test('trace and note-hit display modes are wired through PiP and settings', () => {
+test('trace and detected-pitch display modes are wired through PiP and settings', () => {
   assert.match(pipSource, /buildMicTraceSegments/);
-  assert.match(pipSource, /buildNoteHitSegments/);
+  assert.match(pipSource, /buildDetectedPitchBars/);
   assert.match(pipSource, /this\.micDisplayMode === 'trace'/);
+  assert.match(pipSource, /y\(displayMidi\)/);
+  assert.doesNotMatch(pipSource, /hitsByNote/);
+  assert.doesNotMatch(pipSource, /buildNoteHitSegments/);
   assert.match(pipSource, /'#ffd54f'/);
+  assert.match(pipSource, /'#ff9800'/);
+  assert.match(pipSource, /'#ef5350'/);
   assert.match(
     pipSource,
     /textContent = this\.micDisplayMode === 'trace' \? '線' : '音'/,
@@ -119,6 +141,17 @@ test('trace and note-hit display modes are wired through PiP and settings', () =
   assert.match(overlaySource, /overlay\.settings\.micDisplayMode\.notes/);
   assert.match(contentSource, /micDisplayMode:\s*settings\.micDisplayMode/);
   assert.match(contentSource, /handleSettingsChange\(\{\s*micDisplayMode:\s*mode\s*\}\)/);
+});
+
+test('scoring visual history retains reliable points without a target judgement', () => {
+  assert.match(
+    pipSource,
+    /if \(this\.scoring && sample\.at > this\.lastScoreVisualAt\)/,
+  );
+  assert.doesNotMatch(
+    pipSource,
+    /this\.scoring && judgement !== null && sample\.at > this\.lastScoreVisualAt/,
+  );
 });
 
 test('inactive microphone is distinguishable from active silence', () => {
