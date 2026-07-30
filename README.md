@@ -34,7 +34,9 @@ Everyric2 是一套 YouTube 動態歌詞與卡拉 OK 採點工具。Chrome 擴�
 - **Apple Silicon 加速**：支援 M 系列晶片的 PyTorch MPS 裝置選擇、記憶體管理與安全分段；
   MPS 不支援的強制對齊運算會自動回退 CPU。
 - **翻譯 API 擴充**：加入 OpenAI Chat Completions 相容介面，可自訂 API 端點、模型與金鑰，
-  連接 OpenAI、DeepSeek、Qwen、GLM 或其他相容服務。
+  連接 OpenAI、DeepSeek、Qwen、GLM 或其他相容服務；並支援 Google Gemini
+  （`GEMINI_API_KEY`，免費金鑰即可，預設模型 `gemini-flash-latest`），亦可在擴充功能
+  設定中直接填入自己的翻譯 API 金鑰，無須重啟伺服器。
 - **歌詞來源與清理**：加入網易雲音樂搜尋及來源優先順序；自動精簡 YouTube 中日文歌名，
   移除 Official MV、Full Size、動畫 OP／ED 宣傳文字與重複歌名，並過濾歌詞中的作詞、
   作曲、編曲及混音等製作人員資訊。
