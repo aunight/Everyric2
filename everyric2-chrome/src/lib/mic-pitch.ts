@@ -26,6 +26,11 @@ export class MicPitch {
     return this.timer !== undefined || this.starting;
   }
 
+  /** 權限要求中不算已擷取；只有取樣計時器開始後才可把空樣本解讀成「正在沉默」。 */
+  isCapturing(): boolean {
+    return this.timer !== undefined;
+  }
+
   currentDeviceId(): string {
     return this.deviceId;
   }

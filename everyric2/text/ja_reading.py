@@ -356,7 +356,8 @@ def _get_kakasi():
         return _kakasi
 
 
-def _katakana_to_hiragana(text: str) -> str:
+def katakana_to_hiragana(text: str) -> str:
+    """全形片假名轉為平假名；漢字、空白、長音符與其他文字保持不變。"""
     return "".join(
         chr(ord(ch) - 0x60) if _KATAKANA_START <= ch <= _KATAKANA_END else ch for ch in text
     )
@@ -381,7 +382,7 @@ def _feature_reading(feature, attrs: tuple[str, ...]) -> str | None:
     for attr in attrs:
         value = getattr(feature, attr, None)
         if value and value != "*":
-            return _katakana_to_hiragana(value)
+            return katakana_to_hiragana(value)
     return None
 
 
@@ -785,7 +786,7 @@ def _adopt_ruby_readings(text: str, tokens: list[ReadingToken]) -> None:
                 continue  # 괄호 안 가나 — 읽기 유지
             if token.start <= kana_start and kana_end <= token.end:
                 # 형태소 분석기가 루비 전체를 한 토큰으로 삼킨 경우 — 가나만 남긴다
-                token.reading = _katakana_to_hiragana(text[kana_start:kana_end])
+                token.reading = katakana_to_hiragana(text[kana_start:kana_end])
             else:
                 token.reading = ""
 

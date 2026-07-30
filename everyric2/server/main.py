@@ -35,9 +35,9 @@ def _gpu_available() -> bool:
             # 생성은 원격 워커 풀이 수행 — 이 서버의 GPU 유무와 무관하게 가용
             _GPU_AVAILABLE = True
         else:
-            import torch
+            from everyric2.device import resolve_device
 
-            _GPU_AVAILABLE = torch.cuda.is_available()
+            _GPU_AVAILABLE = resolve_device() != "cpu"
     return _GPU_AVAILABLE
 
 

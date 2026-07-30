@@ -2,6 +2,7 @@ import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo
 import { t } from '../lib/i18n';
 import { describeRemoved, stripPartMarkers } from '../lib/lyrics-clean';
 import { formatLogEntry, needsHostPermission, serverBlockedTip, serverKnownBad, serverUsable, statusLine } from '../lib/server-status';
+import { visibleTranslations } from '../lib/translation-visibility';
 import { h, icon, ICONS } from './dom';
 
 /**
@@ -468,13 +469,15 @@ export function buildGeneratingState(pct: number, text: string): GeneratingState
 export function buildPlainLines(lines: LyricLine[]): { el: HTMLDivElement; lineEls: HTMLElement[] } {
   const list = h('div', { className: 'ey-lines ey-lines-plain' });
   const lineEls: HTMLElement[] = [];
-  for (const line of lines) {
+  const translations = visibleTranslations(lines);
+  lines.forEach((line, index) => {
     const el = h('div', { className: 'ey-line ey-line-plain', text: line.text, attrs: { dir: 'auto' } });
     if (line.pronunciation) el.append(h('div', { className: 'ey-line-pron', text: line.pronunciation, attrs: { dir: 'auto' } }));
-    if (line.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
+    const translation = translations[index];
+    if (translation) el.append(h('div', { className: 'ey-line-tr', text: translation, attrs: { dir: 'auto' } }));
     lineEls.push(el);
     list.append(el);
-  }
+  });
   return { el: list, lineEls };
 }
 
@@ -553,12 +556,18 @@ export function renderCandidateList(
     const label = isWiki ? c.title : `${c.title}${c.artist ? ' — ' + c.artist : ''}`;
     const meta = isWiki
       ? t('panels.results.pronTranslationMeta')
-      : `${c.synced ? t('panels.results.syncedMeta') : t('panels.results.plainMeta')}${c.duration > 0 ? ` · ${fmt(c.duration)}` : ''}`;
+      : c.source === 'netease'
+        // 넷이즈는 싱크 가사 + (자주) 중국어 번역 — tlyric 유무는 열어봐야 알아 통칭 표기
+        ? `${t('panels.results.neteaseMeta')}${c.duration > 0 ? ` · ${fmt(c.duration)}` : ''}`
+        : `${c.synced ? t('panels.results.syncedMeta') : t('panels.results.plainMeta')}${c.duration > 0 ? ` · ${fmt(c.duration)}` : ''}`;
+    const srcLabel = isWiki
+      ? t('panels.results.vocaroLabel')
+      : c.source === 'netease' ? t('panels.results.neteaseLabel') : t('panels.results.lrclibLabel');
     const btn = h('button', {
       className: 'ey-result-item',
       on: { click: () => onPick(c) },
     },
-      h('span', { className: `ey-result-src${isWiki ? ' vocaro' : ''}`, text: isWiki ? t('panels.results.vocaroLabel') : t('panels.results.lrclibLabel') }),
+      h('span', { className: `ey-result-src${isWiki ? ' vocaro' : ''}`, text: srcLabel }),
       h('span', { className: 'ey-result-title', text: label }),
       h('span', { className: 'ey-result-meta', text: meta }),
     );

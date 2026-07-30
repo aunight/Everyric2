@@ -27,6 +27,7 @@ from everyric2.config.settings import AlignmentSettings
 from everyric2.inference.prompt import LyricLine, SyncResult
 
 logger = logging.getLogger(__name__)
+MPS_ALIGN_CHUNK_SEC = 90.0
 
 MMS_BASE_MODEL = "facebook/mms-1b-all"
 
@@ -624,7 +625,9 @@ class CTCEngine(BaseAlignmentEngine):
 
     def _get_device(self) -> torch.device:
         if self._device is None:
-            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            from everyric2.device import resolve_device
+
+            self._device = torch.device(resolve_device())
         return self._device
 
     def _mms_processor(self, adapter_code: str):
@@ -737,6 +740,8 @@ class CTCEngine(BaseAlignmentEngine):
 
         sr = 16000
         chunk_sec = getattr(self.config, "align_chunk_sec", 0.0) or 0.0
+        if self._get_device().type == "mps":
+            chunk_sec = min(float(chunk_sec), MPS_ALIGN_CHUNK_SEC) if chunk_sec else MPS_ALIGN_CHUNK_SEC
         overlap_sec = getattr(self.config, "align_chunk_overlap_sec", 5.0) or 0.0
         return plan_chunk_windows(n_samples, int(chunk_sec * sr), int(overlap_sec * sr))
 
@@ -759,7 +764,11 @@ class CTCEngine(BaseAlignmentEngine):
         windows = self._chunk_windows(n)
         if len(windows) == 1:
             logits = self._model_logits(waveform, device)
-            return torch.nn.functional.log_softmax(logits.float(), dim=-1)
+            emission = torch.nn.functional.log_softmax(logits.float(), dim=-1)
+            # MPS에는 forced_align 커널이 없다 — forward만 GPU에서 하고 emission은
+            # CPU로 내려 하류(forced_align·타겟 텐서가 전부 emission.device를 따른다)를
+            # CPU에 태운다. cuda는 기존대로 GPU에 남긴다(정렬도 GPU 커널이 있다).
+            return emission.cpu() if emission.device.type == "mps" else emission
 
         from everyric2.audio.chunking import stitch_chunk_outputs
 
@@ -779,7 +788,8 @@ class CTCEngine(BaseAlignmentEngine):
         if len(windows) == 1:
             with torch.inference_mode():
                 emission, _ = self._model(waveform.unsqueeze(0).to(device))  # pyright: ignore[reportOptionalCall]
-            return emission
+            # MPS forced_align 커널 부재 — _ctc_log_emission과 같은 이유로 CPU로 내린다
+            return emission.cpu() if emission.device.type == "mps" else emission
 
         from everyric2.audio.chunking import stitch_chunk_outputs
 

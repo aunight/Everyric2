@@ -53,6 +53,17 @@
   box-sizing: border-box;
 }
 
+.ey-top-stack {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+.ey-top-stack > * { pointer-events: auto; }
+
 /* 라이트 테마 변수 — 오버레이 패널과 PiP **문서 루트**가 같은 값을 공유한다.
    PiP는 :root에 걸어야 한다: 레인 캔버스가 getComputedStyle(documentElement)로 색을
    읽으므로(readPitchColors), body에만 걸면 UI만 밝아지고 캔버스는 다크로 남는다.
@@ -87,6 +98,9 @@
   resize: none;
 }
 
+.ey-panel.collapsed .ey-top-stack { position: relative; }
+.ey-panel.collapsed .ey-top-stack > :not(.ey-header) { display: none !important; }
+
 .ey-panel.collapsed .ey-body,
 .ey-panel.collapsed .ey-banner,
 .ey-panel.collapsed .ey-server-bar-slot,
@@ -113,6 +127,8 @@
   font-size: 12px;
   color: var(--ey-text);
   flex-shrink: 0;
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
 }
 .ey-warn-text { min-width: 0; }
 .ey-warn-close {
@@ -149,6 +165,8 @@
   text-align: left;
   /* 상태 화면(.ey-state는 가운데 정렬 컬럼) 안에 들어가도 폭을 다 쓰게 */
   align-self: stretch;
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
 }
 
 .ey-server-bar.ey-server-offline,
@@ -242,10 +260,15 @@
   align-items: center;
   gap: 8px;
   padding: 10px 10px 10px 14px;
+  border-radius: calc(var(--ey-radius) - 1px) calc(var(--ey-radius) - 1px) 10px 10px;
   border-bottom: 1px solid var(--ey-border);
+  background: color-mix(in srgb, var(--ey-bg-solid) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
   cursor: grab;
   user-select: none;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .ey-header:active { cursor: grabbing; }
@@ -255,13 +278,23 @@
 .ey-lang-chips {
   display: flex;
   gap: 6px;
-  padding: 0 10px 8px 14px;
+  /* 아래로 살짝 키우고(칩 12px·패딩 확대) 반투명 블러 배경 — 설정 상단 바와 같은 유리 질감 */
+  margin: 4px 8px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--ey-border);
+  border-radius: 12px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ey-bg-solid) 64%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
 }
 
 .ey-lang-chip {
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   padding: 3px 9px;
   border-radius: 999px;
@@ -372,12 +405,17 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin: 4px 8px 0;
   padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--ey-accent) 30%, transparent);
+  border-radius: 12px;
   font-size: 12px;
   color: var(--ey-text-dim);
-  background: var(--ey-accent-soft);
-  border-bottom: 1px solid var(--ey-border);
+  background: color-mix(in srgb, var(--ey-accent) 20%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .ey-banner-text { flex: 1; min-width: 0; }
@@ -387,9 +425,12 @@
 .ey-body {
   position: relative;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 10px 8px;
+  padding: calc(var(--ey-top-stack-height, 0px) + 8px) 8px 10px;
+  scroll-padding-top: calc(var(--ey-top-stack-height, 0px) + 8px);
+  box-sizing: border-box;
   scrollbar-width: thin;
   scrollbar-color: var(--ey-text-faint) transparent;
 }
@@ -419,9 +460,9 @@
   color: var(--ey-text);
   font-weight: 700;
   font-size: calc(var(--ey-line-size) * 1.13);
-  background: var(--ey-elev);
-  border-left: 3px solid var(--ey-accent);
-  padding-left: 7px;
+  background: transparent;
+  border-left: 0;
+  padding-left: 10px;
 }
 
 .ey-line-plain { cursor: default; }
@@ -430,6 +471,23 @@
 .ey-word { transition: color 0.12s; }
 .ey-word.sung { color: var(--ey-accent); }
 .ey-line.active .ey-word.sung { text-shadow: 0 0 10px var(--ey-accent-soft); }
+.ey-ruby {
+  ruby-align: center;
+  ruby-position: over;
+}
+.ey-ruby rt {
+  color: inherit;
+  font-size: 0.5em;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.ey-line-has-ruby { padding-top: 10px; }
+.ey-line.past .ey-word.sung,
+.ey-line.past .ey-pron-syl.sung {
+  color: inherit;
+  text-shadow: none;
+}
 
 /* 디버그 모드: 글자별 CTC 신뢰도 색상 (낮음=빨강, 중간=노랑, 양호=초록)
    — 가라오케 레인(pip.ts confBucketColor)과 반드시 같은 값 유지 */
@@ -467,6 +525,7 @@
 .ey-line.active .ey-pron-syl.sung { color: var(--ey-accent); }
 
 .ey-hide-pron .ey-line-pron { display: none; }
+.ey-hide-pron .ey-ruby rt { display: none; }
 
 /* "현재 가사로" 칩 */
 .ey-resume-chip {
@@ -505,9 +564,21 @@
   font-family: var(--ey-font);
   font-size: 11.5px;
   align-self: flex-start;
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
 }
 .ey-gen-chip .ey-icon { display: inline-flex; }
 .ey-panel.collapsed .ey-gen-chip { display: none !important; }
+.ey-gen-chip.ey-current-generation {
+  align-self: stretch;
+  margin: 4px 8px 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(154, 128, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(124, 92, 255, 0.24);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+}
 .ey-gen-chip-cancel {
   border: none;
   background: transparent;
@@ -542,6 +613,8 @@
   background: rgba(124, 92, 255, 0.08);
   font-family: var(--ey-font);
   font-size: 11.5px;
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
 }
 .ey-panel.collapsed .ey-gen-list { display: none !important; }
 .ey-gen-list-row {
@@ -558,6 +631,16 @@
   min-width: 0;
 }
 .ey-gen-list-state { flex-shrink: 0; }
+
+.ey-translation-pending {
+  margin: 4px 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--ey-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ey-bg-solid) 62%, transparent);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
 
 /* 싱크 링크 섹션 (검색 시트 하단) */
 .ey-link-section {
@@ -951,7 +1034,7 @@
   padding: 16px;
   background: var(--ey-bg-solid);
   overflow-y: auto;
-  z-index: 3;
+  z-index: 5;
 }
 
 .ey-settings-row {
@@ -1334,3 +1417,27 @@ body.ey-lane-active .ey-pip-video { flex: 1 1 auto; max-height: none; }
   background: var(--ey-accent);
   border-radius: 2px;
 }
+
+/* 라벨 달린 헤더 버튼(채점) — 아이콘 전용 고정폭을 풀고 텍스트 라벨을 붙인다 */
+.ey-btn.ey-btn-labeled { width: auto; padding: 0 8px; gap: 4px; }
+.ey-btn-label { font-size: 11px; font-weight: 600; }
+/* 발음 표기 칩 — 언어 칩과 구분되는 보더 */
+.ey-pron-chip { border-color: var(--ey-border, rgba(128,128,128,.35)); margin-left: auto; }
+
+/* 설정 시트 상단 고정 '가사로 돌아가기' 바 — 바깥은 투명, 유리 질감은 알약 버튼 안에만 */
+.ey-settings-top { position: sticky; top: 0; z-index: 3; padding: 6px 0; }
+.ey-settings-back {
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ey-bg, #111) 62%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+/* 파괴적 동작 버튼 — 경고 빨강 */
+.ey-danger-btn { color: #ef5350; border-color: rgba(239, 83, 80, .5); display: inline-flex; align-items: center; gap: 6px; justify-content: center; }
+.ey-danger-btn:hover { background: rgba(239, 83, 80, .12); }
+
+/* 링크 섹션 오프셋/배속 필드 — 라벨 상시 표시 */
+.ey-link-field { display: inline-flex; flex-direction: column; gap: 2px; }
+.ey-link-field-label { font-size: 10px; color: var(--ey-dim, #999); }

@@ -10,6 +10,7 @@ import numpy as np
 from everyric2.audio.loader import AudioData
 from everyric2.config.settings import get_settings
 from everyric2.melody.extractor import MelodyExtractor
+from everyric2.server import worker as worker_core
 
 
 def _fake_f0() -> tuple[np.ndarray, np.ndarray]:
@@ -74,3 +75,9 @@ def test_annotate_without_precompute_still_works(monkeypatch):
     monkeypatch.setattr(ext, "_infer_f0", lambda audio, vocals=None: (f0.copy(), times.copy()))
     ts = [{"text": "a", "start": 0.5, "end": 1.5}]
     assert ext.annotate_timestamps(_dummy_audio(), ts) == 1
+
+
+def test_f0_precompute_is_serial_on_mps_and_parallel_elsewhere():
+    assert worker_core._should_precompute_f0("mps") is False
+    assert worker_core._should_precompute_f0("cuda") is True
+    assert worker_core._should_precompute_f0("cpu") is True

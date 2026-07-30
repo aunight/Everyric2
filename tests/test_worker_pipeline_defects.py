@@ -878,3 +878,28 @@ class TestDurationProbeCoversM4a:
             asyncio.run(worker_mod.run_pipeline(job, _Hooks()))
         assert "너무 길어요" in str(e.value)
         assert not path.exists()  # 거부하면서 오디오도 정리한다
+
+
+def test_stem_separation_uses_mps_when_available(monkeypatch):
+    from everyric2 import device
+    from everyric2.audio import separator as separator_module
+    from everyric2.server import worker as worker_mod
+
+    captured: dict[str, bool] = {}
+    expected = object()
+
+    class FakeSeparator:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def separate(audio, use_gpu):
+            captured["use_gpu"] = use_gpu
+            return expected
+
+    monkeypatch.setattr(device, "resolve_device", lambda pref="auto": "mps")
+    monkeypatch.setattr(separator_module, "get_shared_separator", lambda: FakeSeparator())
+
+    assert worker_mod._separate_stems(object()) is expected
+    assert captured["use_gpu"] is True

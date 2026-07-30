@@ -1,11 +1,14 @@
 import type { ApiFailure, EveryricSyncResponse, GenerateResponse, JobStatusResponse, LineMeta, LinkCandidatesResponse, LinkJobStatusResponse, SaveTranslationLayerResponse, ServerLogEntry, ServerStatus, SourceAttribution, SyncListItem, TranslateResult } from '../types';
 import { affectsServerStatus, failureKindFromStatus, failureToStatus, maskPath, maskSecret, okStatus } from './server-status';
+import { t } from './i18n';
 import { localPermissionBlock, normalizeLoopbackUrl } from './host-permissions';
 
 export interface ServerConfig {
   serverUrl: string;
   /** 빈 문자열이면 인증 헤더를 보내지 않는다 */
   apiKey?: string;
+  /** 사용자 자신의 번역(LLM) API 키 — 있으면 서버가 자기 env 키 대신 이 키로 번역한다 */
+  translatorApiKey?: string;
 }
 
 /**
@@ -159,7 +162,11 @@ async function request<T>(
     const timedOut = error instanceof DOMException
       && (error.name === 'TimeoutError' || error.name === 'AbortError');
     const message = error instanceof Error ? error.message : String(error);
-    return fail(timedOut ? 'timeout' : 'offline', undefined, timedOut ? `${timeoutMs}ms 초과` : message);
+    return fail(
+      timedOut ? 'timeout' : 'offline',
+      undefined,
+      timedOut ? t('serverStatus.code.timeoutMs', [String(timeoutMs)]) : message,
+    );
   }
 
   if (!res.ok) {
@@ -352,6 +359,7 @@ export function translateLyrics(
       // — 안 주면 오늘과 동일하게 저장 없이 결과만 반환)
       persist: song?.persist || undefined,
       video_id: song?.videoId || undefined,
+      translator_api_key: server.translatorApiKey || undefined,
     }),
   }, 120000, sink);
 }

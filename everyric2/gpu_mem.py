@@ -17,6 +17,7 @@ expandable_segments:True``(deploy/everyric2-worker-user.service)로 추가 완�
 
 from __future__ import annotations
 
+import gc
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,12 +30,16 @@ def release_scratch() -> float | None:
     try:
         import torch
 
-        if not torch.cuda.is_available():
-            return None
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-        return float(torch.cuda.memory_reserved()) / (1024**3)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            return float(torch.cuda.memory_reserved()) / (1024**3)
+        if torch.backends.mps.is_available():
+            torch.mps.synchronize()
+            torch.mps.empty_cache()
+            return float(torch.mps.driver_allocated_memory()) / (1024**3)
+        return None
     except Exception:
         return None
 
@@ -77,6 +82,7 @@ def drop_warm_caches() -> None:
             clear()
         except Exception:
             logger.exception("웜 캐시 해제 실패: %s", name)
+    gc.collect()
 
 
 def _clearers():

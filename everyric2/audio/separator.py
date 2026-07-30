@@ -168,7 +168,13 @@ class VocalSeparator:
                 str(output_dir),
             ]
 
-            if not use_gpu:
+            if use_gpu:
+                # cuda > mps > cpu — Mac(Apple Silicon)은 mps로 (기존엔 -d 생략 =
+                # demucs 기본 cuda 시도 → 실패라 Mac이 전부 CPU였다)
+                from everyric2.device import resolve_device
+
+                cmd.extend(["-d", resolve_device()])
+            else:
                 cmd.extend(["-d", "cpu"])
 
             cmd.append(str(input_path))
@@ -185,8 +191,8 @@ class VocalSeparator:
             )
 
             if result.returncode != 0:
-                # Try CPU fallback if GPU failed
-                if use_gpu and "CUDA" in result.stderr:
+                # Try CPU fallback if GPU failed (CUDA or MPS)
+                if use_gpu and ("CUDA" in result.stderr or "MPS" in result.stderr):
                     return self.separate(audio, model, use_gpu=False)
                 raise SeparationError(f"Demucs failed: {result.stderr}")
 

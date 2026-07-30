@@ -247,7 +247,33 @@ def test_stage_monitor_holds_progress_inside_the_wait_window():
         assert reported, "모니터가 대기 단계를 한 번도 보고하지 않았다"
         assert {stage for _, stage in reported} == {worker_core.LINE_META_WAIT_STAGE}
         hi = worker_core.STAGE_WINDOWS[worker_core.LINE_META_WAIT_STAGE][1]
-        assert max(progress for progress, _ in reported) <= hi
+        assert max(progress for progress, _ in reported) < hi
+
+    asyncio.run(body())
+
+
+def test_stage_monitor_moves_to_next_window_without_decreasing():
+    async def body():
+        reported: list[tuple[int, str]] = []
+
+        async def report(progress, stage):
+            reported.append((progress, stage))
+
+        holder = {"stage": "전사 정렬"}
+        monitor = asyncio.create_task(
+            worker_core._stage_monitor(report, holder, start=50, interval=0.01)
+        )
+        await asyncio.sleep(0.04)
+        holder["stage"] = "타이밍 보정"
+        await asyncio.sleep(0.04)
+        monitor.cancel()
+
+        timing = [progress for progress, stage in reported if stage == "타이밍 보정"]
+        assert timing
+        assert min(timing) >= worker_core.STAGE_WINDOWS["타이밍 보정"][0]
+        assert [progress for progress, _ in reported] == sorted(
+            progress for progress, _ in reported
+        )
 
     asyncio.run(body())
 

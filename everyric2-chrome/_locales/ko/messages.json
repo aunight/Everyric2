@@ -47,6 +47,9 @@
   "pip_controls_modeToggle": {
     "message": "진행 방식 전환 — 고정 화면(플레이헤드 이동) ↔ 스크롤(플레이헤드 고정)"
   },
+  "pip_controls_micDisplayToggle": {
+    "message": "채점 표시 전환: 음정 궤적 / 명중 노트"
+  },
   "pip_controls_modeFixed": {
     "message": "고정"
   },
@@ -667,13 +670,16 @@
     "message": "로마자"
   },
   "overlay_settings_pronScript_kana": {
-    "message": "가나"
+    "message": "히라가나"
   },
   "overlay_settings_sourcePriority_vocaro": {
     "message": "보카로 위키 우선"
   },
   "overlay_settings_sourcePriority_lrclib": {
     "message": "LRCLIB 우선"
+  },
+  "overlay_settings_sourcePriority_netease": {
+    "message": "넷이즈 클라우드 뮤직 우선"
   },
   "overlay_settings_pitchWindow_half": {
     "message": "½마디"
@@ -1509,5 +1515,164 @@
   },
   "overlay_settings_row_pitchLineOpacityTitle": {
     "message": "f0 곡선·노트 바의 투명도를 조절합니다"
+  },
+  "pip_score_label": {
+    "message": "점수 $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_row_karaokeScore": {
+    "message": "채점 모드 (BETA)"
+  },
+  "overlay_settings_row_karaokeScoreTitle": {
+    "message": "마이크 음정을 멜로디와 비교해 채점하고 우상단에 총점을 표시합니다. 채점을 켜면 마이크 음정도 자동으로 켜집니다."
+  },
+  "overlay_settings_row_micDisplayMode": {
+    "message": "채점 표시 방식"
+  },
+  "overlay_settings_micDisplayMode_trace": {
+    "message": "음정 궤적"
+  },
+  "overlay_settings_micDisplayMode_notes": {
+    "message": "명중 노트 (가라오케)"
+  },
+  "serverStatus_code_timeout": {
+    "message": "응답 없음(타임아웃)"
+  },
+  "serverStatus_code_permission": {
+    "message": "호스트 권한 없음"
+  },
+  "serverStatus_code_offline": {
+    "message": "연결 실패"
+  },
+  "serverStatus_code_timeoutMs": {
+    "message": "$P1$ms 초과",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "serverStatus_offline": {
+    "message": "서버에 연결할 수 없어요 — 서버가 꺼져 있거나 주소가 잘못됐어요"
+  },
+  "serverStatus_timeout": {
+    "message": "서버가 제때 응답하지 않았어요"
+  },
+  "serverStatus_auth": {
+    "message": "API 키 인증에 실패했어요 — 설정에서 키를 확인해 주세요"
+  },
+  "serverStatus_server": {
+    "message": "서버에서 오류가 났어요"
+  },
+  "serverStatus_notfound": {
+    "message": "서버에 이 기능이 없어요 — 서버 버전이 낮을 수 있어요"
+  },
+  "serverStatus_malformed": {
+    "message": "서버 응답을 해석할 수 없어요"
+  },
+  "serverStatus_client": {
+    "message": "서버가 요청을 거절했어요"
+  },
+  "serverStatus_permission": {
+    "message": "로컬 서버에 접근할 권한이 없어요 — 권한을 허용해 주세요"
+  },
+  "pip_score_noMic": {
+    "message": "점수 — 마이크 꺼짐"
+  },
+  "overlay_header_pipLabel": {
+    "message": "채점"
+  },
+  "overlay_pronChip_title": {
+    "message": "발음 표기 방식 — 클릭으로 전환"
+  },
+  "pip_controls_pronScriptToggle": {
+    "message": "발음 표기 전환 (한글/로마자/히라가나)"
+  },
+  "overlay_settings_solfegeNotation_off": {
+    "message": "표시 안 함"
+  },
+  "overlay_pronChip_kk": {
+    "message": "KK 음표"
+  },
+  "overlay_pronChip_pinyin": {
+    "message": "병음"
+  },
+  "overlay_pronChip_off": {
+    "message": "발음 끄기"
+  },
+  "lyricsClean_kind_note": {
+    "message": "주석"
+  },
+  "lyricsClean_kind_section": {
+    "message": "파트 표기"
+  },
+  "lyricsClean_kind_repeat": {
+    "message": "반복 표기"
+  },
+  "lyricsClean_kind_credit": {
+    "message": "크레딧"
+  },
+  "lyricsClean_kind_footnote": {
+    "message": "각주"
+  },
+  "lyricsClean_moreLines": {
+    "message": " 외 $P1$줄",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "lyricsClean_bailed": {
+    "message": "표기처럼 보이는 줄이 너무 많아 그대로 뒀어요 ($P1$줄) — 가사가 아닌 줄은 직접 지워 주세요",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "lyricsClean_removed": {
+    "message": "$P1$ $P2$줄을 제외했어요 — $P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "pip_score_best": {
+    "message": "최고 $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_translationApiKeyLabel": {
+    "message": "번역 API 키 (Gemini 등)"
+  },
+  "overlay_settings_translationApiKeyPlaceholder": {
+    "message": "(선택) 내 번역 LLM API 키"
+  },
+  "overlay_settings_translationApiKeyTitle": {
+    "message": "키는 Chrome 로컬 저장소에만 보관되고 기본 서버에는 전송되지 않습니다. 호출자 키를 명시적으로 허용한 자가 호스팅 서버에만 전송됩니다."
+  },
+  "panels_results_neteaseLabel": {
+    "message": "넷이즈 뮤직"
+  },
+  "panels_results_neteaseMeta": {
+    "message": "싱크 · 중국어 번역 포함 가능"
+  },
+  "overlay_source_netease": {
+    "message": "넷이즈 뮤직"
   }
 }

@@ -38,6 +38,30 @@ export const LOCAL_SERVER_ORIGINS = [
   CANONICAL_LOCAL_ORIGIN,
 ] as const;
 
+const PUBLIC_DEFAULT_SERVER_HOST = 'everyric.moref.co';
+
+/**
+ * 使用者輸入的翻譯 API 金鑰只交給他明確設定的自架伺服器。
+ *
+ * 官方預設伺服器不需要、也不應收到個人 Gemini 等金鑰。URL 無效時同樣採取
+ * fail-closed，避免設定解析異常時意外把祕密送出。
+ */
+export function selectTranslationApiKey(
+  serverUrl: string,
+  translationApiKey: string,
+): string | undefined {
+  const key = translationApiKey.trim();
+  if (!key) return undefined;
+  try {
+    if (new URL(serverUrl).hostname.toLowerCase() === PUBLIC_DEFAULT_SERVER_HOST) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return key;
+}
+
 /** 패턴에서 사람이 읽는 origin으로 (`http://localhost:8000/*` → `http://localhost:8000`) */
 export function originOfPattern(pattern: string): string {
   return pattern.replace(/\/\*$/, '');

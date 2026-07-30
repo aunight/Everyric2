@@ -1,11 +1,23 @@
 import type { DebugInfo, LyricLine, LyricsSource, PanelGeometry, SearchCandidate, ServerLogEntry, ServerStatus, Settings, SongInfo, SourceAttribution, SyncDebugMeta, SyncListItem } from '../types';
-import { resolveScript, resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
+import { resolveScript, type PronScript } from '../lib/lang';
 import { t } from '../lib/i18n';
 import { needsHostPermission, serverUsable, statusLine, unknownStatus } from '../lib/server-status';
 import { resolveTheme } from '../lib/theme';
+import { visibleTranslations } from '../lib/translation-visibility';
 import { buildDebugPanel } from './debug-panel';
 import { h, icon, ICONS } from './dom';
-import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
+import {
+  appendKaraokeSpans,
+  appendRubyText,
+  appendTimedSpans,
+  buildKanjiRubyReadings,
+} from './karaoke';
+import {
+  nextPronunciationPatch,
+  pronunciationChipKey,
+  resolvedSongPronSegments,
+  resolvedSongPronunciation,
+} from './pronunciation-chip';
 import {
   applyServerGate,
   buildEmptyState,
@@ -84,6 +96,7 @@ const SEEK_INTO_LINE_SEC = 0.05;
 export class LyricsOverlay {
   private host: HTMLDivElement;
   private panel: HTMLDivElement;
+  private topStack: HTMLDivElement;
   private header: HTMLDivElement;
   private songTitleEl: HTMLDivElement;
   private songArtistEl: HTMLDivElement;
@@ -106,6 +119,8 @@ export class LyricsOverlay {
   private genList: HTMLDivElement;
   private genListOpen = false;
   private genListItems: { title: string; state: string; isCurrent: boolean }[] = [];
+  private currentGenerationActive = false;
+  private bannerHiddenForGeneration = false;
   /** 알림 칩 — 커버 자동 연결 진행/결과, 붙여넣기 표기 필터 결과 등 한 줄 알림 */
   private noticeChip: HTMLDivElement;
   private noticeTimer = 0;
@@ -119,6 +134,7 @@ export class LyricsOverlay {
    *  덕분에 어떤 화면(가사·검색·생성 중·오류)에서도 사유 한 줄이 반드시 보인다. */
   private serverBar: HTMLDivElement;
   private pipBtn: HTMLButtonElement;
+  private gearBtn!: HTMLButtonElement;
   private regenBtn: HTMLButtonElement;
   private collapseBtn: HTMLButtonElement;
   private settingsSheet: HTMLDivElement | null = null;
@@ -195,6 +211,7 @@ export class LyricsOverlay {
   /** 제목바 언어 칩 줄 — 가사가 로드돼 있으면 항상 뜬다(setAvailableLangs로 채움). 가사
    *  자체가 없는 상태(로딩 중·빈 패널)에서만 숨긴다(setAvailableLangs(null)) */
   private langChipsRow: HTMLDivElement;
+  private pronChipBtn: HTMLButtonElement;
   private langChipButtons: { code: string; btn: HTMLButtonElement }[] = [];
   /** 이 곡의 "보유" 언어 — content가 setAvailableLangs로 밀어넣는다. content 쪽에서 이미
    *  서버 신호·세션 내 성공·곡 자신의 언어를 합쳐 계산해 넘기므로, 가사가 있는 한 항상
@@ -209,6 +226,7 @@ export class LyricsOverlay {
   private applyingGeometry = false;
   private saveGeomTimer = 0;
   private resizeObserver: ResizeObserver;
+  private topStackResizeObserver: ResizeObserver;
 
   constructor(cssText: string, settings: Settings, callbacks: OverlayCallbacks, geometry: PanelGeometry | null) {
     this.settings = settings;
@@ -227,6 +245,9 @@ export class LyricsOverlay {
     this.songArtistEl = h('div', { className: 'ey-song-artist' });
 
     this.pipBtn = this.headerButton(ICONS.pip, t('overlay.header.pip'), () => this.callbacks.onPipToggle());
+    // 아이콘만으로는 무슨 버튼인지 모른다는 실보고 — '채점' 라벨을 같이 쓴다
+    this.pipBtn.classList.add('ey-btn-labeled');
+    this.pipBtn.append(h('span', { className: 'ey-btn-label', text: t('overlay.header.pipLabel') }));
     this.pipBtn.style.display = 'none';
     this.regenBtn = this.headerButton(ICONS.refresh, t('overlay.header.regen'), () => {
       if (window.confirm(t('overlay.header.regenConfirm'))) {
@@ -235,7 +256,8 @@ export class LyricsOverlay {
     });
     this.regenBtn.style.display = 'none';
     const searchBtn = this.headerButton(ICONS.search, t('overlay.header.search'), () => this.openSearch());
-    const gearBtn = this.headerButton(ICONS.gear, t('overlay.header.settings'), () => this.toggleSettings());
+    this.gearBtn = this.headerButton(ICONS.gear, t('overlay.header.settings'), () => this.toggleSettings());
+    const gearBtn = this.gearBtn;
     this.collapseBtn = this.headerButton(ICONS.collapse, t('overlay.header.collapse'), () => this.setCollapsed(!this.geometry.collapsed));
     const closeBtn = this.headerButton(ICONS.close, t('overlay.header.close'), () => this.setVisible(false));
 
@@ -251,7 +273,9 @@ export class LyricsOverlay {
     // 전환한다. 라벨은 언어 자신의 이름으로 고정(한국어/ENG/日本語) — langSelect의 언어명과
     // 같은 관례로 uiLanguage로 번역하지 않는다(어느 표시 언어에서도 자기 언어를 바로 찾아야 함).
     // availableLangs가 없으면(구서버·아직 싱크 없음) 줄 전체를 숨긴다 — setAvailableLangs 참고.
-    const LANG_CHIP_DEFS: [string, string][] = [['ko', '한국어'], ['en', 'ENG'], ['ja', '日本語']];
+    const LANG_CHIP_DEFS: [string, string][] = [
+      ['ko', '한국어'], ['en', 'ENG'], ['ja', '日本語'], ['zh', '中文'],
+    ];
     this.langChipButtons = LANG_CHIP_DEFS.map(([code, label]) => {
       const btn = h('button', {
         className: 'ey-lang-chip',
@@ -268,7 +292,24 @@ export class LyricsOverlay {
       });
       return { code, btn };
     });
-    this.langChipsRow = h('div', { className: 'ey-lang-chips' }, ...this.langChipButtons.map(c => c.btn));
+    // 발음 표기 칩 — 곡 언어에 따라 순환이 달라진다.
+    // 영어 곡: 표기 선택(한글/로마자/가나)이 무의미하다(발음은 KK 음표 하나) — KK ↔ 끄기.
+    // 그 외: 韓文 → 羅馬字 → 假名 → 끄기 → 韓文. 설정 시트의 셀렉트는 그대로 둔다.
+    this.pronChipBtn = h('button', {
+      className: 'ey-lang-chip ey-pron-chip available',
+      attrs: { type: 'button', title: t('overlay.pronChip.title') },
+      on: {
+        click: () => {
+          this.callbacks.onSettingsChange(nextPronunciationPatch(
+            this.songLang(),
+            this.settings.showPronunciation,
+            resolveScript(this.settings),
+          ));
+        },
+      },
+    });
+    this.langChipsRow = h('div', { className: 'ey-lang-chips' },
+      ...this.langChipButtons.map(c => c.btn), this.pronChipBtn);
     this.langChipsRow.style.display = 'none';
 
     this.banner = h('div', { className: 'ey-banner' });
@@ -300,12 +341,10 @@ export class LyricsOverlay {
 
     // 번역 대기 표시(U3-b) — .ey-tr-status를 재사용하되 라인 목록 바로 위에 단독으로
     // 둔다(원래는 푸터 안 flex row 전용 클래스라 여백을 직접 보정한다)
-    this.translationPendingBar = h('div', { className: 'ey-tr-status' });
+    this.translationPendingBar = h('div', { className: 'ey-tr-status ey-translation-pending' });
     this.translationPendingBar.style.display = 'none';
-    this.translationPendingBar.style.padding = '4px 14px 6px';
     this.translationPendingBar.style.whiteSpace = 'normal';
     this.translationPendingBar.style.flex = 'none';
-    this.translationPendingBar.style.margin = '0';
 
     // 서버 오류 배너 — 상태가 정상/미확인이면 비어 있고, 아니면 사유+복구 동작이 들어간다
     this.serverBar = h('div', { className: 'ey-server-bar-slot' });
@@ -366,9 +405,12 @@ export class LyricsOverlay {
     this.debugPanelEl = h('div', { className: 'ey-debug-panel-wrap' });
     this.debugPanelEl.style.display = 'none';
 
+    this.topStack = h('div', { className: 'ey-top-stack' },
+      this.header, this.langChipsRow, this.serverBar, this.banner, this.genChip, this.genList,
+      this.noticeChip, this.warnBar, this.translationPendingBar,
+    );
     this.panel = h('div', { className: 'ey-panel' },
-      this.header, this.langChipsRow, this.serverBar, this.banner, this.genChip, this.genList, this.noticeChip,
-      this.warnBar, this.translationPendingBar, this.body, this.resumeChip, this.footer, this.debugStrip, this.debugPanelEl,
+      this.topStack, this.body, this.resumeChip, this.footer, this.debugStrip, this.debugPanelEl,
     );
     // 패널 안 타이핑(검색창·가사 붙여넣기)이 유튜브 전역 단축키(스페이스=재생/정지,
     // 방향키=시킹 등)로 새지 않도록 키 이벤트를 패널에서 끊는다
@@ -385,6 +427,13 @@ export class LyricsOverlay {
     this.setupDrag();
     this.resizeObserver = new ResizeObserver(() => this.handlePanelResize());
     this.resizeObserver.observe(this.panel);
+    this.topStackResizeObserver = new ResizeObserver(() => {
+      this.panel.style.setProperty(
+        '--ey-top-stack-height',
+        `${this.topStack.getBoundingClientRect().height}px`,
+      );
+    });
+    this.topStackResizeObserver.observe(this.topStack);
     window.addEventListener('resize', this.handleWindowResize);
     document.addEventListener('fullscreenchange', this.handleFullscreenChange);
 
@@ -394,6 +443,7 @@ export class LyricsOverlay {
   /** 현재 오버레이는 페이지 수명 싱글턴이라 호출처가 없다 — 향후 하드 teardown 경로용 */
   destroy(): void {
     this.resizeObserver.disconnect();
+    this.topStackResizeObserver.disconnect();
     window.removeEventListener('resize', this.handleWindowResize);
     document.removeEventListener('fullscreenchange', this.handleFullscreenChange);
     clearTimeout(this.saveGeomTimer);
@@ -453,7 +503,9 @@ export class LyricsOverlay {
     }
 
     // 발음 표기 방식은 라인마다 다시 해석할 이유가 없다 — 곡 하나에 한 번만 계산
+    const songLanguage = this.songLang();
     const pronScript = resolveScript(this.settings);
+    const translations = visibleTranslations(lines);
     const list = h('div', { className: 'ey-lines' });
     lines.forEach((line, index) => {
       const el = h('div', {
@@ -471,20 +523,11 @@ export class LyricsOverlay {
           },
         },
       });
-      // words가 없어도 호출 — appendKaraokeSpans가 음절 타이밍/라인 구간 비례
-      // 배분으로 폴백해, 라인이 한 번에 통째로 켜지는 표시를 피한다
-      appendKaraokeSpans(el, line, word => {
-        // 신뢰도 등급 클래스 — .ey-show-conf(디버그 모드)에서만 색이 입혀진다.
-        // 값은 CTC 프레임 로그확률의 기하평균(0~1) — 절대값이 작아 로그 스케일로 버킷:
-        // <1e-4(로그 -9 이하)=낮음, <2e-2(로그 -4 이하)=중간
-        const conf = word.confidence;
-        // 버킷 색은 레인(pip.ts confBucketColor)과 동일: 빨강<1e-4, 노랑<2e-2, 초록=양호
-        const confClass = conf == null ? '' : conf < 1e-4 ? ' ey-conf-low' : conf < 2e-2 ? ' ey-conf-mid' : ' ey-conf-ok';
-        return h('span', { className: `ey-word${confClass}`, text: word.word, attrs: { 'data-start': String(word.start) } });
-      });
-      const pronEl = this.buildPronEl(line, pronScript);
+      const hasRuby = this.renderLineLyrics(el, line, pronScript, songLanguage);
+      const pronEl = hasRuby ? null : this.buildPronEl(line, pronScript, songLanguage);
       if (pronEl) el.append(pronEl);
-      if (line.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
+      const translation = translations[index];
+      if (translation) el.append(h('div', { className: 'ey-line-tr', text: translation, attrs: { dir: 'auto' } }));
       el.dataset.index = String(index);
       this.lineEls.push(el);
       list.append(el);
@@ -492,6 +535,9 @@ export class LyricsOverlay {
     this.body.append(list);
 
     this.setSourceBadge(source, true);
+    // 칩 순서·발음 칩 라벨은 곡 언어를 본다 — setAvailableLangs가 가사 장착보다 먼저
+    // 오는 흐름에서는 빈 lines로 판정해 영어 곡 취급이 됐다. 가사가 실린 지금 다시 그린다.
+    this.renderLangChips();
     this.footer.classList.remove('no-offset');
     this.footer.style.display = '';
     this.pipBtn.style.display = this.pipEnabled ? '' : 'none';
@@ -508,6 +554,7 @@ export class LyricsOverlay {
     this.showBanner(t('overlay.plain.noTimesync'), generateBtn);
 
     this.lines = lines;
+    this.renderLangChips(); // 곡 언어 기반 칩 순서 갱신 (showSyncedLyrics와 같은 이유)
     const plain = buildPlainLines(lines);
     this.lineEls.push(...plain.lineEls);
     this.body.append(plain.el);
@@ -545,8 +592,8 @@ export class LyricsOverlay {
             on: { click: () => this.callbacks.onRetrySearch() },
           }),
           h('button', {
-            className: 'ey-secondary-btn',
-            text: t('overlay.search.resetSync'),
+            // 파괴적 동작 — 경고색 + 아이콘으로 일반 버튼과 구분한다
+            className: 'ey-secondary-btn ey-danger-btn',
             attrs: { title: t('overlay.search.resetSyncTitle') },
             on: {
               click: () => {
@@ -555,7 +602,7 @@ export class LyricsOverlay {
                 }
               },
             },
-          }),
+          }, icon(ICONS.refresh), t('overlay.search.resetSync')),
         ],
       },
     );
@@ -636,8 +683,13 @@ export class LyricsOverlay {
     section.append(
       h('div', { className: 'ey-search-form' },
         srcInput,
-        offsetInput,
-        rateInput,
+        // 값이 채워지면 placeholder가 사라져 "0/1이 뭐지?"가 된다 — 라벨을 항상 보이게
+        h('span', { className: 'ey-link-field' },
+          h('label', { className: 'ey-link-field-label', text: t('overlay.link.offsetPlaceholder'), attrs: { title: t('overlay.link.offsetTitle') } }),
+          offsetInput),
+        h('span', { className: 'ey-link-field' },
+          h('label', { className: 'ey-link-field-label', text: t('overlay.link.ratePlaceholder'), attrs: { title: t('overlay.link.rateTitle') } }),
+          rateInput),
         h('button', { className: 'ey-primary-btn', text: t('overlay.link.connect'), on: { click: doLink } }),
       ),
       h('button', {
@@ -747,12 +799,50 @@ export class LyricsOverlay {
     }
   }
 
+  /** 곡 원어 판정 — 가사 문자 기준(가나→ja, 한글→ko, 한자만→zh, 그 외 en) */
+  private songLang(): string {
+    const texts = this.lines.map(l => l.text).join('');
+    return /[぀-ゟ゠-ヿ]/.test(texts) ? 'ja'
+      : /[가-힣]/.test(texts) ? 'ko'
+        : /[一-鿿]/.test(texts) ? 'zh' : 'en';
+  }
+
+  /** 언어 칩 순서 — [곡 원어, 시스템 언어, zh, en, ko, ja] 중복 제거. */
+  private chipOrder(): string[] {
+    const song = this.songLang();
+    const nav = (navigator.language || '').toLowerCase();
+    const sys = this.settings.uiLanguage !== 'auto' ? this.settings.uiLanguage
+      : nav.startsWith('zh') ? 'zh'
+        : nav.startsWith('ja') ? 'ja'
+          : nav.startsWith('ko') ? 'ko' : 'en';
+    return [...new Set([song, sys, 'zh', 'en', 'ko', 'ja'])];
+  }
+
   private renderLangChips(): void {
     if (!this.availableLangs) {
       this.langChipsRow.style.display = 'none';
       return;
     }
     this.langChipsRow.style.display = '';
+    // 발음 표기 칩 라벨 — 끄기 상태·영어 곡(KK)·표기 이름 순으로 판정
+    const pronChipKey = pronunciationChipKey(
+      this.songLang(),
+      this.settings.showPronunciation,
+      resolveScript(this.settings),
+    );
+    this.pronChipBtn.textContent = pronChipKey === 'off'
+      || pronChipKey === 'kk'
+      || pronChipKey === 'pinyin'
+      ? t(`overlay.pronChip.${pronChipKey}`)
+      : t(`overlay.settings.pronScript.${pronChipKey}`);
+    // 칩 순서: 곡 원어 → 시스템(표시) 언어 → 나머지(중·영·한·일 고정 순).
+    // append는 DOM 노드를 이동시키므로 재정렬 비용은 사실상 0이다.
+    const byCode = new Map(this.langChipButtons.map(c => [c.code, c.btn]));
+    for (const code of this.chipOrder()) {
+      const chip = byCode.get(code);
+      if (chip) this.langChipsRow.append(chip);
+    }
+    this.langChipsRow.append(this.pronChipBtn);
     for (const { code, btn } of this.langChipButtons) {
       const isCurrent = code === this.settings.translationLanguage;
       const isPending = code === this.pendingLang;
@@ -992,16 +1082,60 @@ export class LyricsOverlay {
   }
 
   /**
+   * 원문 가사를 karaoke span으로 만들고, 일본어+히라가나 모드에서는 word/pron 시간
+   * 겹침으로 확실하게 대응되는 한자만 ruby로 감싼다. 하나라도 ruby를 만들었으면 true —
+   * 호출부가 같은 발음을 별도 줄로 중복 표시하지 않게 하는 신호다.
+   */
+  private renderLineLyrics(
+    el: HTMLElement,
+    line: LyricLine,
+    pronScript: PronScript,
+    songLanguage: string,
+  ): boolean {
+    el.replaceChildren();
+    const rubyReadings = buildKanjiRubyReadings(
+      line,
+      pronScript === 'kana' && songLanguage === 'ja'
+        ? resolvedSongPronSegments(line, songLanguage, pronScript)
+        : undefined,
+    );
+
+    // words가 없어도 호출 — appendKaraokeSpans가 음절 타이밍/라인 구간 비례
+    // 배분으로 폴백해, 라인이 한 번에 통째로 켜지는 표시를 피한다.
+    appendKaraokeSpans(el, line, word => {
+      // 신뢰도 등급 클래스 — .ey-show-conf(디버그 모드)에서만 색이 입혀진다.
+      const conf = word.confidence;
+      const confClass =
+        conf == null ? ''
+        : conf < 1e-4 ? ' ey-conf-low'
+        : conf < 2e-2 ? ' ey-conf-mid'
+        : ' ey-conf-ok';
+      const wordEl = h('span', {
+        className: `ey-word${confClass}`,
+        attrs: { 'data-start': String(word.start) },
+      });
+      appendRubyText(wordEl, word.word, rubyReadings.get(word));
+      return wordEl;
+    });
+    el.classList.toggle('ey-line-has-ruby', rubyReadings.size > 0);
+    return rubyReadings.size > 0;
+  }
+
+  /**
    * 라인 하나의 발음 표기 엘리먼트를 만든다 — showSyncedLyrics(최초 렌더)와
    * refreshTranslations(재렌더: 번역 API가 늦게 채워줄 때·발음 표기 전환 시) 둘 다
    * 이걸 거친다. 음절 타이밍(pronSegments)이 있으면 단어처럼 부른 만큼 색이 차오르게
    * 스팬으로(사이 텍스트는 appendTimedSpans가 인접 span에 끼워 넣어 흰 글자 없이
    * 칠해진다), 없으면 통짜 텍스트로. 발음이 없으면 null(둘 다 append를 생략하게).
    */
-  private buildPronEl(line: LyricLine, pronScript: PronScript): HTMLDivElement | null {
-    const pron = resolvedPronunciation(line, pronScript);
+  private buildPronEl(
+    line: LyricLine,
+    pronScript: PronScript,
+    songLanguage = this.songLang(),
+  ): HTMLDivElement | null {
+    const pron = resolvedSongPronunciation(line, songLanguage, pronScript);
     if (!pron) return null;
-    const segs = resolvedPronSegments(line, pronScript);
+    const segs = resolvedSongPronSegments(line, songLanguage, pronScript);
     const pronEl = h('div', { className: 'ey-line-pron', attrs: { dir: 'auto' } });
     const mapped = segs && segs.length > 0
       ? appendTimedSpans(pronEl, pron, segs, s => s.text, seg =>
@@ -1025,16 +1159,20 @@ export class LyricsOverlay {
    * 패널이 pip.setPronScript만큼 따라가지 못했다).
    */
   refreshTranslations(): void {
+    const songLanguage = this.songLang();
     const pronScript = resolveScript(this.settings);
+    const translations = visibleTranslations(this.lines);
     this.lineEls.forEach((el, i) => {
-      el.querySelector('.ey-line-tr')?.remove();
-      el.querySelector('.ey-line-pron')?.remove();
       const line = this.lines[i];
       if (line) {
-        const pronEl = this.buildPronEl(line, pronScript);
+        const hasRuby = this.renderLineLyrics(el, line, pronScript, songLanguage);
+        const pronEl = hasRuby ? null : this.buildPronEl(line, pronScript, songLanguage);
         if (pronEl) el.append(pronEl);
+      } else {
+        el.replaceChildren();
       }
-      if (line?.translation) el.append(h('div', { className: 'ey-line-tr', text: line.translation, attrs: { dir: 'auto' } }));
+      const translation = translations[i];
+      if (translation) el.append(h('div', { className: 'ey-line-tr', text: translation, attrs: { dir: 'auto' } }));
     });
   }
 
@@ -1072,7 +1210,19 @@ export class LyricsOverlay {
 
   /** 전사 진행 칩 — null이면 숨김. 패널 본문을 점유하지 않는 작은 표시.
    *  cancellable이면 ✕ 버튼으로 진행 중인 전사를 취소할 수 있다 (현재 영상 잡만). */
-  setGenerationChip(text: string | null, cancellable = false): void {
+  setGenerationChip(text: string | null, cancellable = false, currentActive = false): void {
+    this.currentGenerationActive = currentActive;
+    this.genChip.classList.toggle('ey-current-generation', currentActive);
+    if (currentActive) {
+      if (this.banner.style.display !== 'none') {
+        this.bannerHiddenForGeneration = true;
+        this.banner.style.display = 'none';
+      }
+    } else if (this.bannerHiddenForGeneration) {
+      this.bannerHiddenForGeneration = false;
+      if (this.banner.childElementCount > 0) this.banner.style.display = '';
+    }
+
     if (!text) {
       this.genChip.style.display = 'none';
       this.genList.style.display = 'none';
@@ -1252,6 +1402,7 @@ export class LyricsOverlay {
   private resetBody(): void {
     this.body.replaceChildren();
     this.banner.style.display = 'none';
+    this.bannerHiddenForGeneration = false;
     this.footer.style.display = 'none';
     this.resumeChip.style.display = 'none';
     this.pipBtn.style.display = 'none';
@@ -1279,7 +1430,8 @@ export class LyricsOverlay {
   private showBanner(text: string, action?: HTMLElement): void {
     this.banner.replaceChildren(h('span', { className: 'ey-banner-text', text }));
     if (action) this.banner.append(action);
-    this.banner.style.display = '';
+    this.bannerHiddenForGeneration = this.currentGenerationActive;
+    this.banner.style.display = this.currentGenerationActive ? 'none' : '';
   }
 
   private setSourceBadge(source: LyricsSource, synced: boolean): void {
@@ -1304,6 +1456,7 @@ export class LyricsOverlay {
       : source === 'vocaro'
         ? (this.attributionSourceId === 'miraheze' ? t('overlay.source.miraheze') : t('overlay.source.vocaro'))
       : source === 'caption' ? t('overlay.source.caption')
+      : source === 'netease' ? t('overlay.source.netease')
       : 'LRCLIB';
     // 가사 원출처(위키 등)를 병기 — 전사는 서버가 했어도 가사의 출처는 따로 표기
     const extra = this.attributionName && this.attributionName !== base ? ` · ${this.attributionName}` : '';
@@ -1424,9 +1577,11 @@ export class LyricsOverlay {
     const sheet = this.buildSettingsSheet();
     this.settingsSheet = sheet;
     this.panel.append(sheet);
+    this.gearBtn.classList.add('active'); // 열려 있는 동안 톱니를 밝힌다
   }
 
   private closeSettings(): void {
+    this.gearBtn.classList.remove('active');
     this.settingsSheet?.remove();
     this.settingsSheet = null;
     this.settingsDot = null;
@@ -1462,7 +1617,7 @@ export class LyricsOverlay {
     const langSelect = this.buildSelect(
       // 언어 이름은 각 언어 자신의 표기로 고정 — uiLanguage가 바뀌어도 번역하지 않는다
       // (사용자가 어느 표시 언어에서도 자기 언어를 바로 찾을 수 있어야 하는 표준 관례)
-      [['ko', '한국어'], ['en', 'English'], ['ja', '日本語'], ['zh', '中文']],
+      [['ko', '한국어'], ['en', 'English'], ['ja', '日本語'], ['zh', '繁體中文']],
       this.settings.translationLanguage,
       v => this.callbacks.onSettingsChange({ translationLanguage: v }),
     );
@@ -1470,7 +1625,10 @@ export class LyricsOverlay {
     // 확장 UI 표시 언어 — 지금은 값만 저장한다(실제 반영은 다음 i18n 태스크에서: chrome.i18n은
     // 브라우저 로케일에 고정되므로 이 값이 있어야 사용자가 직접 오버라이드할 수 있다)
     const uiLangSelect = this.buildSelect(
-      [['auto', t('overlay.settings.optAuto')], ['ko', '한국어'], ['en', 'English'], ['ja', '日本語']],
+      [
+        ['auto', t('overlay.settings.optAuto')],
+        ['ko', '한국어'], ['en', 'English'], ['ja', '日本語'], ['zh', '繁體中文'],
+      ],
       this.settings.uiLanguage,
       v => this.callbacks.onSettingsChange({ uiLanguage: v as Settings['uiLanguage'] }),
     );
@@ -1490,7 +1648,11 @@ export class LyricsOverlay {
       this.callbacks.onSettingsChange({ showPronunciation: showPronunciation.checked }));
 
     const sourcePriority = this.buildSelect(
-      [['vocaro', t('overlay.settings.sourcePriority.vocaro')], ['lrclib', t('overlay.settings.sourcePriority.lrclib')]],
+      [
+        ['vocaro', t('overlay.settings.sourcePriority.vocaro')],
+        ['lrclib', t('overlay.settings.sourcePriority.lrclib')],
+        ['netease', t('overlay.settings.sourcePriority.netease')],
+      ],
       this.settings.lyricsSourcePriority,
       v => this.callbacks.onSettingsChange({ lyricsSourcePriority: v as Settings['lyricsSourcePriority'] }),
     );
@@ -1537,6 +1699,7 @@ export class LyricsOverlay {
       [
         ['korean', t('overlay.settings.solfegeNotation.korean')],
         ['english', t('overlay.settings.solfegeNotation.english')],
+        ['off', t('overlay.settings.solfegeNotation.off')],
       ],
       this.settings.solfegeNotation,
       v => this.callbacks.onSettingsChange({ solfegeNotation: v as Settings['solfegeNotation'] }),
@@ -1598,6 +1761,21 @@ export class LyricsOverlay {
     micPitch.checked = this.settings.micPitch;
     micPitch.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ micPitch: micPitch.checked }));
+
+    const karaokeScoring = h('input', { attrs: { type: 'checkbox' } });
+    karaokeScoring.checked = this.settings.karaokeScoring;
+    karaokeScoring.addEventListener('change', () =>
+      this.callbacks.onSettingsChange({ karaokeScoring: karaokeScoring.checked }));
+    const micDisplayMode = this.buildSelect(
+      [
+        ['trace', t('overlay.settings.micDisplayMode.trace')],
+        ['notes', t('overlay.settings.micDisplayMode.notes')],
+      ],
+      this.settings.micDisplayMode,
+      value => this.callbacks.onSettingsChange({
+        micDisplayMode: value as Settings['micDisplayMode'],
+      }),
+    );
     const micOctave = this.buildSelect(
       [
         ['-2', t('overlay.settings.micOctave.n', ['-2'])], ['-1', t('overlay.settings.micOctave.n', ['-1'])],
@@ -1668,10 +1846,27 @@ export class LyricsOverlay {
 
     const apiKeyInput = h('input', { className: 'ey-input', attrs: { type: 'password', placeholder: t('overlay.settings.apiKeyPlaceholder') } });
     apiKeyInput.value = this.settings.apiKey;
+
+    // 번역 LLM API 키 — 자가 호스팅 사용자가 서버 env 없이 확장에서 바로 넣는다
+    const translationKeyInput = h('input', {
+      className: 'ey-input',
+      attrs: { type: 'password', placeholder: t('overlay.settings.translationApiKeyPlaceholder') },
+    });
+    translationKeyInput.value = this.settings.translationApiKey;
+    translationKeyInput.addEventListener('change', () =>
+      this.callbacks.onSettingsChange({ translationApiKey: translationKeyInput.value.trim() }));
     apiKeyInput.addEventListener('change', () =>
       this.callbacks.onSettingsChange({ apiKey: apiKeyInput.value.trim() }));
 
     return h('div', { className: 'ey-settings' },
+      // 상단 고정 '가사로 돌아가기' — 긴 시트를 끝까지 내려가 닫던 불편의 해소 (하단 닫기
+      // 버튼은 제거). '回到目前的歌詞' 칩과 같은 관례의 sticky 바.
+      h('div', { className: 'ey-settings-top' },
+        h('button', {
+          className: 'ey-secondary-btn ey-settings-back',
+          text: t('panels.searchSheet.back'),
+          on: { click: () => this.closeSettings() },
+        })),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.autoSearch'), attrs: { title: t('overlay.settings.row.autoSearchTitle') } }), autoSearch),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.autoSearchShorts'), attrs: { title: t('overlay.settings.row.autoSearchShortsTitle') } }), autoSearchShorts),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.fontSize') }), fontSelect),
@@ -1710,6 +1905,10 @@ export class LyricsOverlay {
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.micDevice') }), micDevice),
       h('div', { className: 'ey-settings-row' },
         h('label', { text: t('overlay.settings.row.micOctave'), attrs: { title: t('overlay.settings.row.micOctaveTitle') } }), micOctave),
+      h('div', { className: 'ey-settings-row' },
+        h('label', { text: t('overlay.settings.row.karaokeScore'), attrs: { title: t('overlay.settings.row.karaokeScoreTitle') } }), karaokeScoring),
+      h('div', { className: 'ey-settings-row' },
+        h('label', { text: t('overlay.settings.row.micDisplayMode') }), micDisplayMode),
       h('div', { className: 'ey-settings-note', text: t('overlay.settings.deviceNote') }),
       h('div', { className: 'ey-settings-row ey-settings-col' },
         h('label', {}, t('overlay.settings.serverUrlLabel'), dot),
@@ -1719,6 +1918,13 @@ export class LyricsOverlay {
         h('label', { text: t('overlay.settings.apiKeyLabel') }),
         apiKeyInput,
       ),
+      h('div', { className: 'ey-settings-row ey-settings-col' },
+        h('label', {
+          text: t('overlay.settings.translationApiKeyLabel'),
+          attrs: { title: t('overlay.settings.translationApiKeyTitle') },
+        }),
+        translationKeyInput,
+      ),
       serverNote,
       permBtn,
       h('div', { className: 'ey-settings-row' },
@@ -1727,7 +1933,6 @@ export class LyricsOverlay {
         h('label', { text: t('overlay.settings.row.notifyOnComplete'), attrs: { title: t('overlay.settings.row.notifyOnCompleteTitle') } }), notifyOnComplete),
       h('div', { className: 'ey-settings-row' }, h('label', { text: t('overlay.settings.row.debugInfo') }), debugInfo),
       h('div', { className: 'ey-settings-note', text: t('overlay.settings.serverRequiredNote') }),
-      h('button', { className: 'ey-secondary-btn', text: t('overlay.settings.closeButton'), on: { click: () => this.closeSettings() } }),
     );
   }
 

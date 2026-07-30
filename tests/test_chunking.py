@@ -159,6 +159,29 @@ def test_ctc_log_emission_chunked_matches_whole(monkeypatch):
     assert torch.allclose(whole, chunked, atol=1e-6)
 
 
+def test_mps_caps_ctc_forward_windows_at_90_seconds():
+    import torch
+
+    from everyric2.alignment.ctc_engine import CTCEngine
+    from everyric2.config.settings import AlignmentSettings
+
+    sample_rate = 16000
+    duration_sec = 181
+    n_samples = duration_sec * sample_rate
+    config = AlignmentSettings(align_chunk_sec=360.0, align_chunk_overlap_sec=5.0)
+
+    mps_engine = CTCEngine(config)
+    mps_engine._device = torch.device("mps")
+    mps_windows = mps_engine._chunk_windows(n_samples)
+
+    assert len(mps_windows) >= 3
+    assert max(end - start for start, end in mps_windows) <= 90 * sample_rate
+
+    cpu_engine = CTCEngine(config)
+    cpu_engine._device = torch.device("cpu")
+    assert cpu_engine._chunk_windows(n_samples) == [(0, n_samples)]
+
+
 def test_infer_f0_chunked_matches_whole(monkeypatch):
     """MelodyExtractor._infer_f0: 청크 경로 f0 == 통짜 f0 (백엔드 추론 합성)."""
     from everyric2.audio.loader import AudioData

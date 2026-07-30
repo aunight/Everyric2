@@ -1,5 +1,18 @@
 # Everyric Studio for After Effects
 
+> **繁體中文**：本面板來自 **onpe（[onpe5679](https://github.com/onpe5679)）**的
+> [Everyric2 原始專案](https://github.com/onpe5679/Everyric2)；此目錄包含 fork 維護者的
+> 修改，並依 Apache License 2.0 發布。
+>
+> **日本語**：このパネルは **onpe（[onpe5679](https://github.com/onpe5679)）**氏の
+> [Everyric2 オリジナルプロジェクト](https://github.com/onpe5679/Everyric2)を基にした
+> フォーク版で、Apache License 2.0 の下で公開されています。
+>
+> **English**: This panel is based on the
+> [original Everyric2 project](https://github.com/onpe5679/Everyric2) by
+> **onpe ([onpe5679](https://github.com/onpe5679))**. This directory includes fork-maintained
+> modifications distributed under the Apache License 2.0.
+
 Everyric Studio converts Everyric2 alignment data into editable After Effects typography. It creates
 ordinary text layers, static transforms, layer in/out points, and layer-comment metadata only. It does not
 create Text Animators or motion keyframes.

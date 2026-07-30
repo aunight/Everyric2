@@ -43,7 +43,7 @@ def layer_content_lang_mismatch(target_lang: str, lines: list[dict[str, Any]]) -
     hangul_ratio = sum(1 for ch in text if "가" <= ch <= "힣") / visible
     if target_lang == "ko":
         return hangul_ratio < 0.05
-    if target_lang in ("en", "ja"):
+    if target_lang in ("en", "ja", "zh"):
         return hangul_ratio > 0.5
     return False
 

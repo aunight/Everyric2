@@ -1,11 +1,25 @@
-import type { LyricLine, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo, SongKey, SongTempo, SyncDebugMeta } from '../types';
+import type { LyricLine, MicDisplayMode, SearchCandidate, ServerLogEntry, ServerStatus, SongInfo, SongKey, SongTempo, SyncDebugMeta, WordSegment } from '../types';
 import type { MicSample } from '../lib/mic-pitch';
+import { ScoreTracker } from '../lib/karaoke-score';
+import { buildMicTraceSegments, type MicTracePoint } from '../lib/mic-trace';
 import { resolvedPronSegments, resolvedPronunciation, type PronScript } from '../lib/lang';
 import { t } from '../lib/i18n';
 import { unknownStatus } from '../lib/server-status';
 import type { ThemeName } from '../lib/theme';
+import {
+  detectLyricLanguage,
+  visibleTranslations,
+  type LyricLanguage,
+} from '../lib/translation-visibility';
 import { h, icon } from './dom';
-import { appendKaraokeSpans, appendTimedSpans } from './karaoke';
+import {
+  appendKaraokeSpans,
+  appendRubyText,
+  appendTimedSpans,
+  buildKanjiRubyReadings,
+} from './karaoke';
+import { buildNoteHitSegments, type NoteHitSegment } from './note-hit';
+import { attachPitchNoteLabels } from './pitch-labels';
 import {
   applyServerGate,
   buildEmptyState,
@@ -54,7 +68,11 @@ export interface PipOptions {
   /** 긴 묵음 뒤 가사 시작 전 4·3·2·1 카운트다운 */
   pitchCountdown: boolean;
   /** 계이름 표기: korean(도레미)·english(C4·D#5 등, 옥타브 포함) */
-  solfegeNotation: 'korean' | 'english';
+  solfegeNotation: 'korean' | 'english' | 'off';
+  /** 창 안 발음 표기 토글 버튼 → 설정 저장 (content가 setPronScript로 반영을 되돌려준다) */
+  onPronScriptChange: (script: PronScript) => Promise<void>;
+  /** 곡이 끝나거나 창을 닫을 때 최종 채점 결과 — content가 기록소(score-store)에 저장 */
+  onScoreResult: (videoId: string, title: string, score: number) => void;
   /** 음정선(f0 곡선·노트 바) 밝기 배율 0.2~1.0 — 기존 알파값에 곱해진다 */
   pitchLineOpacity: number;
   /** 디버그: 글자별 CTC 신뢰도를 색으로 표시 */
@@ -93,12 +111,17 @@ export interface PipOptions {
   onMetronomeBeatChange: (beat: number) => void;
   /** 마이크 음정 옥타브 보정 (옥타브 단위, -2~+2) */
   micOctave: number;
+  /** 채점 모드 — 마이크 피치를 정답 노트와 비교해 점수를 그린다 (설정 karaokeScoring) */
+  karaokeScoring: boolean;
+  /** 採點顯示：即時歌唱軌跡或日 K 式命中音符 */
+  micDisplayMode: MicDisplayMode;
+  onMicDisplayModeChange: (mode: MicDisplayMode) => void;
   /** 레인 표시 구간(마디) 변경 — 창 안 ± 버튼 */
   onPitchWindowChange: (measures: number) => void;
   /** 레인 진행 방식 변경 — 창 안 토글 버튼 */
   onPitchScrollModeChange: (mode: 'page' | 'scroll') => void;
   /** 마이크 음정 표시가 켜져 있으면 최근 피치 샘플을 돌려준다 (없으면 null) */
-  getMicSamples: (() => MicSample[]) | null;
+  getMicSamples: (() => MicSample[] | null) | null;
   /** 좌상단 미니 버튼 — 가라오케 음정 바 기능 자체 토글 (설정 pitchGuide) */
   onKaraokeToggle: (on: boolean) => void;
   /** 좌상단 미니 버튼 — PiP 영상 표시 토글 (설정 pipShowVideo) */
@@ -179,11 +202,13 @@ const RENDER_FALLBACK_MS = 200;
  */
 const IDLE_REDRAW_MS = 100;
 
-// PiP 창 크기 기억 — 비정상적으로 작거나 큰 값이 저장/전달돼 창이 못 쓰게 되지 않도록 클램프
+// PiP 창 크기 기억 — 비정상적으로 작거나 큰 값이 저장/전달돼 창이 못 쓰게 되지 않도록 클램프.
+// 상한은 브라우저가 화면 크기로 어차피 다시 클램프하므로 넉넉하게 둔다 — 960이던 시절엔
+// 가라오케 레인을 크게 띄우고 싶어도 창이 더 못 늘어났다.
 const MIN_PIP_WIDTH = 280;
-const MAX_PIP_WIDTH = 960;
+const MAX_PIP_WIDTH = 2560;
 const MIN_PIP_HEIGHT = 200;
-const MAX_PIP_HEIGHT = 1000;
+const MAX_PIP_HEIGHT = 1600;
 function clampPipSize(width: number, height: number): { width: number; height: number } {
   return {
     width: Math.round(Math.min(MAX_PIP_WIDTH, Math.max(MIN_PIP_WIDTH, width))),
@@ -223,6 +248,11 @@ function noteLabel(midi: number, notation: 'korean' | 'english'): string {
 const CONF_COLOR_LOW = '#ff6b6b';
 const CONF_COLOR_MID = '#ffd166';
 const CONF_COLOR_OK = '#51cf66';
+/** 점수 HUD 라벨 — 소수 한 자리 고정(99.95 반올림으로 100.0을 넘겨 보이지 않게 클램프) */
+function scoreLabel(score: number): string {
+  return t('pip.score.label', [Math.min(100, score).toFixed(1)]);
+}
+
 function confBucketColor(conf: number): string {
   return conf < 1e-4 ? CONF_COLOR_LOW : conf < 2e-2 ? CONF_COLOR_MID : CONF_COLOR_OK;
 }
@@ -274,6 +304,8 @@ interface PitchNote {
   midi: number;
   start: number;
   end: number;
+  /** 這顆音符對應的歌曲原文；與發音顯示設定無關。 */
+  lyric?: string;
   /** 이 노트(음절)에 대응하는 발음 표기 — 계이름처럼 노트에 직접 붙여 그린다 */
   pron?: string;
 }
@@ -291,6 +323,7 @@ interface PitchLine {
   start: number;
   end: number;
   hasNotes: boolean;
+  visibleTranslation?: string;
 }
 
 /** setLines에서 미리 평탄화해 두는 레인 데이터 (렌더는 시간 창으로 필터만) */
@@ -340,7 +373,7 @@ export class PipController {
   private muteBtn: HTMLButtonElement | null = null;
   private melodyBtn: HTMLButtonElement | null = null;
   private metroBtn: HTMLButtonElement | null = null;
-  private getMicSamples: (() => MicSample[]) | null = null;
+  private getMicSamples: (() => MicSample[] | null) | null = null;
   private volumeSlider: HTMLInputElement | null = null;
   private volumeDragging = false;
   private timeEl: HTMLSpanElement | null = null;
@@ -393,7 +426,7 @@ export class PipController {
    *  패턴). open()에서 opts.onPitchWindowChange로 채워진다. */
   private onPitchWindowChange: (measures: number) => void = () => {};
   /** K2: 계이름 표기 — korean(도레미)·english(C4·D#5) */
-  private solfegeNotation: 'korean' | 'english' = 'korean';
+  private solfegeNotation: 'korean' | 'english' | 'off' = 'korean';
   /** K3: 음정선(f0 곡선·노트 바) 밝기 배율 — 기존 알파값에 곱해진다 */
   private pitchLineOpacity = 1;
   private pitchCountdown = true;
@@ -401,17 +434,35 @@ export class PipController {
   /** 발음 표기 방식 — setLines가 만드는 pitch.notes의 발음 부착(collectPitchData)도
    *  이 값을 따르므로, setPronScript는 pitch를 다시 계산한다 */
   private pronScript: PronScript = 'hangul';
+  /** 全曲原文語言；中文採點固定顯示漢字，不提供讀音文字模式切換。 */
+  private songLanguage: LyricLanguage = 'unknown';
   private tempo: SongTempo | null = null;
   private songKey: SongKey | null = null;
   private metronomeRate = 1;
   private metronomeBeat = 0;
   private micOctave = 0;
+  private scoring = false;
+  private micDisplayMode: MicDisplayMode = 'notes';
+  private scoreTracker = new ScoreTracker();
+  /** 日 K 命中音符顯示需要保留當前歌曲已唱區段，不能跟 4 秒麥克風環形緩衝一起消失。 */
+  private scoreVisualPoints: MicTracePoint[] = [];
+  private lastScoreVisualAt = -1;
+  /** 채점 기록 귀속용 — content가 setVideoId로 준다. 곡이 바뀌면 이전 곡을 flush */
+  private scoreVideoId = '';
+  private scoreTitle = '';
+  /** 이 곡의 저장된 최고점 (기록 없으면 null) — HUD에 병기 */
+  private scoreBest: number | null = null;
+  /** 같은 곡의 setLines 재호출(번역 도착 등)에서 채점이 리셋되지 않게 하는 멜로디 서명 */
+  private notesSig = '';
+  private onScoreResultCb: ((videoId: string, title: string, score: number) => void) | null = null;
   private metroRateBtn: HTMLButtonElement | null = null;
   private metroBeatBtn: HTMLButtonElement | null = null;
   private windowLabelBtn: HTMLButtonElement | null = null;
   private windowMinusBtn: HTMLButtonElement | null = null;
   private windowPlusBtn: HTMLButtonElement | null = null;
   private modeBtn: HTMLButtonElement | null = null;
+  private micDisplayBtn: HTMLButtonElement | null = null;
+  private pronScriptBtn: HTMLButtonElement | null = null;
   /** 레인(가라오케 모드)이 실제로 표시 중인지 — 가라오케 관련 버튼 노출 게이트 */
   private laneShown = false;
   private metroOn = false;
@@ -508,6 +559,7 @@ export class PipController {
     this.metronomeRate = opts.metronomeRate;
     this.metronomeBeat = opts.metronomeBeat;
     this.micOctave = opts.micOctave;
+    this.micDisplayMode = opts.micDisplayMode;
 
     const doc = win.document;
     doc.title = t('pip.docTitle');
@@ -645,10 +697,51 @@ export class PipController {
         },
       },
     });
+    this.micDisplayBtn = h('button', {
+      className: 'ey-pip-play ey-pip-metro-opt',
+      title: t('pip.controls.micDisplayToggle'),
+      on: {
+        click: () => {
+          const next: MicDisplayMode = this.micDisplayMode === 'trace' ? 'notes' : 'trace';
+          this.setMicDisplayMode(next);
+          opts.onMicDisplayModeChange(next);
+        },
+      },
+    });
+    // 발음 표기 토글(한글/로마자/히라가나 순환) — 설정 시트까지 안 가도 창 안에서 바로 전환
+    this.pronScriptBtn = h('button', {
+      className: 'ey-pip-play ey-pip-metro-opt',
+      title: t('pip.controls.pronScriptToggle'),
+      on: {
+        click: async () => {
+          if (!this.pronScriptBtn || this.pronScriptBtn.disabled || this.songLanguage === 'zh') {
+            return;
+          }
+          const order: PronScript[] = ['hangul', 'romaji', 'kana'];
+          const previous = this.pronScript;
+          const next = order[(order.indexOf(this.pronScript) + 1) % order.length];
+          const button = this.pronScriptBtn;
+          this.pronScriptBtn.disabled = true;
+          this.setPronScript(next);
+          try {
+            await opts.onPronScriptChange(next);
+          } catch {
+            // 儲存失敗時回復畫面狀態；事件錯誤不可逸出到 Document PiP 關閉視窗。
+            this.setPronScript(previous);
+          } finally {
+            if (this.pronScriptBtn === button) this.pronScriptBtn.disabled = false;
+          }
+        },
+      },
+    });
     this.updateWindowControls();
+    this.updateMicDisplayBtn();
+    this.updatePronScriptBtn();
     this.setMetronomeConfig(this.metronomeRate, this.metronomeBeat);
     this.setAudioState(opts.melodyOn, opts.metronomeOn);
     this.getMicSamples = opts.getMicSamples;
+    this.scoring = opts.karaokeScoring;
+    this.onScoreResultCb = opts.onScoreResult;
 
     this.volumeSlider = h('input', {
       className: 'ey-pip-volume',
@@ -731,6 +824,7 @@ export class PipController {
         this.muteBtn, this.melodyBtn, this.metroBtn,
         this.metroRateBtn, this.metroBeatBtn,
         this.windowMinusBtn, this.windowLabelBtn, this.windowPlusBtn, this.modeBtn,
+        this.micDisplayBtn, this.pronScriptBtn,
         this.volumeSlider, progressWrap, this.timeEl),
     );
     doc.body.append(
@@ -826,6 +920,8 @@ export class PipController {
       this.windowMinusBtn = null;
       this.windowPlusBtn = null;
       this.modeBtn = null;
+      this.micDisplayBtn = null;
+      this.pronScriptBtn = null;
       this.cornerKaraokeBtn = null;
       this.cornerVideoBtn = null;
       this.cornerPanelBtn = null;
@@ -846,6 +942,11 @@ export class PipController {
       this.playlistBtn = null;
       this.playlistEl = null;
       this.playlistOpen = false;
+      this.flushScore(); // 창을 닫는 순간까지의 점수를 기록으로 남긴다
+      this.scoreVideoId = '';
+      this.scoreTitle = '';
+      this.notesSig = '';
+      this.onScoreResultCb = null;
       this.getMicSamples = null;
       this.playbackRate = 1;
       opts.onClosed();
@@ -917,7 +1018,18 @@ export class PipController {
   setLines(lines: LyricLine[]): void {
     this.lines = lines;
     this.index = -1;
-    this.pitch = collectPitchData(lines, this.pronScript);
+    this.songLanguage = detectLyricLanguage(lines.map(line => line.text));
+    this.pitch = collectPitchData(lines, this.pronScript, this.songLanguage);
+    // 곡(멜로디)이 실제로 바뀌었을 때만 채점을 리셋한다 — setLines는 같은 곡에서도
+    // 번역·발음 도착 때마다 다시 불리므로(content:1597) 무조건 리셋하면 부르던 점수가
+    // 매번 0으로 돌아간다. 멜로디 서명이 다르면 이전 곡 점수를 flush하고 새로 센다.
+    const notes = this.pitch.notes;
+    const sig = `${notes.length}:${notes[0]?.start ?? 0}:${notes[notes.length - 1]?.end ?? 0}`;
+    if (sig !== this.notesSig) {
+      this.flushScore();
+      this.notesSig = sig;
+      this.scoreTracker.setNotes(notes);
+    }
     const confs = lines.map(l => l.confidence).filter((v): v is number => v != null).sort((a, b) => a - b);
     const low = confs.filter(v => v < 1e-4).length / Math.max(1, confs.length);
     const mid = confs.filter(v => v >= 1e-4 && v < 2e-2).length / Math.max(1, confs.length);
@@ -928,6 +1040,7 @@ export class PipController {
       low,
     };
     this.applyPitchVisibility();
+    this.updatePronScriptBtn();
     this.syncCornerButtons(); // 가사 유무가 바뀌면 패널 토글 버튼 노출 조건도 바뀐다
     this.renderLines();
   }
@@ -946,7 +1059,7 @@ export class PipController {
 
   /** K2: 계이름 표기(korean/english) 즉시 반영 — 다음 프레임까지 안 기다린다(일시정지 중
    *  설정을 바꿔도 바로 보이게, pointermove 팬과 같은 이유). */
-  setSolfegeNotation(notation: 'korean' | 'english'): void {
+  setSolfegeNotation(notation: 'korean' | 'english' | 'off'): void {
     this.solfegeNotation = notation;
     this.renderPitch(this.lastTime);
   }
@@ -998,6 +1111,63 @@ export class PipController {
     this.micOctave = octave;
   }
 
+  /** 線條軌跡／命中音符切換只重畫，不重設已累積的採點。 */
+  setMicDisplayMode(mode: MicDisplayMode): void {
+    this.micDisplayMode = mode;
+    this.updateMicDisplayBtn();
+    this.renderPitch(this.lastTime);
+  }
+
+  private updateMicDisplayBtn(): void {
+    if (this.micDisplayBtn) {
+      this.micDisplayBtn.textContent = this.micDisplayMode === 'trace' ? '線' : '音';
+    }
+  }
+
+  /** 채점 모드 켜기/끄기 — 켤 때 점수를 처음부터 다시 센다 */
+  setKaraokeScoring(on: boolean): void {
+    if (on === this.scoring) return;
+    if (!on) this.flushScore(); // 끄는 순간까지의 점수는 기록으로 남긴다
+    this.scoring = on;
+    if (on) {
+      this.scoreTracker.reset();
+      this.resetScoreVisuals();
+    }
+  }
+
+  /** 채점 기록 귀속용 영상 id — 곡이 바뀌면 이전 곡 점수를 먼저 flush */
+  setVideoId(videoId: string, title = ''): void {
+    if (videoId === this.scoreVideoId) {
+      if (title) this.scoreTitle = title;
+      return;
+    }
+    this.flushScore();
+    this.scoreVideoId = videoId;
+    this.scoreTitle = title;
+    this.notesSig = '';
+    this.scoreBest = null;
+  }
+
+  /** 이 곡의 저장된 최고점 — HUD에 병기 (null이면 표시 생략) */
+  setScoreBest(best: number | null): void {
+    this.scoreBest = best;
+  }
+
+  /** 지금까지의 점수를 기록소로 내보내고 채점을 리셋 — 곡 전환·창 닫기·채점 끄기에서 호출 */
+  private flushScore(): void {
+    const score = this.scoreTracker.totalScore();
+    if (this.scoring && this.scoreVideoId && score !== null) {
+      this.onScoreResultCb?.(this.scoreVideoId, this.scoreTitle, Math.min(100, score));
+    }
+    this.scoreTracker.reset();
+    this.resetScoreVisuals();
+  }
+
+  private resetScoreVisuals(): void {
+    this.scoreVisualPoints = [];
+    this.lastScoreVisualAt = -1;
+  }
+
   /** 서버가 추정한 곡 템포 — 마디 창 폭·비트 격자에 사용, null이면 초 단위 폴백 */
   setTempo(tempo: SongTempo | null): void {
     this.tempo = tempo && tempo.bpm > 0 ? tempo : null;
@@ -1022,8 +1192,16 @@ export class PipController {
   setPronScript(script: PronScript): void {
     if (this.pronScript === script) return;
     this.pronScript = script;
-    this.pitch = collectPitchData(this.lines, this.pronScript);
+    this.updatePronScriptBtn();
+    this.pitch = collectPitchData(this.lines, this.pronScript, this.songLanguage);
     this.renderLines();
+  }
+
+  /** 발음 표기 토글 버튼 라벨 — 현재 표기를 짧게 보여준다 */
+  private updatePronScriptBtn(): void {
+    if (!this.pronScriptBtn) return;
+    this.pronScriptBtn.textContent =
+      this.pronScript === 'hangul' ? '한' : this.pronScript === 'romaji' ? 'Ro' : 'ひら';
   }
 
   /** 현재 라인 인덱스 변경 시 호출 */
@@ -1337,6 +1515,8 @@ export class PipController {
     display(this.windowLabelBtn, lane);
     display(this.windowPlusBtn, lane);
     display(this.modeBtn, lane);
+    display(this.micDisplayBtn, lane);
+    display(this.pronScriptBtn, lane && this.songLanguage !== 'zh');
   }
 
   /**
@@ -1714,7 +1894,7 @@ export class PipController {
     const hasSegs = noteAttach
       && pages.some(p => (resolvedPronSegments(p.line, this.pronScript)?.length ?? 0) > 0);
     const hasPronRow = !hasSegs && pages.some(p => resolvedPronunciation(p.line, this.pronScript));
-    const hasTr = pages.some(p => p.line.translation);
+    const hasTr = pages.some(p => p.visibleTranslation);
     const fs = this.pitchFontScale;
     // 배율은 반드시 클램프 **이후에** 곱한다 — 예전엔 상한(34px 등) 안에서 곱해서,
     // 레인이 조금만 커져도 상한에 걸려 배율이 계이름(무상한)에만 먹히는 것처럼 보였다
@@ -1823,29 +2003,80 @@ export class PipController {
       this.renderF0Curve(ctx, t0, W, x, y, lo, hi);
     }
 
-    // ── 노트 막대 + 계이름(위) + 발음(아래) — 시간 창 안의 노트만
-    // 페이지 모드는 창 밖 요소를 그리면 가장자리에 다음 페이지 글자가 뭉치므로 여유 0
+    // ── 麥克風輸入先判定，再繪製音符。這樣命中覆蓋層能放在音符底色與文字之間。
+    // null = 麥克風尚未開始；[] = 正在擷取但目前無聲。只有後者能推進漏唱的 0 分。
+    const mic = this.getMicSamples?.() ?? null;
+    const tracePoints: MicTracePoint[] = [];
+    if (this.scoring && mic !== null) this.scoreTracker.advance(now);
+    if (mic !== null && mic.length > 0) {
+      const wallNow = performance.now() / 1000;
+      for (const sample of mic) {
+        const age = wallNow - sample.at;
+        if (age > 2.5) continue;
+        const t = now - age * this.playbackRate;
+        const rawMidi = sample.midi + this.micOctave * 12;
+        const judgement = this.scoring
+          ? this.scoreTracker.feed(sample.at, t, rawMidi)
+          : null;
+
+        // 命中音符模式保留本曲已唱區段；否則超過麥克風 4 秒緩衝後顏色會憑空消失。
+        if (this.scoring && judgement !== null && sample.at > this.lastScoreVisualAt) {
+          this.lastScoreVisualAt = sample.at;
+          this.scoreVisualPoints.push({ t, midi: rawMidi, judgement });
+          if (this.scoreVisualPoints.length > 12_000) {
+            this.scoreVisualPoints.splice(0, this.scoreVisualPoints.length - 12_000);
+          }
+        }
+
+        if (t < t0 || t > t0 + W) continue;
+        let midi = rawMidi;
+        while (midi < lo && midi + 12 <= hi + 6) midi += 12;
+        while (midi > hi && midi - 12 >= lo - 6) midi -= 12;
+        if (midi < lo - 1 || midi > hi + 1) continue;
+        tracePoints.push({ t, midi, judgement });
+      }
+    }
+
+    const noteHitColor = (judgement: NoteHitSegment['judgement']) =>
+      judgement === 'hit' ? '#ffd54f'
+      : judgement === 'near' ? '#ffca28'
+      : '#ef5350';
+    const visibleHitPoints = this.scoreVisualPoints.filter(
+      point => point.t >= t0 - 0.15 && point.t <= t0 + W + 0.15,
+    );
+    const noteHits = this.scoring && this.micDisplayMode === 'notes'
+      ? buildNoteHitSegments(visibleHitPoints, notes)
+      : [];
+    const hitsByNote = new Map<number, NoteHitSegment[]>();
+    for (const segment of noteHits) {
+      const existing = hitsByNote.get(segment.noteIndex);
+      if (existing) existing.push(segment);
+      else hitsByNote.set(segment.noteIndex, [segment]);
+    }
+
+    // ── 目標音符 + 日 K 命中覆蓋 + 原文／發音。頁面模式不把窗外文字推回邊緣。
     const edgePad = this.pitchScrollMode === 'page' ? 0 : 0.5;
-    const vis = notes.filter(n => n.end > t0 - edgePad && n.start < t0 + W + edgePad);
+    const visibleNotes = notes
+      .map((note, noteIndex) => ({ note, noteIndex }))
+      .filter(({ note }) => note.end > t0 - edgePad && note.start < t0 + W + edgePad);
     const noteH = Math.max(5, Math.min(13, semiPx * 1.6));
     const noteR = Math.min(noteH / 2, 4);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const n of vis) {
+    for (const { note: n, noteIndex } of visibleNotes) {
       const x1 = x(n.start);
       const x2 = x(n.end);
       const w = Math.max(3, x2 - x1 - 1);
       const top = y(n.midi) - noteH / 2;
       const isCurrent = n.start <= now && now < n.end;
 
-      // 노트 채움은 반투명 — 채워진 뒤에도 격자·f0 곡선이 비쳐 보이게. K3: 기존 알파값에
-      // pitchLineOpacity를 곱한다(기본 1 = 현행과 동일, 무회귀).
       ctx.fillStyle = colors.dim;
       ctx.globalAlpha = 0.55 * this.pitchLineOpacity;
       ctx.beginPath();
       ctx.roundRect(x1, top, w, noteH, noteR);
       ctx.fill();
-      if (now > n.start) {
+      // 非「命中音符採點」才使用單純播放進度填色；日 K 模式必須只靠實際歌聲上色。
+      if (now > n.start && (!this.scoring || this.micDisplayMode === 'trace')) {
         const sungW = Math.max(2, Math.min(w, x(now) - x1));
         ctx.fillStyle = colors.accent;
         ctx.globalAlpha = 0.65 * this.pitchLineOpacity;
@@ -1853,9 +2084,18 @@ export class PipController {
         ctx.roundRect(x1, top, sungW, noteH, noteR);
         ctx.fill();
       }
+      // 唱過的短區段直接畫在目標音符上：準確金、接近黃、失誤紅。
+      for (const hit of hitsByNote.get(noteIndex) ?? []) {
+        const hitX = x(hit.start);
+        const hitW = Math.max(2, x(hit.end) - hitX);
+        ctx.fillStyle = noteHitColor(hit.judgement);
+        ctx.globalAlpha = 0.96;
+        ctx.beginPath();
+        ctx.roundRect(hitX, top, hitW, noteH, Math.min(noteR, hitW / 2));
+        ctx.fill();
+      }
       ctx.globalAlpha = 1;
       if (isCurrent) {
-        // 지금 불러야 하는 노트: accent 글로우 + 밝은 테두리로 강조
         ctx.save();
         ctx.shadowColor = colors.accent;
         ctx.shadowBlur = 8;
@@ -1867,48 +2107,103 @@ export class PipController {
         ctx.restore();
       }
 
-      // 글자는 노트 중앙이 아니라 노트 앞머리(시작 지점)에 붙인다
-      const lx = x1 + 1;
+      // 文字最後畫，命中覆蓋層不會蓋住原文。
+      const labelX = x1 + 1;
       ctx.textAlign = 'left';
-      // 계이름 — 항상 노트 위
-      if (w >= 14) {
+      if (w >= 14 && this.solfegeNotation !== 'off') {
         ctx.font = `bold ${namePx}px system-ui, sans-serif`;
         ctx.fillStyle = isCurrent ? colors.text : colors.dim;
-        ctx.fillText(noteLabel(n.midi, this.solfegeNotation), lx, Math.max(namePx * 0.7, top - namePx * 0.7));
+        ctx.fillText(
+          noteLabel(n.midi, this.solfegeNotation),
+          labelX,
+          Math.max(namePx * 0.7, top - namePx * 0.7),
+        );
       }
-      // 발음 — 계이름처럼 노트 바로 아래에 부착 (설정 pitchPronPosition === 'note'일 때만;
-      // 'bottom'이면 collectPitchData가 채워둔 n.pron은 무시하고 하단 폴백 줄만 사용)
+      const hasRuby = Boolean(n.pron && noteAttach);
+      const rubyPx = Math.max(8, Math.round(pronPx * 0.62));
+      const lyricY = Math.min(
+        padTop + staffH - pronPx / 2,
+        top + noteH + 2 + pronPx / 2 + (hasRuby ? rubyPx + 1 : 0),
+      );
+      ctx.font = `bold ${pronPx}px system-ui, sans-serif`;
+      const baseLyricWidth = ctx.measureText(n.lyric ?? '').width;
+      const rubyX = labelX + baseLyricWidth / 2;
+      // 日 K 振假名順序：小型發音在上、漢字原文在下。先畫上層也讓來源測試能鎖住
+      // 排版順序，避免日後又退回「漢字下一行片假名」。
       if (n.pron && noteAttach) {
-        ctx.font = `${pronPx}px system-ui, sans-serif`;
+        const pronY = lyricY - pronPx / 2 - 1 - rubyPx / 2;
+        ctx.font = `${rubyPx}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
         ctx.fillStyle = n.start <= now ? colors.accent : colors.dim;
-        ctx.fillText(n.pron, lx, Math.min(padTop + staffH - pronPx / 2, top + noteH + 2 + pronPx / 2));
+        ctx.fillText(n.pron, rubyX, pronY);
+        ctx.textAlign = 'left';
+      }
+      if (n.lyric) {
+        ctx.font = `bold ${pronPx}px system-ui, sans-serif`;
+        ctx.fillStyle =
+          n.end <= now ? colors.dim
+          : isCurrent ? colors.accent
+          : colors.text;
+        ctx.fillText(n.lyric, labelX, lyricY);
       }
       ctx.textAlign = 'center';
     }
 
-    // ── 마이크 음정 궤적 — 사용자가 부른 피치를 청록 점 트레일로 (노트 accent와 구분되는 색)
-    const mic = this.getMicSamples?.();
-    if (mic && mic.length > 0) {
-      const wallNow = performance.now() / 1000;
-      for (const s of mic) {
-        const age = wallNow - s.at;
-        if (age > 2.5) continue;
-        // 곡 시간은 벽시계보다 배속만큼 빨리/느리게 흐른다 — 배속 재생 중 궤적이
-        // 뒤로 밀리지 않게 나이를 배속으로 환산해 사상한다
-        const t = now - age * this.playbackRate;
-        if (t < t0 || t > t0 + W) continue;
-        // 사용자 지정 옥타브 보정(설정) 먼저 적용한 뒤, 남는 오차는 레인 음역으로 폴딩
-        let m = s.midi + this.micOctave * 12;
-        while (m < lo && m + 12 <= hi + 6) m += 12;
-        while (m > hi && m - 12 >= lo - 6) m -= 12;
-        if (m < lo - 1 || m > hi + 1) continue;
-        ctx.globalAlpha = Math.max(0.08, 1 - age / 2.5) * 0.9;
-        ctx.fillStyle = '#4dd0e1';
-        ctx.beginPath();
-        ctx.arc(x(t), y(m), age < 0.12 ? 3.4 : 2.2, 0, Math.PI * 2);
-        ctx.fill();
+    // ── 線條軌跡模式：保留實際音高移動與準確度顏色，不再退回粒子點。
+    if (this.micDisplayMode === 'trace' && tracePoints.length > 0) {
+      const judgementColor = (judgement: MicTracePoint['judgement']) =>
+        judgement === 'hit' ? '#66bb6a'
+        : judgement === 'near' ? '#ffca28'
+        : judgement === 'miss' ? '#ef5350'
+        : '#4dd0e1';
+      const pointAge = (point: MicTracePoint) =>
+        Math.max(0, (now - point.t) / this.playbackRate);
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const segment of buildMicTraceSegments(tracePoints)) {
+        const alpha = Math.max(0.1, 1 - pointAge(segment.to) / 2.5);
+        const drawStroke = (width: number, color: string) => {
+          ctx.globalAlpha = alpha;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(x(segment.from.t), y(segment.from.midi));
+          ctx.lineTo(x(segment.to.t), y(segment.to.midi));
+          ctx.stroke();
+        };
+        drawStroke(8, 'rgba(0, 0, 0, 0.48)');
+        drawStroke(5, judgementColor(segment.judgement));
       }
+      const head = tracePoints[tracePoints.length - 1];
+      ctx.globalAlpha = Math.max(0.15, 1 - pointAge(head) / 2.5);
+      ctx.fillStyle = judgementColor(head.judgement);
+      ctx.beginPath();
+      ctx.arc(x(head.t), y(head.midi), 3.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ── 점수 HUD — 우상단. 켜자마자 '—'라도 그린다(첫 노트가 끝나기 전까지 아무것도
+    // 안 보이면 토글이 죽은 것처럼 보인다 — 실사용 혼란 보고). 마이크가 꺼져 있으면
+    // 채점할 입력 자체가 없으므로 그 사실을 라벨로 말한다.
+    if (this.scoring) {
+      const score = mic !== null ? this.scoreTracker.totalScore() : null;
+      let label = mic === null
+        ? t('pip.score.noMic') // 마이크 표시가 꺼져 있어 채점 입력이 없다
+        : score === null
+          ? t('pip.score.label', ['—']) // 켜졌지만 아직 끝난 노트가 없다
+          : scoreLabel(score);
+      if (this.scoreBest !== null) {
+        label += ` · ${t('pip.score.best', [Math.min(100, this.scoreBest).toFixed(1)])}`;
+      }
+      ctx.textAlign = 'right';
+      ctx.font = `bold ${Math.max(14, Math.round(16 * fs))}px system-ui, sans-serif`;
+      ctx.fillStyle = colors.accent;
+      ctx.globalAlpha = 0.95;
+      ctx.fillText(label, cw - 8, padTop + Math.max(14, Math.round(16 * fs)));
       ctx.globalAlpha = 1;
+      ctx.textAlign = 'center';
     }
 
     // ── 카운트다운: 긴 묵음(5s+) 뒤 라인 시작 4초 전부터 4·3·2·1
@@ -1978,8 +2273,8 @@ export class PipController {
     }
 
     // ── 번역: 현재 라인 번역을 하단 중앙에 — 길면 가로 압축(찌그러짐) 대신 폰트 축소
-    if (hasTr && page?.line.translation) {
-      const tr = page.line.translation;
+    if (hasTr && page?.visibleTranslation) {
+      const tr = page.visibleTranslation;
       const maxW = cw - 16;
       ctx.font = `${trPx}px system-ui, sans-serif`;
       const tw = ctx.measureText(tr).width;
@@ -2417,20 +2712,27 @@ export class PipController {
     if (this.trEl) this.trEl.textContent = current?.translation ?? '';
 
     this.wordEls = [];
+    let rubyReadings = new Map<WordSegment, string>();
+    if (current && this.pronScript === 'kana' && this.songLanguage === 'ja') {
+      rubyReadings = buildKanjiRubyReadings(
+        current,
+        resolvedPronSegments(current, this.pronScript),
+      );
+    }
     // 발음도 음절 타이밍(pronSegments)이 있으면 패널처럼 부른 만큼 색이 차오르게 —
     // 음절 span을 wordEls에 합류시켜 프레임 렌더(renderFrame)의 sung 토글을 그대로 태운다
     if (this.pronEl) {
       this.pronEl.replaceChildren();
       const pron = (current && resolvedPronunciation(current, this.pronScript)) ?? '';
       const segs = current ? resolvedPronSegments(current, this.pronScript) : undefined;
-      const mapped = current && pron && segs && segs.length > 0
+      const mapped = rubyReadings.size === 0 && current && pron && segs && segs.length > 0
         ? appendTimedSpans(this.pronEl, pron, segs, s => s.text, seg => {
             const el = h('span', { className: 'ey-pron-syl', text: seg.text });
             this.wordEls.push({ start: seg.start, el });
             return el;
           })
         : 0;
-      if (mapped === 0) this.pronEl.textContent = pron;
+      if (mapped === 0 && rubyReadings.size === 0) this.pronEl.textContent = pron;
     }
     this.currentEl.replaceChildren();
     if (!current) {
@@ -2440,7 +2742,8 @@ export class PipController {
     // words가 없어도 호출한다 — appendKaraokeSpans가 음절 타이밍/라인 구간으로
     // 비례 배분 폴백을 만들어 라인이 통째로 켜지는 것을 피한다
     appendKaraokeSpans(this.currentEl, current, word => {
-      const el = h('span', { className: 'ey-word', text: word.word });
+      const el = h('span', { className: 'ey-word' });
+      appendRubyText(el, word.word, rubyReadings.get(word));
       this.wordEls.push({ start: word.start, el });
       return el;
     });
@@ -2454,10 +2757,15 @@ export class PipController {
  * - words: 전 곡 글자 토큰
  * - lo/hi: 곡 전체 고정 세로 스케일 (최소 14반음)
  */
-function collectPitchData(lines: LyricLine[], script: PronScript): PitchData {
+function collectPitchData(
+  lines: LyricLine[],
+  script: PronScript,
+  songLanguage: LyricLanguage,
+): PitchData {
   const pages: PitchLine[] = [];
   const notes: PitchNote[] = [];
   const words: PitchWord[] = [];
+  const translations = visibleTranslations(lines);
   let lo = Infinity;
   let hi = -Infinity;
 
@@ -2475,22 +2783,8 @@ function collectPitchData(lines: LyricLine[], script: PronScript): PitchData {
     }
     lineNotes.sort((a, b) => a.start - b.start);
 
-    // 발음 음절을 최대 겹침 노트에 부착 — 계이름처럼 노트에 직접 그린다
-    const pronSegs = resolvedPronSegments(line, script);
-    if (pronSegs) {
-      for (const seg of pronSegs) {
-        let best: PitchNote | null = null;
-        let bestOv = 0;
-        for (const n of lineNotes) {
-          const ov = Math.min(n.end, seg.end) - Math.max(n.start, seg.start);
-          if (ov > bestOv) {
-            bestOv = ov;
-            best = n;
-          }
-        }
-        if (best) best.pron = best.pron ? best.pron + seg.text : seg.text;
-      }
-    }
+    // 中文用原文，其餘語言才使用所選發音；舊中文資料裡的誤判日文讀音不會再進入採點。
+    attachPitchNoteLabels(line, lineNotes, script, songLanguage);
 
     let start = line.time ?? lineNotes[0]?.start ?? 0;
     let end = line.endTime ?? lines[i + 1]?.time ?? start + 4;
@@ -2500,7 +2794,13 @@ function collectPitchData(lines: LyricLine[], script: PronScript): PitchData {
       lo = Math.min(lo, n.midi);
       hi = Math.max(hi, n.midi);
     }
-    pages.push({ line, start, end: Math.max(end, start + 0.5), hasNotes: lineNotes.length > 0 });
+    pages.push({
+      line,
+      start,
+      end: Math.max(end, start + 0.5),
+      hasNotes: lineNotes.length > 0,
+      visibleTranslation: translations[i],
+    });
     notes.push(...lineNotes);
   });
 

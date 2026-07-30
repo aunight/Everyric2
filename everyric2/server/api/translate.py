@@ -15,6 +15,12 @@ router = APIRouter(prefix="/api/translate", tags=["translate"])
 _KANA_RE = re.compile(r"[぀-ゟ゠-ヿ]")
 
 
+def _norm_title(s: str) -> str:
+    """제목 대조용 정규화 — 공백 전부 제거 + casefold. 괄호 표기·공백 유무 차이로
+    같은 제목을 놓치지 않을 만큼만 관대하게 (그 이상은 오탐이 더 위험하다)."""
+    return re.sub(r"\s+", "", s).casefold()
+
+
 def bad_pron_indices(lines) -> list[int]:
     """발음표기에 가나 문자가 섞인 라인 인덱스 (LLM 전사 실수 감지)."""
     return [
@@ -63,6 +69,11 @@ class TranslateRequest(BaseModel):
     # 로그 상관용 (선택) — 지금까지 서버 로그에 어떤 곡인지 안 남아 품질 사고의 사후
     # 추적이 불가능했다. 선택 필드라 기존 호출자는 그대로 동작한다.
     video_id: str | None = Field(default=None, description="Video id, logged for diagnostics")
+    # 사용자 자신의 번역(LLM) API 키 (선택) — 서버 env 키보다 우선한다. 자가 호스팅에서
+    # 확장 설정에 키를 넣으면 서버 재시작 없이 바로 쓰인다. 로그에는 절대 찍지 않는다.
+    translator_api_key: str | None = Field(
+        default=None, description="Caller-supplied LLM API key; overrides the server's env key"
+    )
     # true이고 video_id가 있으면 성공한 번역 결과를 TranslationLayer(origin="llm")로 저장한다
     # — 언어별 번역 레이어(video_id, fingerprint, target_lang)에 실려 GET /api/sync?lang=
     # 조회가 재사용한다. video_id가 없으면 조용히 무시(저장할 키가 없다).
@@ -167,7 +178,15 @@ def translate_lyrics(request: TranslateRequest, background_tasks: BackgroundTask
         object.__setattr__(settings, "tone", request.tone)
         settings.include_pronunciation = request.include_pronunciation
 
-        translator = LyricsTranslator(settings=settings, log_label=request.video_id)
+        # api_key는 있을 때만 넘긴다 — 키워드 자체를 항상 넘기면 LyricsTranslator를 얇게
+        # 대체한 테스트 페이크들이 전부 시그니처를 따라와야 한다(하위호환 유지)
+        caller_key = (
+            (request.translator_api_key or "").strip()
+            if get_settings().server.allow_client_translation_api_keys
+            else ""
+        )
+        extra = {"api_key": caller_key} if caller_key else {}
+        translator = LyricsTranslator(settings=settings, log_label=request.video_id, **extra)
         log_prefix = f"[{request.video_id}] " if request.video_id else ""
 
         context = None
@@ -238,6 +257,15 @@ def translate_lyrics(request: TranslateRequest, background_tasks: BackgroundTask
                     len(result.lines),
                     blank,
                 )
+
+        # 곡 제목과 같은 라인은 번역을 지운다 — 제목은 고유명사라 번역하면 우스꽝스럽다
+        # ("夜に駆ける"→"晚上跑步"). LLM 경로는 프롬프트로도 막지만, 웹 번역 폴백
+        # (google-web)은 지시를 받을 수 없으므로 이 결정론 가드가 유일한 방어다.
+        if request.title:
+            title_norm = _norm_title(request.title)
+            for line in result.lines:
+                if _norm_title(line.original) == title_norm:
+                    line.translation = ""
 
         # 스킵 결과(translation_skipped)는 번역 필드가 전부 빈 값이라 저장할 것이 없다 —
         # 레이어에 빈 값을 얹으면 기존에 저장된 실제 번역을 덮어쓸 위험만 있다.
