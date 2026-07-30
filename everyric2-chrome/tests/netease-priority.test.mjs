@@ -9,6 +9,11 @@ const typesSource = readFileSync(new URL('../src/types.ts', import.meta.url), 'u
 const overlaySource = readFileSync(new URL('../src/ui/overlay.ts', import.meta.url), 'utf8');
 const contentSource = readFileSync(new URL('../src/content.ts', import.meta.url), 'utf8');
 const backgroundSource = readFileSync(new URL('../src/background.ts', import.meta.url), 'utf8');
+const neteaseSource = readFileSync(new URL('../src/lib/netease.ts', import.meta.url), 'utf8');
+const neteaseLyricsSource = readFileSync(
+  new URL('../src/lib/netease-lyrics.ts', import.meta.url),
+  'utf8',
+);
 
 test('NetEase is a selectable lyrics source priority in every locale', () => {
   assert.match(typesSource, /lyricsSourcePriority:\s*'vocaro'\s*\|\s*'lrclib'\s*\|\s*'netease'/);
@@ -62,10 +67,29 @@ test('automatic NetEase matching rejects unrelated titles and prefers the right 
 
 test('NetEase human translations stay scoped to the Chinese language layer', () => {
   assert.match(
-    backgroundSource,
+    neteaseLyricsSource,
     /translationsByLang:\s*hasTranslation\s*\?\s*\{\s*zh:\s*translations\s*\}/,
   );
-  assert.match(backgroundSource, /targetLang\s*===\s*'zh'/);
-  assert.match(backgroundSource, /translationLang:\s*hasVisibleTranslation\s*\?\s*'zh'/);
+  assert.match(neteaseLyricsSource, /targetLang\s*===\s*'zh'/);
+  assert.match(neteaseLyricsSource, /translationLang:\s*hasVisibleTranslation\s*\?\s*'zh'/);
   assert.match(contentSource, /data\.source\s*===\s*'netease'.*translationLanguage\s*===\s*'zh'/s);
+});
+
+test('NetEase lyrics use the shared language-aware Traditional converter', () => {
+  assert.match(
+    backgroundSource,
+    /import \{ neteaseToLyricsData \} from '\.\/lib\/netease-lyrics'/,
+  );
+  assert.doesNotMatch(
+    backgroundSource,
+    /function neteaseToLyricsData\(/,
+  );
+  assert.doesNotMatch(
+    backgroundSource,
+    /const s2t = Converter/,
+  );
+  assert.doesNotMatch(
+    neteaseSource,
+    /번체 변환은\s*하지 않는다/,
+  );
 });
