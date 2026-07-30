@@ -135,6 +135,10 @@ export function attachPitchNoteLabels(
   }
 
   for (const segment of pronSegments) {
-    appendToBestOverlappingNote(notes, 'pron', segment.text, segment.start, segment.end);
+    // lyric·가나 루비와 같은 규칙 — 겹치는 노트가 없으면 가장 가까운 노트에 싣는다.
+    // 이 폴백이 없어서 타이밍이 어긋난 로마자 음절만 조용히 사라졌다(실보고).
+    if (!appendToBestOverlappingNote(notes, 'pron', segment.text, segment.start, segment.end)) {
+      appendToNearestNote(notes, 'pron', segment.text, segment.start, segment.end);
+    }
   }
 }

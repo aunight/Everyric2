@@ -8,6 +8,11 @@ function toSeconds(min: string, sec: string, frac?: string): number {
   return Number(min) * 60 + Number(sec) + fracSec;
 }
 
+/** LRC 워터마크/광고 줄 — 줄 전체가 장식문자로 감싼 URL·사이트명일 때만 매칭한다
+ *  (가사 본문에 URL이 나오는 건 사실상 없고, 과소 제거 원칙은 lyrics-clean과 동일) */
+const LRC_WATERMARK_RE =
+  /^[\s\-–—=*~·・.]*(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z]{2,})+(?:\/\S*)?[\s\-–—=*~·・.]*$/i;
+
 export function parseLRC(lrc: string): LyricLine[] {
   const lines: LyricLine[] = [];
 
@@ -25,6 +30,7 @@ export function parseLRC(lrc: string): LyricLine[] {
 
     const { text, words } = parseWordTimings(raw.slice(bodyStart).trim());
     if (!text) continue;
+    if (LRC_WATERMARK_RE.test(text)) continue; // "--- www.LRCgenerator.com ---" 류 워터마크
     for (const time of times) {
       // 반복 타임스탬프 라인끼리 words 배열을 공유하지 않도록 복제
       lines.push({ time, endTime: null, text, words: words?.map(w => ({ ...w })) });

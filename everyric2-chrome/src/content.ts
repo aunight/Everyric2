@@ -644,7 +644,7 @@ async function tryCaptionFallback(
     translationLang: humanTranslated ? settings.translationLanguage : undefined,
     // 출처 배지는 source가 'caption'이면 앞에 "유튜브 자막"을 이미 붙인다 —
     // 여기서 또 붙이면 "유튜브 자막 · 유튜브 자막 · 일본어…"로 겹친다
-    attribution: { name: captionSourceLabel(track) },
+    attribution: { name: captionSourceLabel(track, settings.uiLanguage === 'auto' ? (navigator.language || 'en').slice(0, 2) : settings.uiLanguage) },
   };
 }
 
