@@ -498,6 +498,7 @@ ZH: dict[str, str] = {
     "overlay_settings_solfegeNotation_korean": "唱名（Do-Re-Mi）",
     "overlay_settings_solfegeNotation_english": "音名（C4、D#5）",
     "overlay_settings_solfegeNotation_off": "關閉",
+    "overlay_settings_micDisplayMode_notes": "命中音符（日K）",
     "overlay_settings_row_pitchLineOpacity": "音高線亮度",
     "overlay_settings_row_pitchLineOpacityTitle": "調整 f0 曲線與音符條的不透明度",
     # ── 採點 ─────────────────────────────────────────────────────────────

@@ -42,9 +42,8 @@
   編曲、混音等製作人員資訊也會過濾。
 - **日文歌詞顯示**：漢字保留原文並在上方附加平假名振假名；原本就是假名的文字不重複顯示。
   一般歌詞與採點音符使用同一套日文讀音規則。
-- **卡拉 OK 採點強化**：新增麥克風即時音高偵測、目標音符命中顯示與連續音高線兩種模式，
-  支援切換、分數保存、已唱歌詞淡化及中文原文音符標示；唱名可切換 Do-Re-Mi、
-  英文字母音名或完全關閉。
+- **卡拉 OK 採點顯示改善**：採點顯示方式新增「目標命中音符」顯示模式，並新增已唱歌詞
+  淡化與中文原文音符標示；唱名標記只新增「關閉」選項，Do-Re-Mi 與英文字母音名原本即已提供。
 - **排版與 UI／UX 改善**：重新調整歌詞、控制列、語言按鈕與設定面板的版面；
   返回按鈕及轉錄提示採用獨立圓角毛玻璃，並修正遮擋、層級與歌詞截斷。
   語言按鈕會以歌曲原語排第一、系統／介面語言排第二；AI 轉錄啟動後會立即顯示紫色進度狀態。
@@ -62,9 +61,9 @@
   歌詞内の作詞・作曲・編曲・ミックスなどのクレジット行も非表示にします。
 - **日本語歌詞表示**：漢字を原文のまま残し、その上にひらがなのルビを表示。
   元から仮名の文字は重複表示せず、通常歌詞と採点ノートで同じ読み方を使用します。
-- **カラオケ採点の強化**：マイクのリアルタイム音高検出、ターゲットノートのヒット表示、
-  連続音高ラインの切り替え、スコア保存、歌唱済み歌詞の減光に対応。音名表示は
-  Do-Re-Mi、英字音名、オフから選択できます。
+- **カラオケ採点表示の改善**：採点表示方式にターゲットノートのヒット表示モードを追加し、
+  歌唱済み歌詞の減光と中国語原文のノート表示を追加。音名表示では「オフ」だけを新たに追加し、
+  Do-Re-Mi と英字音名は既存機能です。
 - **レイアウトと UI／UX 改善**：歌詞、コントロール、言語ボタン、設定パネルの配置を再調整。
   戻るボタンと文字起こし通知を独立した角丸ガラス UI に変更し、重なりと歌詞の切れを修正。
   言語ボタンは曲の原語を最初、システム／UI 言語を二番目に並べます。
@@ -86,9 +85,9 @@
 - **Japanese lyric rendering**: preserves original kanji and displays centered Hiragana furigana
   above it without duplicating existing kana. Normal lyrics and scoring notes share the same reading
   rules.
-- **Improved karaoke scoring**: adds real-time microphone pitch detection, switchable target-note
-  hit and continuous pitch-line views, persistent scores, dimmed sung lyrics, and original Chinese
-  note labels. Solfège labels can use Do-Re-Mi, English pitch names, or be turned off.
+- **Karaoke scoring display improvements**: adds a target-note hit display mode, dimmed past lyrics,
+  and original Chinese note labels. For solfège, only the Off option is new; Do-Re-Mi and English
+  pitch names were already available.
 - **Layout and UI/UX improvements**: reorganizes lyrics, controls, language buttons, and the settings
   panel; gives the return button and transcription status their own rounded glass surfaces; and fixes
   overlap and lyric clipping. Language buttons put the song's original language first and the

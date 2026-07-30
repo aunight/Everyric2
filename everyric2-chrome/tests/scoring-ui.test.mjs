@@ -143,3 +143,20 @@ test('all locales explain both scoring display modes', () => {
     }
   }
 });
+
+test('Traditional Chinese names the Japanese karaoke style without a space', () => {
+  const messages = JSON.parse(readFileSync(
+    new URL('../_locales/zh_TW/messages.json', import.meta.url),
+    'utf8',
+  ));
+  const localeGenerator = readFileSync(
+    new URL('../../scripts/gen_zh_locale.py', import.meta.url),
+    'utf8',
+  );
+
+  assert.equal(messages.overlay_settings_micDisplayMode_notes.message, '命中音符（日K）');
+  assert.match(
+    localeGenerator,
+    /"overlay_settings_micDisplayMode_notes": "命中音符（日K）"/,
+  );
+});
