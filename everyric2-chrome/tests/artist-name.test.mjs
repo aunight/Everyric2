@@ -6,9 +6,22 @@ import {
   artistForDisplay,
   primaryArtistForSearch,
 } from '../src/lib/artist-name.ts';
+import { searchNetease } from '../src/lib/netease.ts';
 
 const songDetectorSource = readFileSync(
   new URL('../src/lib/song-detector.ts', import.meta.url),
+  'utf8',
+);
+const lrclibSource = readFileSync(
+  new URL('../src/lib/lrclib.ts', import.meta.url),
+  'utf8',
+);
+const neteaseSource = readFileSync(
+  new URL('../src/lib/netease.ts', import.meta.url),
+  'utf8',
+);
+const backgroundSource = readFileSync(
+  new URL('../src/background.ts', import.meta.url),
   'utf8',
 );
 
@@ -61,7 +74,7 @@ test('artist normalization safely handles blank and malformed input', () => {
 test('all detected artist display paths use the shared display normalizer', () => {
   assert.match(
     songDetectorSource,
-    /import \{ artistForDisplay \} from '\.\/artist-name'/,
+    /import \{ artistForDisplay \} from '\.\/artist-name\.ts'/,
   );
   assert.match(
     songDetectorSource,
@@ -72,4 +85,51 @@ test('all detected artist display paths use the shared display normalizer', () =
     3,
   );
   assert.doesNotMatch(songDetectorSource, /\.replace\(\/ - Topic\$\/i/);
+});
+
+test('all lyrics search boundaries normalize to the primary artist', () => {
+  assert.match(
+    lrclibSource,
+    /import \{ primaryArtistForSearch \} from '\.\/artist-name\.ts'/,
+  );
+  assert.match(
+    neteaseSource,
+    /import \{ primaryArtistForSearch \} from '\.\/artist-name\.ts'/,
+  );
+  assert.match(
+    backgroundSource,
+    /import \{ primaryArtistForSearch \} from '\.\/lib\/artist-name\.ts'/,
+  );
+  assert.match(
+    backgroundSource,
+    /case 'LINK_CANDIDATES':[\s\S]*?artist:\s*primaryArtistForSearch\(message\.payload\.artist\)/,
+  );
+});
+
+test('manual candidate labels retain the full artist names returned by each source', () => {
+  assert.match(backgroundSource, /artist:\s*t\.artistName\s*\?\?\s*''/);
+  assert.match(backgroundSource, /artist:\s*nt\.artist/);
+});
+
+test('NetEase requests use only the primary artist', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = async input => {
+    requestedUrl = String(input);
+    return {
+      ok: true,
+      json: async () => ({ result: { songs: [] } }),
+    };
+  };
+
+  try {
+    await searchNetease({
+      title: '合作曲',
+      artist: 'Main Artist feat. Guest',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(new URL(requestedUrl).searchParams.get('s'), 'Main Artist 合作曲');
 });

@@ -1,4 +1,5 @@
 import type { LRCLibTrack, SongInfo } from '../types';
+import { primaryArtistForSearch } from './artist-name.ts';
 
 const BASE = 'https://lrclib.net/api';
 
@@ -18,10 +19,11 @@ async function getJSON<T>(url: string): Promise<T | null> {
 }
 
 export async function fetchFromLrclib(song: SongInfo): Promise<LRCLibTrack | null> {
-  if (song.artist) {
+  const artist = primaryArtistForSearch(song.artist);
+  if (artist) {
     const params = new URLSearchParams({
       track_name: song.title,
-      artist_name: song.artist,
+      artist_name: artist,
     });
     if (song.duration > 0) params.set('duration', String(song.duration));
     const exact = await getJSON<LRCLibTrack>(`${BASE}/get?${params}`);
@@ -34,13 +36,14 @@ async function searchLrclib(song: SongInfo): Promise<LRCLibTrack | null> {
   // [attempt, 제목 검증 필요 여부] — q= 자유검색은 LRCLIB이 유사도 무관 fuzzy 매칭을
   // 하므로(전혀 무관한 곡이 duration만 비슷해도 반환됨) 제목 검증을 강제한다.
   const attempts: [URLSearchParams, boolean][] = [];
-  if (song.artist) {
-    attempts.push([new URLSearchParams({ track_name: song.title, artist_name: song.artist }), false]);
+  const artist = primaryArtistForSearch(song.artist);
+  if (artist) {
+    attempts.push([new URLSearchParams({ track_name: song.title, artist_name: artist }), false]);
   }
   // duration도 아티스트도 없으면 자유검색을 걸러낼 신호가 제목뿐 — 흔한 제목(“花” 등)은
   // 전혀 다른 곡이 통과하므로 자유검색 자체를 생략한다 (수동 검색으로 유도)
-  if (song.artist || song.duration > 0) {
-    attempts.push([new URLSearchParams({ q: song.artist ? `${song.artist} ${song.title}` : song.title }), true]);
+  if (artist || song.duration > 0) {
+    attempts.push([new URLSearchParams({ q: artist ? `${artist} ${song.title}` : song.title }), true]);
   }
   if (attempts.length === 0) return null;
 
@@ -60,10 +63,11 @@ export async function searchTracksLrclib(
   limit = 8,
 ): Promise<LRCLibTrack[]> {
   const attempts: URLSearchParams[] = [];
-  if (query.artist) {
-    attempts.push(new URLSearchParams({ track_name: query.title, artist_name: query.artist }));
+  const artist = primaryArtistForSearch(query.artist);
+  if (artist) {
+    attempts.push(new URLSearchParams({ track_name: query.title, artist_name: artist }));
   }
-  attempts.push(new URLSearchParams({ q: query.artist ? `${query.artist} ${query.title}` : query.title }));
+  attempts.push(new URLSearchParams({ q: artist ? `${artist} ${query.title}` : query.title }));
 
   const settled = await Promise.all(
     attempts.map(params => getJSON<LRCLibTrack[]>(`${BASE}/search?${params}`)),

@@ -9,6 +9,7 @@
 import { Converter } from 'opencc-js';
 
 import type { SongInfo } from '../types';
+import { primaryArtistForSearch } from './artist-name.ts';
 
 const SEARCH_URL = 'https://music.163.com/api/search/get/web';
 const LYRIC_URL = 'https://music.163.com/api/song/lyric';
@@ -41,7 +42,8 @@ interface RawSong {
 export async function searchNetease(
   query: { title: string; artist: string }, limit = 6,
 ): Promise<NeteaseTrack[]> {
-  const s = query.artist ? `${query.artist} ${query.title}` : query.title;
+  const artist = primaryArtistForSearch(query.artist);
+  const s = artist ? `${artist} ${query.title}` : query.title;
   const params = new URLSearchParams({ s, type: '1', limit: String(limit), offset: '0' });
   const json = await getJSON<{ result?: { songs?: RawSong[] } }>(`${SEARCH_URL}?${params}`);
   const songs = json?.result?.songs ?? [];
@@ -94,11 +96,12 @@ export function pickBestNeteaseTrack(
   song: Pick<SongInfo, 'title' | 'artist' | 'duration'>,
 ): NeteaseTrack | null {
   const expectedTitle = normalizeMatchText(song.title);
+  const expectedArtist = primaryArtistForSearch(song.artist);
   return tracks
     .filter(track => textMatches(track.title, song.title))
     .map(track => {
       const titleExact = normalizeMatchText(track.title) === expectedTitle;
-      const artistMatches = !song.artist || textMatches(track.artist, song.artist);
+      const artistMatches = !expectedArtist || textMatches(track.artist, expectedArtist);
       const durationDiff = song.duration > 0 && track.duration > 0
         ? Math.abs(track.duration - song.duration)
         : 120;

@@ -1,5 +1,5 @@
 import type { SongInfo } from '../types';
-import { artistForDisplay } from './artist-name';
+import { artistForDisplay } from './artist-name.ts';
 import { parseSongTitle } from './song-title';
 
 export function getCurrentVideoId(): string | null {

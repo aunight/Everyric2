@@ -5,6 +5,7 @@ import {
   searchNetease,
 } from './lib/netease';
 import { neteaseToLyricsData } from './lib/netease-lyrics';
+import { primaryArtistForSearch } from './lib/artist-name.ts';
 import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLinkCandidates, generateSync, generateSyncFromCaption, getJobStatus, getLinkJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveTranslationLayer, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
 import { selectTranslationApiKey } from './lib/host-permissions';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
@@ -312,7 +313,7 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       const server = await getServerConfig();
       return call('link_candidates_unavailable', sink => findLinkCandidates(server, message.payload.videoId, {
         title: message.payload.title,
-        artist: message.payload.artist,
+        artist: primaryArtistForSearch(message.payload.artist),
       }, sink));
     }
 
