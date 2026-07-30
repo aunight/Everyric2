@@ -1,384 +1,104 @@
 # Everyric2
 
+Everyric2 是一套 YouTube 動態歌詞與卡拉 OK 採點工具。Chrome 擴充功能會在影片上顯示
+同步歌詞、翻譯及發音，也能開啟獨立的音高畫面，將歌曲的目標音符和麥克風偵測結果放在
+同一條時間軸上。
+
 > [!IMPORTANT]
-> **繁體中文｜Fork 與原作者標註**
->
 > 本儲存庫是 [Everyric2 原始專案](https://github.com/onpe5679/Everyric2)的修改版 fork。
-> 原作者為 **onpe（GitHub: [onpe5679](https://github.com/onpe5679)）**。本 fork 的新增與
-> 修改內容由 fork 維護者負責，並依 Apache License 2.0 發布；原始著作權與詳細聲明請見
+> 原作者為 **onpe（GitHub：[onpe5679](https://github.com/onpe5679)）**。本 fork 的新增與
+> 修改由 fork 維護者負責，並依 Apache License 2.0 發布。完整聲明請見
 > [LICENSE](LICENSE) 與 [NOTICE](NOTICE)。
->
-> **日本語｜フォークおよび原作者の表示**
->
-> このリポジトリは、**onpe（GitHub:
-> [onpe5679](https://github.com/onpe5679)）**氏による
-> [Everyric2 オリジナルプロジェクト](https://github.com/onpe5679/Everyric2)を改変した
-> フォークです。このフォークで追加・変更された内容はフォークのメンテナーが管理し、
-> Apache License 2.0 の下で公開されています。原著作権および詳細な表示は
-> [LICENSE](LICENSE)と[NOTICE](NOTICE)をご確認ください。
->
-> **English｜Fork and original-author attribution**
->
-> This repository is a modified fork of the
-> [original Everyric2 project](https://github.com/onpe5679/Everyric2) by
-> **onpe (GitHub: [onpe5679](https://github.com/onpe5679))**. Additions and modifications
-> in this fork are maintained by the fork maintainer and distributed under the Apache License 2.0.
-> See [LICENSE](LICENSE) and [NOTICE](NOTICE) for copyright and attribution details.
 
-유튜브 영상에 **타임싱크 가사·번역·발음·가라오케 음정 바**를 얹어 주는 로컬 서버 + Chrome 확장.
+![YouTube 動態歌詞面板](docs/images/chrome-overlay.png)
 
-## 此 Fork 新增功能 / このフォークの追加機能 / Enhancements in this fork
+![卡拉 OK 音高畫面](docs/images/karaoke-pip.png)
 
-### 繁體中文
+## 主要功能
 
-- **完整繁體中文體驗**：新增 Chrome 擴充功能繁中介面、OpenCC 台灣繁體轉換與中文翻譯目標；
-  原文與翻譯為同一語言時自動隱藏重複翻譯。
+- **YouTube 動態歌詞**：可拖曳的歌詞面板會跟著影片時間逐行、逐字顯示目前唱到的位置。
+- **自動搜尋歌詞**：依序尋找伺服器既有同步、Vocaloid 歌詞網站、LRCLIB、網易雲音樂及
+  YouTube 字幕；找不到時可貼上歌詞產生新的 AI 同步。
+- **翻譯與發音**：依歌曲原語顯示翻譯、羅馬拼音、平假名或其他適合的發音標記；原文和翻譯
+  為同一語言時不重複顯示。
+- **卡拉 OK 音高畫面**：在獨立的子母畫面視窗顯示目標音符、歌詞、發音、節拍、歌曲調性與
+  麥克風即時音高。
+- **採點顯示方式**：可在連續的「線條軌跡」與「命中音符（日K）」之間切換。
+- **其他影片共用時間軸**：伴奏版、翻唱版及 Nightcore 影片可沿用原曲同步，並調整偏移秒數
+  與播放倍率。
+- **背景轉錄通知**：同步工作可在背景執行，完成後由瀏覽器通知。
+
+## 此 fork 新增與調整
+
+- **完整繁體中文介面**：加入 Chrome 擴充功能繁中介面、OpenCC 台灣繁體轉換及中文翻譯目標。
 - **Apple Silicon 加速**：支援 M 系列晶片的 PyTorch MPS 裝置選擇、記憶體管理與安全分段；
-  MPS 不支援的 forced alignment 運算會自動回退 CPU。
-- **翻譯 API 擴充**：新增 OpenAI Chat Completions 相容介面，可自訂 API 端點、模型與金鑰，
-  並可連接 OpenAI、DeepSeek、Qwen、GLM 或其他相容服務。
+  MPS 不支援的強制對齊運算會自動回退 CPU。
+- **翻譯 API 擴充**：加入 OpenAI Chat Completions 相容介面，可自訂 API 端點、模型與金鑰，
+  連接 OpenAI、DeepSeek、Qwen、GLM 或其他相容服務。
 - **歌詞來源與清理**：加入網易雲音樂搜尋及來源優先順序；自動精簡 YouTube 中日文歌名，
-  移除 Official MV、Full Size、動畫 OP/ED 宣傳字樣與重複歌名；歌詞中的作詞、作曲、
-  編曲、混音等製作人員資訊也會過濾。
-- **日文歌詞顯示**：漢字保留原文並在上方附加平假名振假名；原本就是假名的文字不重複顯示。
-  一般歌詞與採點音符使用同一套日文讀音規則。
-- **卡拉 OK 採點顯示改善**：採點顯示方式新增「目標命中音符」顯示模式，並新增已唱歌詞
-  淡化與中文原文音符標示；唱名標記只新增「關閉」選項，Do-Re-Mi 與英文字母音名原本即已提供。
-- **排版與 UI／UX 改善**：重新調整歌詞、控制列、語言按鈕與設定面板的版面；
-  返回按鈕及轉錄提示採用獨立圓角毛玻璃，並修正遮擋、層級與歌詞截斷。
-  語言按鈕會以歌曲原語排第一、系統／介面語言排第二；AI 轉錄啟動後會立即顯示紫色進度狀態。
-
-### 日本語
-
-- **繁体字中国語への完全対応**：Chrome 拡張の繁体字 UI、OpenCC による台湾向け変換、
-  中国語翻訳ターゲットを追加。同じ言語への重複翻訳は自動的に非表示になります。
-- **Apple Silicon 高速化**：M シリーズ向け PyTorch MPS デバイス選択、メモリ管理、
-  安全なチャンク処理に対応。MPS 非対応の forced alignment は CPU に自動フォールバックします。
-- **翻訳 API の拡張**：OpenAI Chat Completions 互換 API に対応し、エンドポイント、
-  モデル、API キーを指定可能。OpenAI、DeepSeek、Qwen、GLM などの互換サービスを利用できます。
-- **歌詞ソースとクリーニング**：NetEase Cloud Music の検索とソース優先順位を追加。
-  YouTube タイトルから Official MV、Full Size、アニメ OP/ED の宣伝文、重複曲名を除去し、
-  歌詞内の作詞・作曲・編曲・ミックスなどのクレジット行も非表示にします。
-- **日本語歌詞表示**：漢字を原文のまま残し、その上にひらがなのルビを表示。
-  元から仮名の文字は重複表示せず、通常歌詞と採点ノートで同じ読み方を使用します。
-- **カラオケ採点表示の改善**：採点表示方式にターゲットノートのヒット表示モードを追加し、
-  歌唱済み歌詞の減光と中国語原文のノート表示を追加。音名表示では「オフ」だけを新たに追加し、
-  Do-Re-Mi と英字音名は既存機能です。
-- **レイアウトと UI／UX 改善**：歌詞、コントロール、言語ボタン、設定パネルの配置を再調整。
-  戻るボタンと文字起こし通知を独立した角丸ガラス UI に変更し、重なりと歌詞の切れを修正。
-  言語ボタンは曲の原語を最初、システム／UI 言語を二番目に並べます。
-  AI 文字起こし開始時には紫色の進捗表示を即座に出します。
-
-### English
-
-- **Complete Traditional Chinese experience**: adds a Traditional Chinese Chrome UI,
-  Taiwan-style OpenCC conversion, and a Chinese translation target. Same-language duplicate
-  translations are hidden automatically.
-- **Apple Silicon acceleration**: adds PyTorch MPS device selection, memory handling, and safe
-  chunking for M-series Macs, with automatic CPU fallback for forced-alignment operations that MPS
-  does not support.
-- **Translation API expansion**: adds an OpenAI Chat Completions-compatible backend with configurable
-  endpoint, model, and API key for OpenAI, DeepSeek, Qwen, GLM, and other compatible services.
-- **Lyrics sources and cleanup**: adds NetEase Cloud Music search and configurable source priority.
-  YouTube titles are cleaned of Official MV, Full Size, anime OP/ED promotion, and repeated song
-  names; lyric credit lines such as lyricist, composer, arranger, and mixing staff are also removed.
-- **Japanese lyric rendering**: preserves original kanji and displays centered Hiragana furigana
-  above it without duplicating existing kana. Normal lyrics and scoring notes share the same reading
-  rules.
-- **Karaoke scoring display improvements**: adds a target-note hit display mode, dimmed past lyrics,
-  and original Chinese note labels. For solfège, only the Off option is new; Do-Re-Mi and English
-  pitch names were already available.
-- **Layout and UI/UX improvements**: reorganizes lyrics, controls, language buttons, and the settings
-  panel; gives the return button and transcription status their own rounded glass surfaces; and fixes
-  overlap and lyric clipping. Language buttons put the song's original language first and the
-  system/UI language second. Starting AI transcription immediately shows a purple progress state.
-
-가사 텍스트만 있으면 CTC 강제 정렬(GPU 가속)로 줄·글자 단위 타이밍을 만들고, LLM으로 자연스러운 가사체 번역과 한글 독음을 붙이고, 보컬 멜로디(f0)를 전사해 노래방 스타일 음정 바까지 그려 줍니다.
-
-![유튜브 가사 오버레이](docs/images/chrome-overlay.png)
-
-*가라오케 모드(PiP) — 멜로디 노트·계이름·한글 독음·가사체 번역:*
-
-![가라오케 음정 바 (PiP)](docs/images/karaoke-pip.png)
-
-```
-┌────────────────┐   가사 검색/생성/번역     ┌───────────────────────────┐
-│ Chrome 확장     │ ◄───────────────────► │ Everyric2 서버 (FastAPI)   │
-│ (유튜브 오버레이) │                       │ CTC 정렬 · demucs · RMVPE  │
-└────────────────┘                       │ LLM 번역/독음 · yt-dlp     │
-                                         └───────────────────────────┘
-```
-
-**[한국어](#한국어-사용-안내)** | **[English](#english-guide)** | **[日本語](#日本語ガイド)**
-
-## 한국어 사용 안내
-
-### ① 확장 설치
-
-1. [Releases](https://github.com/aunight/Everyric2/releases)에서 최신 `Everyric-Chrome-<버전>.zip`을 받아 압축을 풉니다.
-2. 주소창에 `chrome://extensions`를 입력하고 우측 상단 **개발자 모드**를 켭니다.
-3. **압축해제된 확장 프로그램을 로드합니다**를 눌러 방금 압축 해제한 폴더를 선택합니다.
-
-### ② 첫 사용
-
-유튜브에서 곡 영상을 열면 가사 패널이 자동으로 뜹니다. 서버에 이미 등록된 곡은 즉시 표시되고, 처음 보는 곡이면 패널의 **✨ 싱크 생성** 버튼으로 만들 수 있습니다.
-번역을 보려면 패널 설정(⚙)에서 **가사 번역 표시**를 켜고 언어(한국어·English·日本語)를 고르세요 — 이후엔 제목바의 언어 칩을 눌러 언제든 바로 전환할 수 있습니다.
-
-### ③ 기능 요약
-
-- **3개 언어 번역**: 한국어·영어·일본어를 서로 번역 — 곡의 원어와 같은 언어는 자동으로 생략됩니다
-- **발음 표기**: 원문에 맞춰 한글(hangul)·로마자(romaji)·가나(kana) 표기를 자동으로 골라 보여줍니다
-- **가라오케 음정 바 (PiP)**: 항상 위에 뜨는 별도 창에 멜로디 노트·계이름·발음·번역이 타이밍에 맞춰 정렬됩니다
-- **언어 칩**: 제목바에서 이 곡에 어떤 언어가 준비돼 있는지 한눈에 보고 클릭 한 번으로 전환합니다
-
-### ④ 서버
-
-기본 서버 주소는 `https://everyric.moref.co`이며 **API 키를 입력할 필요가 없습니다** — 설정의 키 칸은 비워 두세요. 가사 조회는 무제한이고, 새 싱크 생성만 이용자당 하루 15건으로 제한됩니다.
-직접 서버를 구동하고 싶다면 아래 [자체 호스팅](#자체-호스팅-개발자용) 절을 참고하세요.
-개인정보처리방침: <https://everyric.moref.co/privacy>
-
----
-
-## English Guide
-
-### ① Install the extension
-
-1. Download the latest `Everyric-Chrome-<version>.zip` from [Releases](https://github.com/aunight/Everyric2/releases) and unzip it.
-2. Open `chrome://extensions` and turn on **Developer mode** (top right).
-3. Click **Load unpacked** and select the folder you just unzipped.
-
-### ② First use
-
-Open a song's video on YouTube and the lyrics panel opens automatically. Songs the server already knows show up instantly; for a new one, use the **✨ Generate sync** button in the panel.
-To see translations, open the panel's settings (⚙), turn on **Show translation**, and pick a language (한국어 · English · 日本語) — after that, switch languages anytime with the chips in the title bar.
-
-### ③ Features
-
-- **Three-language translation** — Korean, English, and Japanese, translated into each other; a song already in your language skips translation automatically
-- **Pronunciation** — shown in Hangul, romaji, or kana, chosen automatically to match the original text
-- **Karaoke pitch lane (PiP)** — a separate always-on-top window with melody notes, solfège labels, pronunciation, and translation lined up to the beat
-- **Language chips** — the title bar shows which languages are ready for this song; one click switches between them
-
-### ④ Server
-
-The default server is `https://everyric.moref.co` and **no API key is required** — leave the key field empty. Lookups are unlimited; generating a new sync is capped at 15 per user per day.
-Want to run your own server instead? See [Self-Hosting](#self-hosting-for-developers) below.
-Privacy policy: <https://everyric.moref.co/privacy>
-
----
-
-## 日本語ガイド
-
-### ① 拡張機能のインストール
-
-1. [Releases](https://github.com/aunight/Everyric2/releases)から最新の`Everyric-Chrome-<バージョン>.zip`をダウンロードして解凍します。
-2. `chrome://extensions`を開き、右上の**デベロッパーモード**をオンにします。
-3. **パッケージ化されていない拡張機能を読み込む**をクリックし、解凍したフォルダを選択します。
-
-### ② はじめての使い方
-
-YouTubeで曲の動画を開くと、歌詞パネルが自動で表示されます。サーバーに既に登録されている曲はすぐに表示され、初めての曲はパネルの**✨ 同期を生成**ボタンで作成できます。
-翻訳を表示するには、パネルの設定(⚙)で**歌詞の翻訳を表示**をオンにし、言語(한국어・English・日本語)を選んでください — その後はタイトルバーの言語チップでいつでも切り替えられます。
-
-### ③ 主な機能
-
-- **3言語翻訳** — 韓国語・英語・日本語を相互に翻訳。曲の原語と同じ言語は自動的にスキップされます
-- **発音表記** — 原文に合わせてハングル・ローマ字・かなの表記を自動的に選んで表示します
-- **カラオケ音程バー(PiP)** — 常に最前面に表示される別ウィンドウに、メロディノート・階名・発音・翻訳がタイミングに合わせて並びます
-- **言語チップ** — この曲がどの言語で準備できているかタイトルバーで一目で分かり、クリック一つで切り替えられます
-
-### ④ サーバー
-
-デフォルトのサーバーは`https://everyric.moref.co`で、**APIキーの入力は不要です** — 設定のキー欄は空のままにしてください。歌詞の検索は無制限、新規同期の生成のみ1ユーザーあたり1日15件までです。
-自分でサーバーを立てたい場合は、下記の[セルフホスティング](#セルフホスティング-開発者向け)を参照してください。
-プライバシーポリシー: <https://everyric.moref.co/privacy>
-
----
-
-## 주요 기능
-
-### Chrome 확장 (`everyric2-chrome/`)
-- **가사 오버레이**: 유튜브 위 드래그 가능한 패널, 현재 줄 하이라이트 + 글자 단위 카라오케 필
-- **자동 가사 검색**: 서버 저장 싱크 → 보카로 가사 위키(발음·사람 번역) → LRCLIB 순
-- **AI 싱크 생성**: 가사 붙여넣기 → 서버가 오디오를 받아 정렬 (진행 단계·퍼센트 칩 표시, 칩 클릭으로 언제든 취소)
-- **전사 완료 브라우저 알림**: 백그라운드에서 돌던 싱크 생성이 끝나면 브라우저 알림으로 알려줌
-- **번역·한글 독음**: LLM이 곡 전체 맥락으로 가사체 번역 + 원문 발음의 한글 표기
-- **가라오케 음정 바 (BETA)**: PiP 창에 멜로디 노트·계이름·발음·마이크 음정 궤적, 멜로디 신디사이즈·메트로놈(배속/시작 박) 재생, 곡 키·BPM 표시, 좌상단 미니 토글로 가라오케/영상 전환
-- **유튜브 자막 가져오기**: 영상 자막(예: 일본어 가사 자막)을 타이밍 그대로 싱크 가사로
-- **싱크 링크**: inst·커버 영상이 원본 영상의 전사를 오프셋 + 배속(rate, nightcore 커버 등)과 함께 재사용
-- **영상별 싱크 오프셋**: ±0.1s 조정이 영상마다 서버에 저장·복원
-
-### 서버 (`everyric2/`)
-- **CTC 강제 정렬**: HuggingFace MMS wav2vec2, RTX GPU에서 4분 곡 기준 수십 초
-- **독음(ko) 정렬**: 한글 발음 텍스트로 정렬 후 원문에 역매핑 — 일본어 합성음(보컬로이드)에서 신뢰도 대폭 개선
-- **타이밍 보정 체인**: demucs 보컬 분리 → VAD 기반 라인 클램프·늘임음 연장·간주 스냅
-- **멜로디 전사**: RMVPE(폴백 FCPE) f0 → 음절 앵커 노트, 옥타브 폴딩, 키 추정(K-S) + 스케일 스냅
-- **번역 엔진**: Gemini / NVIDIA NIM / OpenAI 호환(로컬 LLM) — 키가 없으면 자동 전환, 독음 가나 혼입 자동 검증·재시도
-
-### After Effects 패널 (`everyric2-ae/`)
-- **Everyric Studio**: 정렬 결과를 편집 가능한 AE 텍스트 레이어 타이포그래피로 변환 — 패널에서 직접 로컬 정렬 실행, 엔진 원클릭 설치, 업데이트 확인
-
-## 다운로드
-
-이 fork의 빌드된 배포본은 [Releases](https://github.com/aunight/Everyric2/releases)에서 받을 수 있습니다:
-
-| 구성 요소 | 파일 | 설치 |
-|---|---|---|
-| Chrome 확장 | `Everyric-Chrome-<버전>.zip` | 압축 해제 → `chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드** |
-| 서버/엔진 | `everyric2-<버전>-py3-none-any.whl` | `pip install <경로/URL>` (소스 설치는 아래 [자체 호스팅](#자체-호스팅-개발자용) 참고) |
-| After Effects 패널 | `Everyric-Studio-<버전>.zxp` | [aescripts ZXP Installer](https://aescripts.com/learn/zxp-installer/)로 열기 (AE 2024+) |
-
-## 자체 호스팅 (개발자용)
-
-기본 서버(`everyric.moref.co`) 대신 직접 서버를 구동하고 싶은 경우입니다. 그냥 확장을 쓰고
-싶다면 위 [설치 안내](#한국어-사용-안내)만으로 충분합니다 — 이 절은 필요 없습니다.
-
-### 1. 서버
-
-요구 사항: Python 3.10+, ffmpeg, (권장) CUDA GPU
-
-```bash
-git clone https://github.com/aunight/Everyric2.git
-cd Everyric2
-pip install uv && uv sync            # 또는 pip install -e ".[all]"
-
-# GPU (RTX 50xx는 cu128 필수)
-uv pip install "torch==2.8.0+cu128" --index-url https://download.pytorch.org/whl/cu128
-
-# 멜로디 전사용 RMVPE 가중치 (선택 — 없으면 FCPE 자동 폴백)
-# hf_hub_download("lj1995/VoiceConversionWebUI", "rmvpe.pt") → models/rmvpe/rmvpe.pt
-
-uv run uvicorn everyric2.server.main:app --port 8000   # 기본 127.0.0.1(로컬 전용)
-```
-
-번역·독음을 쓰려면 API 키 하나를 설정합니다 (없으면 무료 웹 번역 폴백 — 발음표기 불가):
-
-```bash
-# 둘 중 하나
-export GEMINI_API_KEY=...
-export NVIDIA_API_KEY=nvapi-...   # 또는 저장소 루트에 nvapi.txt (gitignore됨)
-```
-
-확장의 번역 API 키 입력란은 `chrome.storage.local`에만 저장되며 공식 기본 서버에는 전송되지
-않습니다. 자가 호스팅 서버가 그 키를 받도록 하려면 신뢰할 수 있는 개인 서버에서만
-`EVERYRIC_SERVER_ALLOW_CLIENT_TRANSLATION_API_KEYS=true`를 명시적으로 설정하세요.
-
-> **⚠️ 보안 경고 — 외부에 노출하기 전에 반드시 읽으세요**
->
-> 서버 기본 bind는 `127.0.0.1`(로컬 전용, 인증 없음)입니다. `--host 0.0.0.0` 등으로
-> LAN·공인망에 노출한다면 **`EVERYRIC_SERVER_API_KEY`를 반드시 설정하세요.** CORS
-> 설정(`chrome-extension://` 오리진만 허용)은 브라우저가 보내는 요청만 막을 뿐,
-> `curl`이나 스크립트로 직접 호출하는 요청은 Origin 헤더 자체가 없어 CORS와 무관하게
-> 통과합니다 — 즉 CORS는 노출된 서버를 지켜주지 않습니다.
->
-> 공개 배포에는 추가로 `EVERYRIC_SERVER_ADMIN_API_KEY`와
-> `EVERYRIC_SERVER_DAILY_DESTRUCTIVE_LIMIT`(기본 2)를 함께 설정하는 것을 권장합니다 —
-> 강제 재생성·싱크 초기화 같은 파괴적 행위를 영상당 하루 한도로 제한하고, 어드민 키
-> 보유자만 무제한으로 둘 수 있습니다.
-
-### 2. Chrome 확장을 소스에서 빌드
-
-자체 서버를 확장에 연결하려면 소스에서 빌드하거나(아래) [Releases](https://github.com/aunight/Everyric2/releases)의
-`Everyric-Chrome-<버전>.zip`을 그대로 씁니다:
-
-```bash
-cd everyric2-chrome
-npm install && npm run build
-```
-
-`chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드** → `everyric2-chrome/dist` 선택.
-설정(⚙)에서 서버 URL을 자체 서버 주소로 바꾸고, 처음 한 번은 확장의 권한 설정 페이지에서
-로컬(또는 자체 도메인) 접근을 허용해야 합니다 — 기본 서버(everyric.moref.co)만 쓰는 대부분의
-설치에는 필요 없는 절차입니다.
-
-> Windows에서 서버 URL은 `http://127.0.0.1:8000`을 쓰세요 — `localhost`는 IPv6 선시도로 요청당 ~2초 지연될 수 있습니다.
-
-## 서버 API 요약
-
-| 메서드 | 경로 | 설명 |
-|---|---|---|
-| GET | `/health` | 상태·GPU 확인 |
-| GET | `/api/sync/{video_id}` | 저장된 싱크 조회 (템포·키·사용자 오프셋 포함) |
-| POST | `/api/sync/generate` | 싱크 생성 잡 등록 (같은 영상·가사 진행 중이면 합류) |
-| POST | `/api/sync/regenerate` | 캐시 무시 재생성 (`force`) |
-| DELETE | `/api/sync/{video_id}` | 이 영상 싱크 초기화 |
-| POST/DELETE | `/api/sync/link` | inst·커버 → 원본 싱크 링크/해제 (`rate`: 원곡 대비 재생 배속, nightcore 커버용, 기본 1.0) |
-| PUT | `/api/sync/offset/{video_id}` | 영상별 사용자 오프셋 저장 |
-| GET | `/api/job/{job_id}` | 잡 진행률 (단계명 + 단계 내 %) |
-| POST | `/api/job/{job_id}/cancel` | 진행/대기 중 잡 취소 (단계 경계에서 중단) |
-| POST | `/api/translate` | LLM 번역 + 한글 독음 (가나 혼입 자동 검증·재시도, 입력 상한 400줄/줄당 1000자/전체 15000자 — 초과 시 422) |
-| GET | `/api/captions/{video_id}` | 유튜브 자막 트랙 목록 (yt-dlp 경유) |
-
-### 처리 파이프라인 (진행 칩 단계와 동일 순서)
-
-```
-다운로드(yt-dlp) → 캐시 확인 → 보컬 분리(demucs)
-→ 전사 정렬(CTC, 보컬 스템에서) → 타이밍 보정(VAD)
-→ 멜로디 분석(RMVPE f0 → 노트·키) → 저장
-```
-
-보컬 분리를 정렬보다 먼저 수행해 CTC가 반주 없는 깨끗한 보컬 스템으로 정렬합니다 (`EVERYRIC_ALIGNMENT_ALIGN_ON_VOCALS`, 기본 true — demucs 미가용 시 원본 믹스로 폴백). 분리 결과는 타이밍 보정(VAD)과 멜로디 전사에도 그대로 재사용됩니다.
-
-## 설정 (환경 변수)
-
-접두사별 pydantic-settings — 전체 목록은 `everyric2/config/settings.py`.
-
-| 변수 | 기본 | 설명 |
-|---|---|---|
-| `EVERYRIC_ALIGNMENT_USE_PRONUNCIATION` | true | 독음(ko) 정렬 경로 (발음 커버리지 ≥90%일 때) |
-| `EVERYRIC_ALIGNMENT_ALIGN_ON_VOCALS` | true | demucs 보컬 스템으로 CTC 정렬 (원 설계 복원 — false면 원본 믹스로 정렬) |
-| `EVERYRIC_ALIGNMENT_STAR_GUARD_SPLICE` | true | star-swallow 가드 발동 시 전곡 폴백 대신 간주 전 ko + 간주 후 원문 정렬 스플라이스 |
-| `EVERYRIC_MELODY_ENABLED` | true | 멜로디 노트 전사 |
-| `EVERYRIC_MELODY_F0_MODEL` | rmvpe | f0 백엔드 (rmvpe/fcpe) |
-| `EVERYRIC_MELODY_KEY_DETECT` / `KEY_SNAP` | true | 곡 키 추정 / 스케일 기반 노트 보정 |
-| `EVERYRIC_TRANSLATION_ENGINE` | gemini | gemini / nvidia / openai / local (키 없으면 자동 전환) |
-| `EVERYRIC_AUDIO_SOURCE_ADDRESS` | - | 다운로드 회선 바인딩 (403 스로틀 우회) |
-| `EVERYRIC_SERVER_API_KEY` | - | 설정 시 모든 `/api` 요청에 `X-API-Key` 헤더 요구 (`/health` 제외). 공인망 노출 시 필수 |
-| `EVERYRIC_SERVER_MAX_JOB_AUDIO_SEC` | 1800 | 싱크 생성 허용 최대 오디오 길이(초). 초과 영상은 다운로드 직후 친절히 실패 (0=무제한) |
-| `EVERYRIC_SERVER_ADMIN_API_KEY` | - | 설정 시 파괴적 행위(재생성·초기화)에 일일 한도 적용, 이 키는 면제 |
-| `EVERYRIC_SERVER_DAILY_DESTRUCTIVE_LIMIT` | 2 | 비어드민의 영상당 24시간 한도 |
-
-공개 배포 시 권장 설정은 위의 [보안 경고](#자체-호스팅-개발자용) 참고.
-
-## CLI (서버 없이 단독 사용)
-
-파일 기반 워크플로도 그대로 지원합니다:
-
-```bash
-# 정렬 + 번역 + 발음 + 디버그 출력
-everyric2 sync audio.wav lyrics.txt --engine ctc --language ja --translate --pronunciation --debug
-
-# 프로젝트 파일(.everyric.json)로 재분할 (정렬 재실행 없이)
-everyric2 reprocess output.everyric.json --segment-mode word
-```
-
-SRT(원본/번역/발음/통합) 다중 출력, Line/Word/Character 분할, 무성 간격 병합, 간주 감지, 로컬 LLM(Ollama/LM Studio) 연동 등 — 전체 옵션은 `everyric2 sync --help`.
-
-## 한계
-
-가사는 실제로 불리는 내용과 일치해야 합니다. 다음 경우 정렬이 어려울 수 있습니다:
-
-- 가사에 없는 추임새·애드립이 많은 곡 (star 토큰이 일부 흡수하지만 한계 있음)
-- 여러 보컬이 동시에 다른 가사를 부르는 곡
-- 발음이 뭉개지는 음성 합성 — 단, 독음(ko) 정렬 경로로 보컬로이드 정확도가 크게 개선됨
-- 2개 이상의 언어가 비슷한 비율로 혼재된 곡
-- 지원 언어: 일본어(최고 정확도)·영어·한국어
-
-## 개발
-
-```bash
-uv run pytest tests -q                 # 서버 테스트
-uv run ruff check everyric2            # 린트
-cd everyric2-chrome && npm run build   # 확장 (tsc + vite)
-```
-
-- 연구 노트·실험 기록: `docs/research/`
-- 확장 PRD: `docs/PRD_CHROME_EXTENSION.md`, 고급 기능 스펙: `docs/advanced-features-spec.md`
-
-## 크레딧·라이선스
-
-- **코드**: [Apache License 2.0](LICENSE) — 상업적 이용 포함 자유. 다만 이 소스로 **공개 서비스를 운영하는 경우 원작자(onpe)에게 알려 주시길 요청**합니다: 이메일 `perion5679@naver.com` · 디스코드 `onpe` (라이선스 조건이 아닌 비구속 요청 — [NOTICE](NOTICE) 참고 / This is a non-binding courtesy request, not a license condition — see [NOTICE](NOTICE))
-- **가사·발음·번역 출처**: [보카로 가사 위키](http://vocaro.wikidot.com/) (CC BY 4.0), [VocaloidLyrics Wiki](https://vocaloidlyrics.miraheze.org/) (CC BY-SA 4.0), [LRCLIB](https://lrclib.net/) — 확장이 조회·저장 시 출처를 함께 표기합니다
-- 정렬: [MMS wav2vec2](https://huggingface.co/facebook/mms-300m) — 모델 가중치 라이선스(CC-BY-NC)는 상업 배포 시 별도 확인 필요
-- 멜로디: RMVPE (추론 코드 MIT 포팅, 가중치 별도 다운로드), [torchfcpe](https://github.com/CNChTu/FCPE)
-- 보컬 분리: [demucs](https://github.com/facebookresearch/demucs)
+  移除 Official MV、Full Size、動畫 OP／ED 宣傳文字與重複歌名，並過濾歌詞中的作詞、
+  作曲、編曲及混音等製作人員資訊。
+- **日文歌詞顯示**：保留漢字原文並在上方附加平假名；原本就是假名的文字不重複顯示。
+  一般歌詞與採點音符使用相同的日文讀音規則。
+- **卡拉 OK 採點顯示改善**：採點顯示方式新增「目標命中音符」顯示模式，並加入已唱歌詞
+  淡化及中文原文音符標示；唱名標記只新增「關閉」選項，Do-Re-Mi 與英文字母音名原本即已提供。
+- **版面與操作改善**：重新調整歌詞、控制列、語言按鈕及設定面板；返回按鈕與轉錄提示使用
+  獨立的圓角毛玻璃底，並修正遮擋、層級及歌詞截斷。語言按鈕會將歌曲原語排在第一、
+  系統／介面語言排在第二；AI 轉錄開始後會立即顯示紫色進度狀態。
+
+## 安裝 Chrome 擴充功能
+
+1. 前往 [Releases](https://github.com/aunight/Everyric2/releases)，下載最新的
+   `Everyric-Chrome-<版本>.zip`。
+2. 將下載的 ZIP 檔解壓縮。
+3. 在 Chrome 網址列輸入 `chrome://extensions`。
+4. 開啟右上角的「開發人員模式」。
+5. 按下「載入未封裝項目」，選擇剛才解壓縮的資料夾。
+
+安裝完成後，建議將 Everyric2 固定在 Chrome 工具列，方便開啟設定或檢查連線狀態。
+
+## 基本使用方法
+
+### 顯示歌詞
+
+1. 在 YouTube 開啟歌曲影片。
+2. 擴充功能會自動搜尋歌詞，找到後直接顯示同步面板。
+3. 如果歌曲尚未建立同步，按下「執行 AI 轉錄」並貼上歌詞；送出後會立即顯示紫色進度狀態。
+
+### 顯示翻譯與發音
+
+1. 按下歌詞面板右上角的設定按鈕。
+2. 開啟翻譯或發音顯示，並選擇需要的語言。
+3. 標題列的語言按鈕會優先顯示歌曲原語，其次為系統／介面語言。
+
+### 開啟卡拉 OK 採點
+
+1. 在歌詞面板按下「採點」。
+2. 第一次使用時，允許 Chrome 存取麥克風。
+3. 在設定的「採點顯示方式」選擇「線條軌跡」或「命中音符（日K）」。
+4. 唱名標記可選擇 Do-Re-Mi、英文字母音名或關閉。
+
+## 注意事項
+
+- 預設伺服器為 `https://everyric.moref.co`，一般使用不需要 API 金鑰，設定中的金鑰欄位可以留白。
+- 歌詞搜尋不限次數；產生新的 AI 同步時，每位使用者每天最多可送出 15 次。
+- 歌詞必須和影片中實際唱出的內容一致。大量即興、重疊人聲、特殊發音或伴奏嚴重蓋過人聲時，
+  對齊與音高辨識可能不夠準確。
+- 音高偵測會先分離人聲，再使用 RMVPE；缺少 RMVPE 權重時會回退 FCPE。強烈殘響、和聲或
+  分離後的樂器殘留仍可能造成八度或音符判斷錯誤。
+- 隱私權政策：<https://everyric.moref.co/privacy>
+
+## 原作者、資料來源與授權
+
+- **原始專案與作者**：[onpe5679/Everyric2](https://github.com/onpe5679/Everyric2)，作者 onpe。
+- **程式授權**：[Apache License 2.0](LICENSE)。其他著作權及非強制性致意說明請見
+  [NOTICE](NOTICE)。
+- **歌詞、發音與翻譯來源**：[Vocaloid Lyrics Wiki](http://vocaro.wikidot.com/)、
+  [VocaloidLyrics Wiki](https://vocaloidlyrics.miraheze.org/)、[LRCLIB](https://lrclib.net/)
+  及網易雲音樂。擴充功能會在可取得時顯示來源。
+- **歌詞對齊**：[MMS wav2vec2](https://huggingface.co/facebook/mms-300m)。
+- **音高偵測**：[RMVPE](https://github.com/Dream-High/RMVPE) 與
+  [torchfcpe](https://github.com/CNChTu/FCPE)。
+- **人聲分離**：[Demucs](https://github.com/facebookresearch/demucs)。
+
+第三方歌詞、模型與工具各自適用其原始授權條款；重新發布或商業使用前請另外確認。
