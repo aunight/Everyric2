@@ -806,13 +806,15 @@
   flex-direction: column;
   gap: 6px;
   width: 100%;
-  max-width: 280px;
+  max-width: 440px;
 }
 
 .ey-result-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 2px;
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--ey-border);
@@ -841,14 +843,22 @@
 .ey-result-src.vocaro { background: rgba(255, 122, 61, 0.18); color: var(--ey-accent); }
 
 .ey-result-title {
-  flex: 1;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.ey-result-meta {
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--ey-text-dim);
+  font-size: 10px;
 }
-
-.ey-result-meta { flex-shrink: 0; color: var(--ey-text-dim); font-size: 10px; }
 
 /* ── 푸터 ─────────────────────────────────────────────────────── */
 
@@ -1438,6 +1448,13 @@ body.ey-lane-active .ey-pip-video { flex: 1 1 auto; max-height: none; }
 .ey-danger-btn { color: #ef5350; border-color: rgba(239, 83, 80, .5); display: inline-flex; align-items: center; gap: 6px; justify-content: center; }
 .ey-danger-btn:hover { background: rgba(239, 83, 80, .12); }
 
-/* 링크 섹션 오프셋/배속 필드 — 라벨 상시 표시 */
-.ey-link-field { display: inline-flex; flex-direction: column; gap: 2px; }
-.ey-link-field-label { font-size: 10px; color: var(--ey-dim, #999); }
+/* 링크 섹션 오프셋/배속 필드 — 두 매개변수를 한 줄에, 각 라벨도 입력과 같은 줄에 */
+.ey-link-parameter-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+.ey-link-field { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; min-width: 0; }
+.ey-link-field-label { flex-shrink: 0; font-size: 10px; color: var(--ey-dim, #999); }
+.ey-link-field .ey-input-narrow { flex: 1; min-width: 0; max-width: none; }

@@ -683,13 +683,15 @@ export class LyricsOverlay {
     section.append(
       h('div', { className: 'ey-search-form' },
         srcInput,
-        // 값이 채워지면 placeholder가 사라져 "0/1이 뭐지?"가 된다 — 라벨을 항상 보이게
-        h('span', { className: 'ey-link-field' },
-          h('label', { className: 'ey-link-field-label', text: t('overlay.link.offsetPlaceholder'), attrs: { title: t('overlay.link.offsetTitle') } }),
-          offsetInput),
-        h('span', { className: 'ey-link-field' },
-          h('label', { className: 'ey-link-field-label', text: t('overlay.link.ratePlaceholder'), attrs: { title: t('overlay.link.rateTitle') } }),
-          rateInput),
+        // 偏移與倍率是同一組時間軸參數：兩組都採「標籤＋輸入」橫排，並放在同一列。
+        h('div', { className: 'ey-link-parameter-row' },
+          h('span', { className: 'ey-link-field' },
+            h('label', { className: 'ey-link-field-label', text: t('overlay.link.offsetPlaceholder'), attrs: { title: t('overlay.link.offsetTitle') } }),
+            offsetInput),
+          h('span', { className: 'ey-link-field' },
+            h('label', { className: 'ey-link-field-label', text: t('overlay.link.ratePlaceholder'), attrs: { title: t('overlay.link.rateTitle') } }),
+            rateInput),
+        ),
         h('button', { className: 'ey-primary-btn', text: t('overlay.link.connect'), on: { click: doLink } }),
       ),
       h('button', {
