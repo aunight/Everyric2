@@ -1537,7 +1537,7 @@
     "message": "線條軌跡"
   },
   "overlay_settings_micDisplayMode_notes": {
-    "message": "命中音符（日 K）"
+    "message": "命中音符（日K）"
   },
   "serverStatus_code_timeout": {
     "message": "無回應（逾時）"
