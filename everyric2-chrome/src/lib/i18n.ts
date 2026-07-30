@@ -1,6 +1,8 @@
 import ko from '../../_locales/ko/messages.json';
 import en from '../../_locales/en/messages.json';
 import ja from '../../_locales/ja/messages.json';
+// 크롬 로케일 디렉터리 이름은 zh_TW다(zh-TW·zh 아님) — 설정값은 'zh' 하나로 쓴다
+import zh from '../../_locales/zh_TW/messages.json';
 import type { Settings } from '../types';
 
 type Catalog = Record<string, { message: string }>;
@@ -11,10 +13,11 @@ type Catalog = Record<string, { message: string }>;
  * 직접 들고 있다가 조회해야 한다. `_locales/*`는 매니페스트가 chrome.i18n용으로도 쓰므로
  * (default_locale) 같은 파일을 여기서도 모듈로 임포트해 중복을 피한다.
  */
-const BUNDLED: Record<'ko' | 'en' | 'ja', Catalog> = {
+const BUNDLED: Record<'ko' | 'en' | 'ja' | 'zh', Catalog> = {
   ko: ko as Catalog,
   en: en as Catalog,
   ja: ja as Catalog,
+  zh: zh as Catalog,
 };
 
 /**

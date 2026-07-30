@@ -139,9 +139,9 @@ def test_mixed_ja_line_hangul_substring_is_not_deleted_from_romaji_and_kana():
 
     assert seg["pron"]["hangul"] == "좋아해 키미가"
     assert seg["pron"]["romaji"] == "choahe kimi ga"
-    assert seg["pron"]["kana"] == "チョアヘ キミ ガ"
+    assert seg["pron"]["kana"] == "ちょあへ きみ が"
     assert seg["pron"]["romaji"].startswith("choahe")  # 삭제됐다면 "kimi ga"로 시작했을 것
-    assert seg["pron"]["kana"].startswith("チョアヘ")
+    assert seg["pron"]["kana"].startswith("ちょあへ")
 
 
 def test_mixed_ko_line_latin_run_is_transliterated_and_space_preserved():
@@ -151,9 +151,9 @@ def test_mixed_ko_line_latin_run_is_transliterated_and_space_preserved():
     seg = {"text": text, "start": 0.0, "end": len(text) * 0.5, "words": _full_words(text)}
     attach_pron_variants(seg)
 
-    assert seg["pron"]["kana"] == "サランヘ ペビ"  # baby가 raw 라틴으로 안 남는다
+    assert seg["pron"]["kana"] == "さらんへ ぺび"  # baby가 raw 라틴으로 안 남는다
     kana_segments = seg["pron_segs"]["kana"]
-    assert kana_segments[-1]["text"] == "ペビ"  # 낱말 하나로 묶인 모라
+    assert kana_segments[-1]["text"] == "ぺび"  # 낱말 하나로 묶인 모라
     assert any(s.get("space") for s in kana_segments)  # 공백 플래그가 살아 있다
     assert _rebuild(kana_segments) == seg["pron"]["kana"]
 
@@ -172,7 +172,7 @@ def test_mixed_ko_line_kana_run_is_transliterated_to_romaji_and_hangul():
 
     assert seg["pron"]["romaji"] == "saranghae desu"
     assert seg["pron"]["hangul"] == "사랑해 데스"
-    assert seg["pron"]["kana"] == "サランヘ デス"
+    assert seg["pron"]["kana"] == "さらんへ です"
 
     # 세그 정합(표시=재구성) — romaji 세그도 "デス" raw가 아니라 "desu"로 묶여야 한다
     romaji_segments = seg["pron_segs"]["romaji"]
@@ -187,23 +187,34 @@ def test_pure_hangul_ko_line_still_has_no_hangul_key():
     attach_pron_variants(seg)
 
     assert "hangul" not in seg["pron"]
-    assert seg["pron"]["kana"] == "サランヘ"
+    assert seg["pron"]["kana"] == "さらんへ"
     assert seg["pron"]["romaji"] == "saranghae"
 
 
 def test_ja_segment_gets_kana_display_and_shares_timing_with_romaji():
     # 사용자 버그 보고: ja 세그의 pron dict에 kana가 없어 script=kana 설정에서 발음 줄이
-    # 통째로 사라졌다. 감사 2차 M4로 표시는 세그와 같은 카타카나 모라 열에서 합성된다
+    # 통째로 사라졌다. 감사 2차 M4로 표시는 세그와 같은 히라가나 모라 열에서 합성된다
     # (romaji와 같은 모라/토큰 경계 띄어쓰기 — 문절 띄어쓰기이던 예전 값과 다르다).
     seg = _seg(NEKURA, NEKURA_HANGUL)
     attach_pron_variants(seg)
 
-    assert seg["pron"]["kana"] == "アルバイト ワ ネクラ モード"
+    assert seg["pron"]["kana"] == "あるばいと わ ねくら もーど"
     kana_segments = seg["pron_segs"]["kana"]
     romaji_segments = seg["pron_segs"]["romaji"]
     assert len(kana_segments) == len(romaji_segments) == 12
     assert [s["text"] for s in kana_segments] == [
-        "ア", "ル", "バ", "イ", "ト", "ワ", "ネ", "ク", "ラ", "モ", "ー", "ド",
+        "あ",
+        "る",
+        "ば",
+        "い",
+        "と",
+        "わ",
+        "ね",
+        "く",
+        "ら",
+        "も",
+        "ー",
+        "ど",
     ]
     # 같은 모라 목록에서 나온 시각이라 start/end/space가 romaji와 글자 하나 안 어긋난다
     for k, r in zip(kana_segments, romaji_segments):
@@ -223,7 +234,7 @@ def test_ja_referee_switch_kana_follows_the_winning_reading():
     kana_segments = seg["pron_segs"]["kana"]
     romaji_segments = seg["pron_segs"]["romaji"]
     assert len(kana_segments) == len(romaji_segments) == 6
-    assert [s["text"] for s in kana_segments] == ["ヤ", "イ", "バ", "オ", "ト", "グ"]
+    assert [s["text"] for s in kana_segments] == ["や", "い", "ば", "お", "と", "ぐ"]
     for k, r in zip(kana_segments, romaji_segments):
         assert k["start"] == r["start"]
         assert k["end"] == r["end"]
@@ -332,7 +343,7 @@ def test_ko_segment_gets_kana_and_romaja():
     seg = _seg("사랑해", "", words=True)
     attach_pron_variants(seg)
 
-    assert seg["pron"] == {"kana": "サランヘ", "romaji": "saranghae"}
+    assert seg["pron"] == {"kana": "さらんへ", "romaji": "saranghae"}
     assert "hangul" not in seg["pron"]  # 원문이 이미 표시라 hangul 키는 만들지 않는다
 
 
@@ -342,7 +353,7 @@ def test_ko_segment_kana_segs_are_monotonic_and_bisect_the_coda():
 
     segments = seg["pron_segs"]["kana"]
     # 사(1모라) + 랑(받침 ㅇ→independent ン, 2모라) + 해(1모라) = 4모라
-    assert [s["text"] for s in segments] == ["サ", "ラ", "ン", "ヘ"]
+    assert [s["text"] for s in segments] == ["さ", "ら", "ん", "へ"]
     assert "".join(s["text"] for s in segments) == seg["pron"]["kana"]
     for prev, cur in zip(segments, segments[1:]):
         assert cur["start"] >= prev["end"]
@@ -405,12 +416,10 @@ def test_ko_segment_display_survives_when_timing_is_unavailable():
 def test_latin_segment_gets_kana_display_only():
     # 라틴 곡은 일본어권용 가나 근사만 표시로 붙는다 — CTC 정렬이 라틴 위에서 약해서
     # (latin_hangul 모듈 실측) pron_segs는 만들지 않는다.
-    from everyric2.text.ko_reading import latin_to_kana
-
     seg = _seg("Take it easy", "", words=True)
     attach_pron_variants(seg)
 
-    assert seg["pron"] == {"kana": latin_to_kana("Take it easy")}
+    assert seg["pron"] == {"kana": "ていく いとぅ いし"}
     assert "pron_segs" not in seg
     assert "romaji" not in seg["pron"]  # 라틴 곡 세그는 romaji 표기를 만들지 않는다(원문이 이미 로마자)
 

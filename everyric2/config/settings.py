@@ -889,7 +889,7 @@ class MelodySettings(BaseSettings):
         description="Run demucs vocal separation before f0 extraction "
         "(mix tracks bleed accompaniment pitch into notes; falls back to mix if unavailable)",
     )
-    device: str = Field(default="auto", description="Inference device: auto, cpu, cuda")
+    device: str = Field(default="auto", description="Inference device: auto, cpu, cuda, mps")
     f0_model: Literal["fcpe", "rmvpe"] = Field(
         default="rmvpe",
         description="f0 estimation backend. rmvpe (DeepUnet+BiGRU, singing-pitch SOTA) "
@@ -987,6 +987,11 @@ class ServerSettings(BaseSettings):
         default="",
         description="When set, every /api request must present this value (or the admin "
         "key) in X-API-Key. Empty = no auth (local single-user default).",
+    )
+    allow_client_translation_api_keys: bool = Field(
+        default=False,
+        description="Allow /api/translate callers to override the server translation provider "
+        "key. Disabled by default so public deployments never receive user LLM credentials.",
     )
     caption_require_cjk: bool = Field(
         default=True,

@@ -4,6 +4,9 @@
 스크래치를 반환하고, 반환 후에도 임계를 넘으면 웜 캐시를 버린다.
 """
 
+import sys
+from types import SimpleNamespace
+
 from everyric2 import gpu_mem
 from everyric2.config.settings import get_settings
 
@@ -19,6 +22,24 @@ def test_reclaim_noop_without_gpu(monkeypatch):
     # torch 없음/CPU 전용이면 release가 None — 조용히 종료 (예외 전파 금지 계약)
     monkeypatch.setattr(gpu_mem, "release_scratch", lambda: None)
     gpu_mem.reclaim_after_job()
+
+
+def test_release_scratch_reclaims_mps(monkeypatch):
+    calls: list[str] = []
+    fake_mps = SimpleNamespace(
+        synchronize=lambda: calls.append("sync"),
+        empty_cache=lambda: calls.append("empty"),
+        driver_allocated_memory=lambda: 3 * 1024**3,
+    )
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+        mps=fake_mps,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert gpu_mem.release_scratch() == 3.0
+    assert calls == ["sync", "empty"]
 
 
 def test_reclaim_drops_warm_caches_over_limit(monkeypatch):

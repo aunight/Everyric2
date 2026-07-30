@@ -363,17 +363,6 @@ _HANGUL_CHAR_RE = re.compile("[가-힣]")
 _LATIN_CHAR_RE = re.compile("[A-Za-z]")
 
 
-def _hiragana_to_katakana(text: str) -> str:
-    """히라가나 → 가타카나 정규화. ``kana_hangul._to_hiragana``(가타카나→히라가나)의
-    역방향 한 줄이다. 범위 밖 문자(장음부 ー·공백·라틴·부호)는 그대로 통과한다.
-
-    ja 곡 발음 표기(``pron.kana``)는 ``pron_style``의 가나 런 환전이 항등이라(가나
-    읽기가 이미 히라가나 기준) 여기서 표시만 가타카나로 정규화한다 — 발음 전사가
-    원문(가나 섞인 일본어)과 시각적으로 구분되는 편이 읽기 편하다.
-    """
-    return "".join(chr(ord(ch) + 0x60) if "ぁ" <= ch <= "ゖ" else ch for ch in text)
-
-
 def _ja_mora_segments(
     seg: dict[str, Any],
     text: str,
@@ -384,7 +373,7 @@ def _ja_mora_segments(
     """ja 곡 세그의 모라 시각 계산 — romaji·kana 두 표기가 공유한다.
 
     ``mora_segments_for_line``이 만드는 시각은 모라 경계에서 나오고 표기와 무관하다
-    (모라 하나가 romaji로도, 가타카나로도 렌더될 뿐 구간은 하나다) — ``render_tokens``만
+    (모라 하나가 romaji로도, 히라가나로도 렌더될 뿐 구간은 하나다) — ``render_tokens``만
     표기별로 갈아 끼운다. 그래서 심판(``tokens``)이 바꾼 읽기도 두 표기 모두 자동으로
     같이 따라온다(같은 ``text_to_moras(text, tokens=tokens)``가 재료라서).
 
@@ -469,6 +458,7 @@ def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any
         return None
 
     try:
+        from everyric2.text.ja_reading import katakana_to_hiragana
         from everyric2.text.ko_reading import hangul_line_moras
 
         moras = hangul_line_moras(text)
@@ -497,7 +487,7 @@ def _kana_mora_segments_ko(seg: dict[str, Any], text: str) -> list[dict[str, Any
         for k in range(count):
             segments.append(
                 {
-                    "text": moras[i + k][0],
+                    "text": katakana_to_hiragana(moras[i + k][0]),
                     "start": round(start + total * k / count, 3),
                     "end": round(start + total * (k + 1) / count, 3),
                 }
@@ -559,7 +549,7 @@ def _romaja_syllable_segments_ko(seg: dict[str, Any], text: str) -> list[dict[st
 def _attach_ja_pron_variants(
     seg: dict[str, Any], text: str, *, referee_tokens: list | None = None
 ) -> None:
-    """일본어 곡 세그: hangul(기존 ``pronunciation`` 값) + romaji + kana(가타카나 표시).
+    """일본어 곡 세그: hangul(기존 ``pronunciation`` 값) + romaji + kana(히라가나 표시).
 
     ``pronunciation``이 없으면(비ko 사용자의 생성 요청 — 번역 API가 그 사용자 언어로
     번역만 만들고 발음은 ko 전용 결정론 경로라 line_meta에 한글 독음이 안 실린다)
@@ -672,18 +662,18 @@ def _ja_hangul_segments_from_kana(seg: dict[str, Any]) -> list[dict[str, Any]] |
 def _attach_ja_kana_variant(
     seg: dict[str, Any], text: str, space_after: list[bool], referee_tokens: list | None
 ) -> None:
-    """ja 곡 세그: 가타카나 발음 표시(``pron.kana``) + 가능하면 모라 시각.
+    """ja 곡 세그: 히라가나 발음 표시(``pron.kana``) + 가능하면 모라 시각.
 
-    표시=세그 단일 소스(감사 2차 M4, romaji와 같은 방식) — 카타카나 모라 열 하나를
+    표시=세그 단일 소스(감사 2차 M4, romaji와 같은 방식) — 히라가나 모라 열 하나를
     만들어 표시 문자열(공백 규칙까지 ``space_after``를 그대로 재사용)과 세그 둘 다에
     쓴다. 예전에는 표시를 ``wiki_pronunciation(text, script="kana")``(문절 띄어쓰기)로
     따로 만들었는데, 세그는 romaji와 같은 모라(토큰) 경계로 띄워 둘의 공백 위치가
     달랐다(NEKURA: 표시는 「アルバイトワ」로 붙는데 세그는 「ワ」 앞에 공백 플래그가
     있다) — 혼합 줄(한글이 섞인 줄)에서는 한 술 더 떠 ``wiki_pronunciation``이 한글
-    구간을 렌더 못 해 표시에서만 빠질 위험까지 있었다. 이제는 세그 재료(카타카나
+    구간을 렌더 못 해 표시에서만 빠질 위험까지 있었다. 이제는 세그 재료(히라가나
     모라 열)로 표시를 합성하므로 그 위험이 구조적으로 없다.
 
-    카타카나 모라 열은 ``referee_tokens``가 있으면 그 토큰 열로, 없으면 ``romaji_line``이
+    히라가나 모라 열은 ``referee_tokens``가 있으면 그 토큰 열로, 없으면 ``romaji_line``이
     기본값일 때 쓰는 것과 **같은 phonetic=True 토큰화**로 ``text_to_moras``를 부른다 —
     ``text_to_moras(text)``의 무인자 기본값(phonetic=False)을 그냥 쓰면 は・を 같은
     조사가 표기 그대로(하·워)로 남아 romaji가 읽는 소리(wa·o)와 짝이 어긋난다(실측:
@@ -693,14 +683,14 @@ def _attach_ja_kana_variant(
     호출 하나로 같이 나온다.
     """
     try:
-        from everyric2.text.ja_reading import tokenize_reading
+        from everyric2.text.ja_reading import katakana_to_hiragana, tokenize_reading
         from everyric2.text.reading import text_to_moras
 
         mora_tokens_source = referee_tokens
         if mora_tokens_source is None:
             mora_tokens_source = tokenize_reading(text, phonetic=True, adopt_ruby=True)
         kana_tokens = [
-            _hiragana_to_katakana(m.kana) for m in text_to_moras(text, tokens=mora_tokens_source)
+            katakana_to_hiragana(m.kana) for m in text_to_moras(text, tokens=mora_tokens_source)
         ]
     except Exception:
         logger.exception("kana mora tokens failed")
@@ -772,7 +762,7 @@ def _ko_mixed_line_hangul(text: str) -> str | None:
 
 
 def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
-    """한국어 곡 세그: 가타카나(일본어권)·RR 로마자(영어권) — 둘 다 결정론 생성.
+    """한국어 곡 세그: 히라가나(일본어권)·RR 로마자(영어권) — 둘 다 결정론 생성.
 
     ``pronunciation``(독음) 필드가 없는 게 정상이다 — 원문 한글 자체가 표시이므로
     순한글 줄에는 "hangul" 표기 키를 만들지 않는다(공유 계약: 클라이언트는 script
@@ -783,9 +773,10 @@ def _attach_ko_pron_variants(seg: dict[str, Any], text: str) -> None:
     words 불일치) 다른 쪽 타이밍은 살아남는다.
     """
     try:
+        from everyric2.text.ja_reading import katakana_to_hiragana
         from everyric2.text.ko_reading import hangul_to_kana, hangul_to_romaja
 
-        kana = hangul_to_kana(text)
+        kana = katakana_to_hiragana(hangul_to_kana(text))
         romaja = hangul_to_romaja(text)
     except Exception:
         logger.exception("ko pron rendering failed")
@@ -814,9 +805,10 @@ def _attach_latin_pron_variants(seg: dict[str, Any], text: str) -> None:
     모듈 docstring). 그래서 ``pron_segs``는 붙이지 않고 표시 문자열만 남긴다.
     """
     try:
+        from everyric2.text.ja_reading import katakana_to_hiragana
         from everyric2.text.ko_reading import latin_to_kana
 
-        kana = latin_to_kana(text)
+        kana = katakana_to_hiragana(latin_to_kana(text))
     except Exception:
         logger.exception("latin pron rendering failed")
         return
@@ -839,7 +831,7 @@ def attach_pron_variants(seg: dict[str, Any], *, referee_tokens: list | None = N
 
     1. 일본어 글자(가나·한자, ``_JA_CHAR_RE``) 수가 한글(``_HANGUL_CHAR_RE``) 수
        이상이면 **ja 곡** — hangul(없으면 자체 생성)+romaji+kana.
-    2. 그렇지 않고 한글이 있으면(즉 한글 수 > 일본어 수) **ko 곡** — 가타카나+RR
+    2. 그렇지 않고 한글이 있으면(즉 한글 수 > 일본어 수) **ko 곡** — 히라가나+RR
        로마자를 그 자리에서 결정론 생성한다(``pronunciation`` 필드 불필요 — 원문
        자체가 독음이다).
     3. 둘 다 없고 라틴 알파벳(``_LATIN_CHAR_RE``)이 있으면 **라틴 곡** — 일본어권
@@ -1583,7 +1575,8 @@ async def _stage_monitor(report, stage_holder: dict[str, str], start: int, inter
                 last_stage = stage
                 progress = max(progress, float(lo))
             else:
-                progress = min(float(hi), progress + (hi - lo) / 6.0)
+                active_cap = max(float(lo), float(hi - 1))
+                progress = min(active_cap, progress + (hi - lo) / 6.0)
             await report(int(progress), stage)
     except asyncio.CancelledError:
         pass
@@ -1752,15 +1745,14 @@ def _separate_stems(audio):
 
     분리기는 웜 캐시 싱글턴(get_shared_separator)에서 가져와 잡마다 재생성하지 않는다 (WS2-A)."""
     try:
-        import torch
-
         from everyric2.audio.separator import get_shared_separator
+        from everyric2.device import resolve_device
 
         separator = get_shared_separator()
         if not separator.is_available():
             logger.info("demucs not installed; skipping VAD clamp / using mix for melody")
             return None
-        return separator.separate(audio, use_gpu=torch.cuda.is_available())
+        return separator.separate(audio, use_gpu=resolve_device() != "cpu")
     except Exception:
         logger.exception("Vocal separation failed; skipping VAD clamp")
         return None
@@ -3427,7 +3419,7 @@ def _alignable_pron(pron: str | None) -> str:
     """정렬 입력으로 쓸 수 있는 발음만 통과 — **한글이 한 글자라도 있어야 한다**.
 
     독음(ko) 정렬은 kor 어댑터에 한글 텍스트를 넣는 계약이다. 다국어화 이후 비ko
-    사용자의 line_meta엔 romaji·가타카나 발음이 실릴 수 있는데(번역 API의 결정론
+    사용자의 line_meta엔 romaji·히라가나 발음이 실릴 수 있는데(번역 API의 결정론
     매트릭스), 라틴은 kor 어댑터에서 정렬되지 않고(latin_hangul.py 헤더 실측 —
     conf<0.01이 90~99%) 가나도 마찬가지다. 그런 발음은 «없음»과 동일 취급해
     게이트(coverage)와 정렬 입력 양쪽에서 원문 폴백을 태운다.
@@ -3727,6 +3719,11 @@ def _anchor_kwargs(forbidden_spans, line_starts=None) -> dict[str, Any]:
     return kwargs
 
 
+def _should_precompute_f0(device: str) -> bool:
+    """MPS에서는 CTC와 RMVPE를 직렬화해 통합 메모리 피크를 제한한다."""
+    return device != "mps"
+
+
 def _run_alignment(
     audio_path: str,
     lyrics: str,
@@ -3824,10 +3821,18 @@ def _run_alignment(
 
             melody_extractor = get_shared_extractor(settings.melody)
             if melody_extractor.is_available():
-                import concurrent.futures
+                from everyric2.device import resolve_device
 
-                f0_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                f0_future = f0_executor.submit(melody_extractor.precompute_f0, audio, vocals)
+                melody_device = resolve_device(settings.melody.device)
+                if _should_precompute_f0(melody_device):
+                    import concurrent.futures
+
+                    f0_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    f0_future = f0_executor.submit(
+                        melody_extractor.precompute_f0, audio, vocals
+                    )
+                else:
+                    logger.info("MPS melody inference serialized after CTC to limit unified memory")
             else:
                 logger.warning("Melody enabled but torchfcpe is not installed; skipping")
                 melody_extractor = None

@@ -1,6 +1,98 @@
 # Everyric2
 
+> [!IMPORTANT]
+> **繁體中文｜Fork 與原作者標註**
+>
+> 本儲存庫是 [Everyric2 原始專案](https://github.com/onpe5679/Everyric2)的修改版 fork。
+> 原作者為 **onpe（GitHub: [onpe5679](https://github.com/onpe5679)）**。本 fork 的新增與
+> 修改內容由 fork 維護者負責，並依 Apache License 2.0 發布；原始著作權與詳細聲明請見
+> [LICENSE](LICENSE) 與 [NOTICE](NOTICE)。
+>
+> **日本語｜フォークおよび原作者の表示**
+>
+> このリポジトリは、**onpe（GitHub:
+> [onpe5679](https://github.com/onpe5679)）**氏による
+> [Everyric2 オリジナルプロジェクト](https://github.com/onpe5679/Everyric2)を改変した
+> フォークです。このフォークで追加・変更された内容はフォークのメンテナーが管理し、
+> Apache License 2.0 の下で公開されています。原著作権および詳細な表示は
+> [LICENSE](LICENSE)と[NOTICE](NOTICE)をご確認ください。
+>
+> **English｜Fork and original-author attribution**
+>
+> This repository is a modified fork of the
+> [original Everyric2 project](https://github.com/onpe5679/Everyric2) by
+> **onpe (GitHub: [onpe5679](https://github.com/onpe5679))**. Additions and modifications
+> in this fork are maintained by the fork maintainer and distributed under the Apache License 2.0.
+> See [LICENSE](LICENSE) and [NOTICE](NOTICE) for copyright and attribution details.
+
 유튜브 영상에 **타임싱크 가사·번역·발음·가라오케 음정 바**를 얹어 주는 로컬 서버 + Chrome 확장.
+
+## 此 Fork 新增功能 / このフォークの追加機能 / Enhancements in this fork
+
+### 繁體中文
+
+- **完整繁體中文體驗**：新增 Chrome 擴充功能繁中介面、OpenCC 台灣繁體轉換與中文翻譯目標；
+  原文與翻譯為同一語言時自動隱藏重複翻譯。
+- **Apple Silicon 加速**：支援 M 系列晶片的 PyTorch MPS 裝置選擇、記憶體管理與安全分段；
+  MPS 不支援的 forced alignment 運算會自動回退 CPU。
+- **翻譯 API 擴充**：新增 OpenAI Chat Completions 相容介面，可自訂 API 端點、模型與金鑰，
+  並可連接 OpenAI、DeepSeek、Qwen、GLM 或其他相容服務。
+- **歌詞來源與清理**：加入網易雲音樂搜尋及來源優先順序；自動精簡 YouTube 中日文歌名，
+  移除 Official MV、Full Size、動畫 OP/ED 宣傳字樣與重複歌名；歌詞中的作詞、作曲、
+  編曲、混音等製作人員資訊也會過濾。
+- **日文歌詞顯示**：漢字保留原文並在上方附加平假名振假名；原本就是假名的文字不重複顯示。
+  一般歌詞與採點音符使用同一套日文讀音規則。
+- **卡拉 OK 採點強化**：新增麥克風即時音高偵測、目標音符命中顯示與連續音高線兩種模式，
+  支援切換、分數保存、已唱歌詞淡化及中文原文音符標示；唱名可切換 Do-Re-Mi、
+  英文字母音名或完全關閉。
+- **排版與 UI／UX 改善**：重新調整歌詞、控制列、語言按鈕與設定面板的版面；
+  返回按鈕及轉錄提示採用獨立圓角毛玻璃，並修正遮擋、層級與歌詞截斷。
+  語言按鈕會以歌曲原語排第一、系統／介面語言排第二；AI 轉錄啟動後會立即顯示紫色進度狀態。
+
+### 日本語
+
+- **繁体字中国語への完全対応**：Chrome 拡張の繁体字 UI、OpenCC による台湾向け変換、
+  中国語翻訳ターゲットを追加。同じ言語への重複翻訳は自動的に非表示になります。
+- **Apple Silicon 高速化**：M シリーズ向け PyTorch MPS デバイス選択、メモリ管理、
+  安全なチャンク処理に対応。MPS 非対応の forced alignment は CPU に自動フォールバックします。
+- **翻訳 API の拡張**：OpenAI Chat Completions 互換 API に対応し、エンドポイント、
+  モデル、API キーを指定可能。OpenAI、DeepSeek、Qwen、GLM などの互換サービスを利用できます。
+- **歌詞ソースとクリーニング**：NetEase Cloud Music の検索とソース優先順位を追加。
+  YouTube タイトルから Official MV、Full Size、アニメ OP/ED の宣伝文、重複曲名を除去し、
+  歌詞内の作詞・作曲・編曲・ミックスなどのクレジット行も非表示にします。
+- **日本語歌詞表示**：漢字を原文のまま残し、その上にひらがなのルビを表示。
+  元から仮名の文字は重複表示せず、通常歌詞と採点ノートで同じ読み方を使用します。
+- **カラオケ採点の強化**：マイクのリアルタイム音高検出、ターゲットノートのヒット表示、
+  連続音高ラインの切り替え、スコア保存、歌唱済み歌詞の減光に対応。音名表示は
+  Do-Re-Mi、英字音名、オフから選択できます。
+- **レイアウトと UI／UX 改善**：歌詞、コントロール、言語ボタン、設定パネルの配置を再調整。
+  戻るボタンと文字起こし通知を独立した角丸ガラス UI に変更し、重なりと歌詞の切れを修正。
+  言語ボタンは曲の原語を最初、システム／UI 言語を二番目に並べます。
+  AI 文字起こし開始時には紫色の進捗表示を即座に出します。
+
+### English
+
+- **Complete Traditional Chinese experience**: adds a Traditional Chinese Chrome UI,
+  Taiwan-style OpenCC conversion, and a Chinese translation target. Same-language duplicate
+  translations are hidden automatically.
+- **Apple Silicon acceleration**: adds PyTorch MPS device selection, memory handling, and safe
+  chunking for M-series Macs, with automatic CPU fallback for forced-alignment operations that MPS
+  does not support.
+- **Translation API expansion**: adds an OpenAI Chat Completions-compatible backend with configurable
+  endpoint, model, and API key for OpenAI, DeepSeek, Qwen, GLM, and other compatible services.
+- **Lyrics sources and cleanup**: adds NetEase Cloud Music search and configurable source priority.
+  YouTube titles are cleaned of Official MV, Full Size, anime OP/ED promotion, and repeated song
+  names; lyric credit lines such as lyricist, composer, arranger, and mixing staff are also removed.
+- **Japanese lyric rendering**: preserves original kanji and displays centered Hiragana furigana
+  above it without duplicating existing kana. Normal lyrics and scoring notes share the same reading
+  rules.
+- **Improved karaoke scoring**: adds real-time microphone pitch detection, switchable target-note
+  hit and continuous pitch-line views, persistent scores, dimmed sung lyrics, and original Chinese
+  note labels. Solfège labels can use Do-Re-Mi, English pitch names, or be turned off.
+- **Layout and UI/UX improvements**: reorganizes lyrics, controls, language buttons, and the settings
+  panel; gives the return button and transcription status their own rounded glass surfaces; and fixes
+  overlap and lyric clipping. Language buttons put the song's original language first and the
+  system/UI language second. Starting AI transcription immediately shows a purple progress state.
 
 가사 텍스트만 있으면 CTC 강제 정렬(GPU 가속)로 줄·글자 단위 타이밍을 만들고, LLM으로 자연스러운 가사체 번역과 한글 독음을 붙이고, 보컬 멜로디(f0)를 전사해 노래방 스타일 음정 바까지 그려 줍니다.
 
@@ -24,7 +116,7 @@
 
 ### ① 확장 설치
 
-1. [Releases](https://github.com/onpe5679/Everyric2/releases)에서 최신 `Everyric-Chrome-<버전>.zip`을 받아 압축을 풉니다.
+1. [Releases](https://github.com/aunight/Everyric2/releases)에서 최신 `Everyric-Chrome-<버전>.zip`을 받아 압축을 풉니다.
 2. 주소창에 `chrome://extensions`를 입력하고 우측 상단 **개발자 모드**를 켭니다.
 3. **압축해제된 확장 프로그램을 로드합니다**를 눌러 방금 압축 해제한 폴더를 선택합니다.
 
@@ -52,7 +144,7 @@
 
 ### ① Install the extension
 
-1. Download the latest `Everyric-Chrome-<version>.zip` from [Releases](https://github.com/onpe5679/Everyric2/releases) and unzip it.
+1. Download the latest `Everyric-Chrome-<version>.zip` from [Releases](https://github.com/aunight/Everyric2/releases) and unzip it.
 2. Open `chrome://extensions` and turn on **Developer mode** (top right).
 3. Click **Load unpacked** and select the folder you just unzipped.
 
@@ -80,7 +172,7 @@ Privacy policy: <https://everyric.moref.co/privacy>
 
 ### ① 拡張機能のインストール
 
-1. [Releases](https://github.com/onpe5679/Everyric2/releases)から最新の`Everyric-Chrome-<バージョン>.zip`をダウンロードして解凍します。
+1. [Releases](https://github.com/aunight/Everyric2/releases)から最新の`Everyric-Chrome-<バージョン>.zip`をダウンロードして解凍します。
 2. `chrome://extensions`を開き、右上の**デベロッパーモード**をオンにします。
 3. **パッケージ化されていない拡張機能を読み込む**をクリックし、解凍したフォルダを選択します。
 
@@ -129,7 +221,7 @@ YouTubeで曲の動画を開くと、歌詞パネルが自動で表示されま�
 
 ## 다운로드
 
-빌드된 배포본은 [Releases](https://github.com/onpe5679/Everyric2/releases)에서 받을 수 있습니다:
+이 fork의 빌드된 배포본은 [Releases](https://github.com/aunight/Everyric2/releases)에서 받을 수 있습니다:
 
 | 구성 요소 | 파일 | 설치 |
 |---|---|---|
@@ -147,7 +239,7 @@ YouTubeで曲の動画を開くと、歌詞パネルが自動で表示されま�
 요구 사항: Python 3.10+, ffmpeg, (권장) CUDA GPU
 
 ```bash
-git clone https://github.com/onpe5679/Everyric2.git
+git clone https://github.com/aunight/Everyric2.git
 cd Everyric2
 pip install uv && uv sync            # 또는 pip install -e ".[all]"
 
@@ -168,6 +260,10 @@ export GEMINI_API_KEY=...
 export NVIDIA_API_KEY=nvapi-...   # 또는 저장소 루트에 nvapi.txt (gitignore됨)
 ```
 
+확장의 번역 API 키 입력란은 `chrome.storage.local`에만 저장되며 공식 기본 서버에는 전송되지
+않습니다. 자가 호스팅 서버가 그 키를 받도록 하려면 신뢰할 수 있는 개인 서버에서만
+`EVERYRIC_SERVER_ALLOW_CLIENT_TRANSLATION_API_KEYS=true`를 명시적으로 설정하세요.
+
 > **⚠️ 보안 경고 — 외부에 노출하기 전에 반드시 읽으세요**
 >
 > 서버 기본 bind는 `127.0.0.1`(로컬 전용, 인증 없음)입니다. `--host 0.0.0.0` 등으로
@@ -183,7 +279,7 @@ export NVIDIA_API_KEY=nvapi-...   # 또는 저장소 루트에 nvapi.txt (gitign
 
 ### 2. Chrome 확장을 소스에서 빌드
 
-자체 서버를 확장에 연결하려면 소스에서 빌드하거나(아래) [Releases](https://github.com/onpe5679/Everyric2/releases)의
+자체 서버를 확장에 연결하려면 소스에서 빌드하거나(아래) [Releases](https://github.com/aunight/Everyric2/releases)의
 `Everyric-Chrome-<버전>.zip`을 그대로 씁니다:
 
 ```bash

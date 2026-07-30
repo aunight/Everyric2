@@ -2,19 +2,33 @@ import type { LyricLine, PronSegment, Settings } from '../types';
 
 export type PronScript = 'hangul' | 'romaji' | 'kana';
 
+/** 舊快取與舊伺服器可能仍保存片假名；顯示前只轉全形片假名，漢字與長音符保持不變。 */
+function katakanaToHiragana(text: string): string {
+  return Array.from(text, ch => {
+    const codePoint = ch.codePointAt(0) ?? 0;
+    return codePoint >= 0x30a1 && codePoint <= 0x30f6
+      ? String.fromCodePoint(codePoint - 0x60)
+      : ch;
+  }).join('');
+}
+
 /**
  * 발음 표기 방식 해석 — 'auto'면 번역 언어 기준 자동 결정표를 따른다
- * (공유 계약: ko→hangul, en→romaji, ja→kana, zh→hangul — zh는 아직 전용 표기가 없어
- * hangul로 폴백한다).
+ * (공유 계약: ko→hangul, en→romaji, ja→kana, zh→romaji).
+ *
+ * zh는 romaji다. 중문권에서 일본어 노래의 독음 표기 관례가 로마자(羅馬拼音)이고, 한글
+ * 독음은 중문 사용자에게 읽을 수 없는 문자라 그냥 없는 것과 같다(예전 폴백이 hangul이라
+ * 실제로 그랬다). 拼音·注音은 **중국어 원문 노래**용 표기라 별개 문제다 — 그건 서버가
+ * pron dict에 zh 원문용 키를 줄 때 PronScript에 추가한다.
  */
 export function resolveScript(
   settings: Pick<Settings, 'pronunciationScript' | 'translationLanguage'>,
 ): PronScript {
   if (settings.pronunciationScript !== 'auto') return settings.pronunciationScript;
   switch (settings.translationLanguage) {
-    case 'en': return 'romaji';
+    case 'en': case 'zh': return 'romaji';
     case 'ja': return 'kana';
-    default: return 'hangul'; // ko·zh·그 외
+    default: return 'hangul'; // ko·그 외
   }
 }
 
@@ -29,12 +43,19 @@ export function resolveScript(
  * hangul 외 표기에서 dict에 값이 없으면 undefined를 그대로 돌려줘 발음 줄 자체를 생략한다.
  */
 export function resolvedPronunciation(line: LyricLine, script: PronScript): string | undefined {
-  return line.pron?.[script] ?? (script === 'hangul' ? line.pronunciation : undefined);
+  const value = line.pron?.[script] ?? (script === 'hangul' ? line.pronunciation : undefined);
+  return script === 'kana' && value ? katakanaToHiragana(value) : value;
 }
 
 /** 표시용 발음 음절 타이밍 — 규칙은 resolvedPronunciation과 동일(표기별 값 → hangul만 레거시 폴백) */
 export function resolvedPronSegments(line: LyricLine, script: PronScript): PronSegment[] | undefined {
-  return line.pronSegsByScript?.[script] ?? (script === 'hangul' ? line.pronSegments : undefined);
+  const segments =
+    line.pronSegsByScript?.[script] ?? (script === 'hangul' ? line.pronSegments : undefined);
+  if (script !== 'kana' || !segments) return segments;
+  return segments.map(segment => {
+    const text = katakanaToHiragana(segment.text);
+    return text === segment.text ? segment : { ...segment, text };
+  });
 }
 
 export interface WikiMatchLine {

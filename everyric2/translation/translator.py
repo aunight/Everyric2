@@ -147,6 +147,25 @@ TONE_PROMPTS = {
     "formal": "Translate in formal, polite language.",
 }
 
+# 대상 언어별 어투(register) 지시 — 줄별 고립 직역이 아니라 그 언어의 가사체를 쓰게 한다.
+# 없는 언어는 빈 문자열(추가 지시 없음).
+REGISTER_HINTS = {
+    "ko": (
+        " Korean song lyrics use the plain intimate register (반말/해라체, e.g. ~해, ~야,"
+        " ~잖아) — never formal endings like ~습니다/~어요 unless the original is"
+        " explicitly formal."
+    ),
+    # zh는 항상 대만 정체자다 (간체자·대륙 어휘 금지) — 코드에 zh-TW/zh-CN을 따로 두지 않는
+    # 대신 이 지시 하나로 고정한다. DB(target_lang)·확장 칩·설정값 전부 'zh' 하나로 끝난다.
+    "zh": (
+        " Write in Traditional Chinese as used in Taiwan (繁體中文/台灣): Taiwan vocabulary and"
+        " word choices, never Simplified characters and never mainland-only terms."
+        " Chinese song lyrics use plain spoken register (口語) — avoid stiff written-Chinese"
+        " (書面語) constructions like 之/其/乃 unless the original is deliberately literary."
+        " Use full-width Chinese punctuation (，。？！) and never end a line with a period."
+    ),
+}
+
 
 class BaseTranslator(ABC):
     # 로그 상관용 라벨(보통 video_id). 서버 로그에 곡이 안 남아 사후 추적이 불가능했다 —
@@ -177,25 +196,27 @@ class BaseTranslator(ABC):
         include_pronunciation: bool,
         context: str | None = None,
     ) -> str:
-        lang_names = {"ko": "Korean", "en": "English", "ja": "Japanese", "zh": "Chinese"}
+        lang_names = {
+            "ko": "Korean",
+            "en": "English",
+            "ja": "Japanese",
+            "zh": "Traditional Chinese (Taiwan)",
+        }
         target = lang_names.get(target_lang, target_lang)
         tone_instruction = TONE_PROMPTS.get(self.settings.tone, TONE_PROMPTS["natural"])
         context_block = f"\nSong: {context}" if context else ""
 
         # 가사 맥락 지시 — 줄별 고립 직역(기계번역 톤)을 막고 곡 전체를 하나의 화자로 잇는다
-        register_hint = (
-            " Korean song lyrics use the plain intimate register (반말/해라체, e.g. ~해, ~야,"
-            " ~잖아) — never formal endings like ~습니다/~어요 unless the original is"
-            " explicitly formal."
-            if target_lang == "ko"
-            else ""
-        )
+        register_hint = REGISTER_HINTS.get(target_lang, "")
         lyrics_guidance = (
             "These lines are the lyrics of ONE song, in order. Read the whole song first,"
             " then translate so the lines flow as a coherent song: keep one consistent"
             " speaker, emotional register and formality throughout, resolve omitted"
             " subjects/pronouns from surrounding lines, and prefer natural lyrical phrasing"
-            f" over word-for-word rendering. Never translate a line in isolation.{register_hint}"
+            " over word-for-word rendering. Never translate a line in isolation."
+            " Proper nouns — the song's title, artist/character/place names — stay in their"
+            " original script; if a line is (or quotes) the song title, copy that part"
+            f" verbatim instead of translating it.{register_hint}"
         )
 
         if include_pronunciation:
@@ -254,6 +275,24 @@ class BaseTranslator(ABC):
                     "- pronunciation must be the kana reading of the ORIGINAL line"
                     " (hiragana, spaced by phrase) — never romanization, never a"
                     " translation, never Hangul"
+                )
+            elif self._norm_lang(source_lang) == "en" or (
+                source_lang in ("", "auto") and self._detect_lang_heuristic(text) == "en"
+            ):
+                # 영어 원문은 로마자 표기가 무의미하다(이미 라틴 문자) — 대만 사전 관례인
+                # KK 음표(Kenyon–Knott, IPA 계열)를 요구한다. zh 사용자 실보고 반영.
+                pron_rule = (
+                    "2. KK (Kenyon–Knott) American English phonetic transcription of the"
+                    " ORIGINAL line — the IPA-style notation used in Taiwan dictionaries."
+                    " Mark primary stress (ˈ). Example: ˈraɪtɪŋ ɑn ðə wɔl"
+                )
+                pron_example = (
+                    '[{"original": "Writing on the wall", "translation": "牆上的字跡",'
+                    ' "pronunciation": "ˈraɪtɪŋ ɑn ðə wɔl"}]'
+                )
+                pron_note = (
+                    "- pronunciation must be KK phonetic symbols of the ORIGINAL lyrics"
+                    " — never plain-English respelling, never a translation"
                 )
             else:
                 pron_rule = "2. Romanized pronunciation of the ORIGINAL text (not the translation)"
@@ -578,7 +617,9 @@ LYRICS:
                 return None
             if target == "ko":
                 return lambda t: wiki_pronunciation(t) or None
-            if target == "en":
+            if target in ("en", "zh"):
+                # zh도 로마자 — 중문권의 일본곡 독음 관례가 로마 병음이라 en과 계약을
+                # 공유한다 (확장 lib/lang.ts resolveScript의 zh→romaji와 한 쌍)
                 def _romaji(t: str) -> str | None:
                     rendered = romaji_line(t)
                     return rendered[0] if rendered else None
@@ -589,7 +630,7 @@ LYRICS:
         if self._norm_lang(source_lang) == "ko":
             if target == "ja":
                 return lambda t: hangul_to_kana(t) or None
-            if target == "en":
+            if target in ("en", "zh"):
                 return lambda t: hangul_to_romaja(t) or None
             return None
 
@@ -731,21 +772,40 @@ class GeminiTranslator(BaseTranslator):
         prompt = self._build_prompt(text, source_lang, target_lang, llm_pron, context)
 
         try:
-            response = requests.post(
-                self.api_url,
-                # 키는 URL 쿼리가 아니라 헤더로 — URL은 예외 메시지·로그에 그대로 찍힌다
-                headers={"x-goog-api-key": self.api_key},
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": self.settings.temperature,
-                        "maxOutputTokens": 8192,
+            # 무료 티어는 분당 한도가 낮아 곡 단위 요청이 간헐적으로 429를 맞는다 — 지수
+            # 백오프로 재시도하고, 그래도 안 되면 웹 번역 폴백으로 내려간다(500을 돌려주면
+            # 확장 화면에는 '번역 실패'만 남는다 — 품질 저하가 실패보다 낫다).
+            response = None
+            delay = max(0.5, self.settings.rate_limit_backoff_sec)
+            retries = max(0, self.settings.rate_limit_retries)
+            for attempt in range(retries + 1):
+                response = requests.post(
+                    self.api_url,
+                    # 키는 URL 쿼리가 아니라 헤더로 — URL은 예외 메시지·로그에 그대로 찍힌다
+                    headers={"x-goog-api-key": self.api_key},
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "temperature": self.settings.temperature,
+                            "maxOutputTokens": 8192,
+                        },
                     },
-                },
-                timeout=self.settings.timeout,
-            )
+                    timeout=self.settings.timeout,
+                )
+                if response.status_code not in (429, 503):
+                    break
+                if attempt < retries:
+                    time.sleep(min(delay, 30.0))
+                    delay *= 2
 
             if not response.ok:
+                if response.status_code in (429, 503):
+                    logger.warning(
+                        "%sGemini rate-limited after %d retries; falling back to web translation",
+                        self._log_prefix(),
+                        retries,
+                    )
+                    return self._fallback_result(original_lines, source_lang, target_lang)
                 raise RuntimeError(f"API error: {response.status_code} - {response.text[:200]}")
 
             result = response.json()
@@ -768,9 +828,12 @@ class GeminiTranslator(BaseTranslator):
         # API 키가 없거나 연결이 안 되면 무료 웹 번역(deep-translator)으로 폴백.
         # 플레이스홀더 텍스트를 번역인 척 반환하면 클라이언트 UI에 그대로 노출되므로 금지 —
         # 여기서도 실패하면 예외를 올려 API가 5xx로 응답하게 한다(확장은 '번역 실패' 표시).
+        # 발음은 LLM이 없어도 결정론 엔진이 만들 수 있다 — 키 없는 자가 호스팅에서
+        # 발음이 통째로 사라지지 않게 여기서도 채운다 (아래 lines 조립 후).
         from deep_translator import GoogleTranslator
 
-        target = {"zh": "zh-CN"}.get(target_lang, target_lang)
+        # zh는 대만 정체자 계약(REGISTER_HINTS 참고) — 웹 번역 폴백도 zh-TW로 보낸다
+        target = {"zh": "zh-TW"}.get(target_lang, target_lang)
         translator = GoogleTranslator(source="auto", target=target)
 
         translated = translator.translate("\n".join(original_lines)) or ""
@@ -783,6 +846,14 @@ class GeminiTranslator(BaseTranslator):
             TranslationLine(original=orig, translation=trans, pronunciation=None)
             for orig, trans in zip(original_lines, parts)
         ]
+        if self.settings.include_pronunciation:
+            text = "\n".join(original_lines)
+            pron_fn = self._deterministic_pron_fn(text, source_lang, target_lang)
+            if pron_fn is not None and not self._should_skip_pronunciation(
+                text, source_lang, target_lang
+            ):
+                for line in lines:
+                    line.pronunciation = pron_fn(line.original)
         return TranslationResult(lines, source_lang, target_lang, "google-web", self.settings.tone)
 
 
@@ -795,7 +866,9 @@ class OpenAICompatibleTranslator(BaseTranslator):
         self.model = self.settings.model
 
         if self.settings.engine == "openai":
-            self.api_url = "https://api.openai.com/v1/chat/completions"
+            # api_url을 주면 그 주소를 쓴다 — OpenAI 호환 엔드포인트(DeepSeek·Qwen(DashScope)·
+            # GLM 등)를 engine을 "local"로 위장하지 않고 그대로 붙일 수 있게 한다.
+            self.api_url = self.settings.api_url or "https://api.openai.com/v1/chat/completions"
         else:
             self.api_url = self.settings.api_url or "http://localhost:11434/v1/chat/completions"
 

@@ -477,11 +477,9 @@ class MelodyExtractor:
 
     def _get_model(self):
         if self._model is None:
-            import torch
+            from everyric2.device import resolve_device
 
-            device = self.config.device
-            if device == "auto":
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = resolve_device(self.config.device)
 
             if self.config.f0_model == "rmvpe":
                 try:
@@ -511,15 +509,14 @@ class MelodyExtractor:
         if not self.config.separate_vocals:
             return audio
         try:
-            import torch
-
             from everyric2.audio.separator import VocalSeparator
+            from everyric2.device import resolve_device
 
             separator = VocalSeparator()
             if not separator.is_available():
                 logger.info("demucs not installed; extracting f0 from the mix")
                 return audio
-            result = separator.separate(audio, use_gpu=torch.cuda.is_available())
+            result = separator.separate(audio, use_gpu=resolve_device(self.config.device) != "cpu")
             logger.info("Vocal separation done; extracting f0 from vocals stem")
             return result.vocals
         except Exception:

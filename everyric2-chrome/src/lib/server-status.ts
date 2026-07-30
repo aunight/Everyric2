@@ -1,4 +1,5 @@
 import type { ApiFailure, ApiFailureKind, ServerLogEntry, ServerStatus } from '../types';
+import { t } from './i18n';
 
 /**
  * 서버 실패 → 사람이 읽는 상태로 옮기는 **순수 함수**들.
@@ -64,38 +65,27 @@ export function unknownStatus(at = Date.now()): ServerStatus {
 /** 실패 종류별 원인 코드 한 조각 — 상태 코드가 있으면 그대로 노출한다 */
 export function failureCode(failure: ApiFailure): string {
   if (failure.status !== undefined) return `HTTP ${failure.status}`;
-  if (failure.kind === 'timeout') return '응답 없음(타임아웃)';
+  if (failure.kind === 'timeout') return t('serverStatus.code.timeout');
   // 권한 문제는 연결을 시도조차 하지 않았다 — '연결 실패'라고 쓰면 거짓말이 된다
-  if (failure.kind === 'permission') return '호스트 권한 없음';
-  return '연결 실패';
+  if (failure.kind === 'permission') return t('serverStatus.code.permission');
+  return t('serverStatus.code.offline');
 }
 
 /** 실패 → 사용자에게 보여줄 한 줄 사유 */
 export function describeFailure(failure: ApiFailure): string {
-  switch (failure.kind) {
-    case 'offline':
-      return '서버에 연결할 수 없어요 — 서버가 꺼져 있거나 주소가 잘못됐어요';
-    case 'timeout':
-      return '서버가 제때 응답하지 않았어요';
-    case 'auth':
-      return 'API 키 인증에 실패했어요 — 설정에서 키를 확인해 주세요';
-    case 'server':
-      return '서버에서 오류가 났어요';
-    case 'notfound':
-      return '서버에 이 기능이 없어요 — 서버 버전이 낮을 수 있어요';
-    case 'malformed':
-      return '서버 응답을 해석할 수 없어요';
-    case 'client':
-      return '서버가 요청을 거절했어요';
-    case 'permission':
-      return '로컬 서버에 접근할 권한이 없어요 — 권한을 허용해 주세요';
-  }
+  // uiLanguage 카탈로그 조회 — 예전엔 한국어 하드코딩이라 zh/en/ja UI에 한국어가 샜다
+  return t(`serverStatus.${failure.kind}`);
 }
 
 /** 실패 → 서버 상태. failure가 없으면 원인을 모르는 연결 실패로 본다. */
 export function failureToStatus(failure: ApiFailure | null | undefined, at = Date.now()): ServerStatus {
   if (!failure) {
-    return { kind: 'offline', reason: '서버에 연결할 수 없어요', code: '연결 실패', at };
+    return {
+      kind: 'offline',
+      reason: t('serverStatus.offline'),
+      code: t('serverStatus.code.offline'),
+      at,
+    };
   }
   const kind: ServerStatus['kind'] = failure.kind === 'auth'
     ? 'auth'

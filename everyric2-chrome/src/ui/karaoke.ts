@@ -1,4 +1,53 @@
-import type { LyricLine, WordSegment } from '../types';
+import type { LyricLine, PronSegment, WordSegment } from '../types';
+
+const KANJI_RE = /[㐀-鿿]/u;
+
+/**
+ * 原文字詞時間與發音莫拉時間做最大重疊對位，只替漢字建立振假名。
+ *
+ * 假名原文本身已可讀，不重複標註；缺少 words 時也不猜測，讓呼叫端保留整行發音作為
+ * 安全退路。回傳以原 WordSegment 物件為 key，讓既有 appendKaraokeSpans callback
+ * 能直接查詢，不改動歌詞或時間資料。
+ */
+export function buildKanjiRubyReadings(
+  line: LyricLine,
+  segments: readonly PronSegment[] | undefined,
+): Map<WordSegment, string> {
+  const readings = new Map<WordSegment, string>();
+  const words = line.words ?? [];
+  if (words.length === 0 || !segments?.length) return readings;
+
+  for (const segment of segments) {
+    if (!segment.text) continue;
+    let bestWord: WordSegment | undefined;
+    let bestOverlap = 0;
+    for (const word of words) {
+      const overlap = Math.min(word.end, segment.end) - Math.max(word.start, segment.start);
+      if (overlap > bestOverlap) {
+        bestWord = word;
+        bestOverlap = overlap;
+      }
+    }
+    if (!bestWord || !KANJI_RE.test(bestWord.word)) continue;
+    readings.set(bestWord, (readings.get(bestWord) ?? '') + segment.text);
+  }
+  return readings;
+}
+
+/** 在既有 karaoke word span 內建立語意化 ruby；沒有讀音時維持純文字。 */
+export function appendRubyText(el: HTMLElement, text: string, reading?: string): void {
+  if (!reading) {
+    el.textContent = text;
+    return;
+  }
+  const ruby = document.createElement('ruby');
+  ruby.className = 'ey-ruby';
+  ruby.append(text);
+  const rt = document.createElement('rt');
+  rt.textContent = reading;
+  ruby.append(rt);
+  el.append(ruby);
+}
 
 /**
  * 본문 텍스트 위에 타이밍 토큰을 위치 매핑해 카라오케 span을 구성하는 공통 헬퍼.

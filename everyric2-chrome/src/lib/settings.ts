@@ -1,4 +1,5 @@
 import type { PanelGeometry, Settings } from '../types';
+import { normalizeScoringSettings } from './scoring-settings';
 
 export const DEFAULT_SETTINGS: Settings = {
   autoSearch: true,
@@ -28,6 +29,9 @@ export const DEFAULT_SETTINGS: Settings = {
   micPitch: false,
   micDeviceId: '',
   micOctave: 0,
+  karaokeScoring: false,
+  micDisplayMode: 'notes',
+  translationApiKey: '',
   pitchLaneHeight: 170,
   pitchWindowMeasures: 4,
   pitchScrollMode: 'page',
@@ -49,7 +53,10 @@ const SETTINGS_KEY = 'settings';
 export async function getSettings(): Promise<Settings> {
   try {
     const stored = await chrome.storage.local.get(SETTINGS_KEY);
-    return { ...DEFAULT_SETTINGS, ...(stored[SETTINGS_KEY] as Partial<Settings> | undefined) };
+    return normalizeScoringSettings({
+      ...DEFAULT_SETTINGS,
+      ...(stored[SETTINGS_KEY] as Partial<Settings> | undefined),
+    });
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

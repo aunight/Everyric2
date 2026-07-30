@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "default_locale": "ko",
-  "name": "Everyric - Synced Lyrics",
+  "name": "Everyric - 同步歌詞",
   "version": "1.5.5",
   "minimum_chrome_version": "103",
   "description": "Display time-synced lyrics for any song on YouTube. Karaoke-style lyric highlighting with community-powered lyrics timing.",
@@ -9,7 +9,8 @@
   "permissions": ["storage", "notifications"],
 
   "host_permissions": [
-    "https://everyric.moref.co/*"
+    "https://everyric.moref.co/*",
+    "https://music.163.com/*"
   ],
 
   "optional_host_permissions": [

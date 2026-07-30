@@ -1,16 +1,5 @@
 import type { SongInfo } from '../types';
-
-const TITLE_NOISE: RegExp[] = [
-  /[([]\s*official[^)\]]*[)\]]/gi,
-  /[([][^)\]]*(?:music|lyric|audio)\s*video[^)\]]*[)\]]/gi,
-  /[([]\s*lyrics?[^)\]]*[)\]]/gi,
-  /[([]\s*audio\s*[)\]]/gi,
-  /[([]\s*mv\s*[)\]]/gi,
-  /[([]\s*m\/v\s*[)\]]/gi,
-  /[([]\s*(?:4k|hd|hq)[^)\]]*[)\]]/gi,
-  /[([]\s*(?:color coded|한글 자막|가사)[^)\]]*[)\]]/gi,
-  /【[^】]*】/g,
-];
+import { parseSongTitle } from './song-title';
 
 export function getCurrentVideoId(): string | null {
   try {
@@ -46,22 +35,6 @@ function textOf(selector: string): string {
   return document.querySelector(selector)?.textContent?.trim() ?? '';
 }
 
-export function cleanTitle(raw: string): string {
-  let title = raw;
-  for (const re of TITLE_NOISE) title = title.replace(re, ' ');
-  return title.replace(/\s{2,}/g, ' ').trim();
-}
-
-function splitArtistTitle(title: string): { title: string; artist: string | null } {
-  for (const sep of [' - ', ' – ', ' — ', ' | ']) {
-    const idx = title.indexOf(sep);
-    if (idx > 0) {
-      return { artist: title.slice(0, idx).trim(), title: title.slice(idx + sep.length).trim() };
-    }
-  }
-  return { title, artist: null };
-}
-
 export function detectSong(): SongInfo | null {
   const videoId = getCurrentVideoId();
   if (!videoId) return null;
@@ -71,9 +44,12 @@ export function detectSong(): SongInfo | null {
 
   const meta = navigator.mediaSession?.metadata;
   if (meta?.title) {
+    // mediaSession 제목도 "가수 - 곡명" 통짜인 경우가 흔하다(뮤비 업로드 관례) — DOM
+    // 경로와 같은 규칙으로 쪼갠다. 쪼개지면 그 가수 표기가 채널명(meta.artist)보다 정확하다.
+    const split = parseSongTitle(meta.title);
     return {
-      title: cleanTitle(meta.title),
-      artist: meta.artist || null,
+      title: split.title,
+      artist: split.artist ?? (meta.artist || null),
       videoId,
       duration,
     };
@@ -84,7 +60,13 @@ export function detectSong(): SongInfo | null {
     if (title) {
       const byline = textOf('ytmusic-player-bar .byline');
       const artist = byline.split('•')[0]?.trim() || null;
-      return { title: cleanTitle(title), artist, videoId, duration };
+      const parsed = parseSongTitle(title);
+      return {
+        title: parsed.title,
+        artist: parsed.artist ?? artist,
+        videoId,
+        duration,
+      };
     }
   }
 
@@ -94,7 +76,7 @@ export function detectSong(): SongInfo | null {
   if (!rawTitle || rawTitle === 'YouTube') return null;
 
   const channel = textOf('#owner #channel-name a').replace(/ - Topic$/i, '').trim() || null;
-  const split = splitArtistTitle(cleanTitle(rawTitle));
+  const split = parseSongTitle(rawTitle);
   return {
     title: split.title,
     artist: split.artist ?? channel,

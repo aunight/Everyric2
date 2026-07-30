@@ -118,7 +118,10 @@ class _FakeInnerTranslator:
 
 
 class _FakeLyricsTranslator:
-    def __init__(self, settings=None, log_label=None):
+    seen_api_keys: list[str | None] = []
+
+    def __init__(self, settings=None, log_label=None, api_key=None):
+        self.seen_api_keys.append(api_key)
         self._translator = _FakeInnerTranslator()
 
     def translate_with_pronunciation(self, text, source_lang, target_lang, context=None):
@@ -311,6 +314,45 @@ def test_translate_persist_creates_translation_layer(monkeypatch):
                 ]
 
     asyncio.run(body())
+
+
+def test_translate_ignores_caller_api_key_without_server_opt_in(monkeypatch):
+    _patch_translator(monkeypatch)
+    _FakeLyricsTranslator.seen_api_keys.clear()
+
+    translate_lyrics(
+        TranslateRequest(
+            text="秘密",
+            source_lang="ja",
+            target_lang="zh",
+            translator_api_key="personal-gemini-key",
+        ),
+        BackgroundTasks(),
+    )
+
+    assert _FakeLyricsTranslator.seen_api_keys == [None]
+
+
+def test_translate_allows_caller_api_key_only_with_explicit_server_opt_in(monkeypatch):
+    _patch_translator(monkeypatch)
+    _FakeLyricsTranslator.seen_api_keys.clear()
+    server = get_settings().server
+    previous = server.allow_client_translation_api_keys
+    object.__setattr__(server, "allow_client_translation_api_keys", True)
+    try:
+        translate_lyrics(
+            TranslateRequest(
+                text="秘密",
+                source_lang="ja",
+                target_lang="zh",
+                translator_api_key="personal-gemini-key",
+            ),
+            BackgroundTasks(),
+        )
+    finally:
+        object.__setattr__(server, "allow_client_translation_api_keys", previous)
+
+    assert _FakeLyricsTranslator.seen_api_keys == ["personal-gemini-key"]
 
 
 def test_translate_persist_false_does_not_create_a_layer(monkeypatch):

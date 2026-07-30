@@ -1,5 +1,18 @@
 # Everyric Chrome 확장
 
+> **繁體中文**：本擴充功能來自 **onpe（[onpe5679](https://github.com/onpe5679)）**的
+> [Everyric2 原始專案](https://github.com/onpe5679/Everyric2)；此目錄包含 fork 維護者的
+> 修改，並依 Apache License 2.0 發布。
+>
+> **日本語**：この拡張機能は **onpe（[onpe5679](https://github.com/onpe5679)）**氏の
+> [Everyric2 オリジナルプロジェクト](https://github.com/onpe5679/Everyric2)を基にした
+> フォーク版で、Apache License 2.0 の下で公開されています。
+>
+> **English**: This extension is based on the
+> [original Everyric2 project](https://github.com/onpe5679/Everyric2) by
+> **onpe ([onpe5679](https://github.com/onpe5679))**. This directory includes fork-maintained
+> modifications distributed under the Apache License 2.0.
+
 YouTube / YouTube Music 위에 싱크 가사를 표시하는 MV3 확장 프로그램.
 
 > **그냥 쓰고 싶다면** 이 문서는 필요 없습니다 — 저장소 루트의

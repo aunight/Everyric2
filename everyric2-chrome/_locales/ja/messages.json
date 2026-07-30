@@ -47,6 +47,9 @@
   "pip_controls_modeToggle": {
     "message": "進行モード切替 — 固定画面(再生位置が移動)↔ スクロール(再生位置固定)"
   },
+  "pip_controls_micDisplayToggle": {
+    "message": "採点表示を切り替え：歌唱軌跡／命中ノート"
+  },
   "pip_controls_modeFixed": {
     "message": "固定"
   },
@@ -667,13 +670,16 @@
     "message": "ローマ字"
   },
   "overlay_settings_pronScript_kana": {
-    "message": "かな"
+    "message": "ひらがな"
   },
   "overlay_settings_sourcePriority_vocaro": {
     "message": "ボカロ歌詞wiki優先"
   },
   "overlay_settings_sourcePriority_lrclib": {
     "message": "LRCLIB優先"
+  },
+  "overlay_settings_sourcePriority_netease": {
+    "message": "NetEase Cloud Music優先"
   },
   "overlay_settings_pitchWindow_half": {
     "message": "½小節"
@@ -1509,5 +1515,164 @@
   },
   "overlay_settings_row_pitchLineOpacityTitle": {
     "message": "f0曲線・ノートバーの不透明度を調整します"
+  },
+  "pip_score_label": {
+    "message": "採点 $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_row_karaokeScore": {
+    "message": "採点モード（BETA）"
+  },
+  "overlay_settings_row_karaokeScoreTitle": {
+    "message": "マイクの音程をメロディーと比べて採点し、右上に合計点を表示します。採点を有効にするとマイク音程も自動で有効になります。"
+  },
+  "overlay_settings_row_micDisplayMode": {
+    "message": "採点表示"
+  },
+  "overlay_settings_micDisplayMode_trace": {
+    "message": "歌唱軌跡"
+  },
+  "overlay_settings_micDisplayMode_notes": {
+    "message": "命中ノート（カラオケ）"
+  },
+  "serverStatus_code_timeout": {
+    "message": "応答なし（タイムアウト）"
+  },
+  "serverStatus_code_permission": {
+    "message": "ホスト権限なし"
+  },
+  "serverStatus_code_offline": {
+    "message": "接続失敗"
+  },
+  "serverStatus_code_timeoutMs": {
+    "message": "$P1$ms超過",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "serverStatus_offline": {
+    "message": "サーバーに接続できません — サーバーが停止しているかアドレスが間違っています"
+  },
+  "serverStatus_timeout": {
+    "message": "サーバーが時間内に応答しませんでした"
+  },
+  "serverStatus_auth": {
+    "message": "APIキー認証に失敗しました — 設定でキーを確認してください"
+  },
+  "serverStatus_server": {
+    "message": "サーバーでエラーが発生しました"
+  },
+  "serverStatus_notfound": {
+    "message": "サーバーにこの機能がありません — サーバーのバージョンが古い可能性があります"
+  },
+  "serverStatus_malformed": {
+    "message": "サーバーの応答を解釈できません"
+  },
+  "serverStatus_client": {
+    "message": "サーバーがリクエストを拒否しました"
+  },
+  "serverStatus_permission": {
+    "message": "ローカルサーバーへのアクセス権限がありません — 権限を許可してください"
+  },
+  "pip_score_noMic": {
+    "message": "採点 — マイクオフ"
+  },
+  "overlay_header_pipLabel": {
+    "message": "採点"
+  },
+  "overlay_pronChip_title": {
+    "message": "発音表記 — クリックで切替"
+  },
+  "pip_controls_pronScriptToggle": {
+    "message": "発音表記の切替（ハングル／ローマ字／ひらがな）"
+  },
+  "overlay_settings_solfegeNotation_off": {
+    "message": "表示しない"
+  },
+  "overlay_pronChip_kk": {
+    "message": "KK発音記号"
+  },
+  "overlay_pronChip_pinyin": {
+    "message": "拼音"
+  },
+  "overlay_pronChip_off": {
+    "message": "発音オフ"
+  },
+  "lyricsClean_kind_note": {
+    "message": "注釈"
+  },
+  "lyricsClean_kind_section": {
+    "message": "パート表記"
+  },
+  "lyricsClean_kind_repeat": {
+    "message": "繰り返し表記"
+  },
+  "lyricsClean_kind_credit": {
+    "message": "クレジット"
+  },
+  "lyricsClean_kind_footnote": {
+    "message": "脚注"
+  },
+  "lyricsClean_moreLines": {
+    "message": " 他$P1$行",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "lyricsClean_bailed": {
+    "message": "表記らしき行が多すぎるためそのままにしました（$P1$行）— 歌詞でない行はご自身で削除してください",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "lyricsClean_removed": {
+    "message": "$P1$ $P2$行を除外しました — $P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "pip_score_best": {
+    "message": "自己ベスト $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_translationApiKeyLabel": {
+    "message": "翻訳APIキー（Geminiなど）"
+  },
+  "overlay_settings_translationApiKeyPlaceholder": {
+    "message": "（任意）自分の翻訳LLM APIキー"
+  },
+  "overlay_settings_translationApiKeyTitle": {
+    "message": "キーはChromeのローカルストレージだけに保存され、デフォルトサーバーには送信されません。呼び出し元キーを明示的に許可したセルフホスト先にのみ送信されます。"
+  },
+  "panels_results_neteaseLabel": {
+    "message": "網易雲音樂"
+  },
+  "panels_results_neteaseMeta": {
+    "message": "同期 · 中国語訳あり得る"
+  },
+  "overlay_source_netease": {
+    "message": "網易雲音樂"
   }
 }

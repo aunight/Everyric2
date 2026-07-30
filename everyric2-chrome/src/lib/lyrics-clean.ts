@@ -22,6 +22,9 @@
  * 판정은 순수 함수(partMarkerKind)라 입력 한 줄만 주면 그대로 검증할 수 있다.
  */
 
+import { t } from './i18n';
+import type { LyricsData } from '../types';
+
 export type MarkerKind =
   /** ※·★로 시작하는 위키 주석 줄 */
   | 'note'
@@ -105,21 +108,63 @@ const RE_JEOL = /^제?\s*\d{1,2}\s*절$/;
 const RE_FOOTNOTE = /^(?:\d{1,3}|주\s*\d{0,3}|각주|note\s*\d{0,3})$/i;
 /** 반복 횟수 — 숫자가 있어야 괄호 없이도 인정한다 */
 const RE_REPEAT_NUM = /^(?:[x×*]\s*\d{1,2}|\d{1,2}\s*(?:회|번)(?:\s*반복)?|반복\s*[x×*]?\s*\d{1,2})$/i;
-/** 크레딧 라벨 — "라벨: 값" 꼴에서 라벨 쪽만 검사한다 */
-const RE_CREDIT_LABEL = new RegExp(
-  '^(?:번역|해석|의역|출처|가사\\s*출처|원문|원곡|원제|작사|작곡|편곡|노래|보컬|가창|조교|믹싱|'
-  + '마스터링|영상|동영상|일러스트|제작|발음|독음|로마자|앨범|발매일?|재생시간|'
-  // 일본어 크레딧 (보카로 위키 원문에 그대로 실려 온다)
-  + '作詞|作曲|編曲|作編曲|唄|歌|絵|動画|調[声整]|訳|翻訳|ミックス|マスタリング|'
-  + 'lyrics?|music|composer|composed\\s*by|lyricist|arrange(?:r|ment)|arranged\\s*by|vocals?|'
-  + 'translat(?:ion|ed\\s*by)|romaji|kanji|english|illust(?:ration)?|movie|mix(?:ing)?|master(?:ing)?)$',
-  'i',
+const CREDIT_ROLE =
+  '(?:'
+  // 한국어 메타·제작진
+  + '번역|해석|의역|출처|가사\\s*출처|원문|원곡|원제|작사|작곡|편곡|노래|보컬|가창|'
+  + '코러스|조교|믹스|믹싱|마스터링|녹음|프로듀서|프로듀싱|영상|동영상|일러스트|'
+  + '제작|기획|감독|연주|기타|베이스|드럼|피아노|발음|독음|로마자|앨범|발매일?|재생시간|'
+  // 일본어 제작진
+  + '作詞|作曲|編曲|作編曲|補作|唄|歌|歌唱|ボーカル|コーラス|演奏|ミックス|'
+  + 'ミキシング|マスタリング|録音|音響|制作|製作|企画|監督|プロデュース|'
+  + 'プロデューサー|ギター|ベース|ドラムス?|ピアノ|ストリングス|絵|イラスト|動画|'
+  + '映像|調[声整]|訳|翻訳|原曲|本家|'
+  // 中文製作人員（繁簡並列）
+  + '作詞|作词|作曲|編曲|编曲|作編曲|作编曲|混音(?:師|师)?|母帶(?:處理)?|母带(?:处理)?|'
+  + '錄音|录音|製作(?:人)?|制作(?:人)?|監製|监制|演唱|主唱|和聲|和声|吉他|貝斯|贝斯|'
+  + '鼓|鋼琴|钢琴|弦樂|弦乐|企劃|企划|導演|导演|插畫|插画|動畫|动画|影像|'
+  // 영어 제작진·메타
+  + 'lyrics?(?:\\s*by)?|music(?:\\s*by)?|composer|composed\\s*by|composition|lyricist|'
+  + 'arrange|arranger|arrangement|arranged\\s*by|vocals?(?:\\s*by)?|singer|sung\\s*by|'
+  + 'chorus|mix|mixed\\s*by|mixing|mastering|mastered\\s*by|recording|recorded\\s*by|'
+  + 'producer|produced\\s*by|production|director|directed\\s*by|guitar|bass|drums?|piano|'
+  + 'strings|translat(?:ion|ed\\s*by)|romaji|kanji|english|illust(?:ration|rator)?|artwork|'
+  + 'animation|movie|video'
+  + ')';
+
+/** 콜론 앞이 전부 제작 역할일 때만 크레딧으로 본다 — `君の声：僕の歌`는 통과한다. */
+const RE_CREDIT_HEAD = new RegExp(
+  `^${CREDIT_ROLE}(?:\\s*(?:&|＆|/|／|、|・|·|\\+|＋)\\s*${CREDIT_ROLE}){0,3}$`,
+  'iu',
 );
+
+/** `編曲・姓名`, `Arrangement / Name`처럼 콜론 없이 역할과 이름을 잇는 구분자. */
+const RE_CREDIT_VALUE_SEPARATOR = /[・·]|\s+(?:[/／]|[-–—])\s+/gu;
+
+/** 제작진·메타데이터 한 줄인가. 역할 라벨과 이름을 잇는 명시적 구분자가 반드시 있어야 한다. */
+export function isProductionCreditLine(rawLine: string): boolean {
+  const line = rawLine.replace(/\s+/g, ' ').trim();
+  if (!line || line.length > 180) return false;
+  const core = unwrapBrackets(line) ?? line;
+
+  const colon = core.match(/^([^:：]{1,48})[:：]\s*(\S.*)$/u);
+  if (colon && RE_CREDIT_HEAD.test(colon[1].trim())) return true;
+
+  for (const match of core.matchAll(RE_CREDIT_VALUE_SEPARATOR)) {
+    const index = match.index;
+    if (index === undefined) continue;
+    const head = core.slice(0, index).trim();
+    const tail = core.slice(index + match[0].length).trim();
+    if (tail && RE_CREDIT_HEAD.test(head)) return true;
+  }
+  return false;
+}
 
 /** 가사가 아닌 줄인가 — 그렇다면 어떤 종류인지, 아니면 null */
 export function partMarkerKind(rawLine: string): MarkerKind | null {
   const line = rawLine.replace(/\s+/g, ' ').trim();
   if (!line) return null; // 빈 줄은 블록 구분(구조)이라 판정 대상이 아니다
+  if (isProductionCreditLine(line)) return 'credit';
   // 긴 줄은 표기가 아니라 가사다 — 문장 안에 우연히 키워드가 있어도 여기서 걸러진다
   if (line.length > 60) return null;
 
@@ -138,10 +183,6 @@ export function partMarkerKind(rawLine: string): MarkerKind | null {
   if (bracketed && RE_FOOTNOTE.test(core)) return 'footnote';
   if (RE_REPEAT_NUM.test(core)) return 'repeat';
   if (bracketed && /^반복$/.test(core)) return 'repeat';
-
-  // 크레딧 줄 — 라벨이 알려진 것일 때만. 가사의 "사랑: 그 이름"은 라벨이 아니라 통과한다
-  const labelled = core.match(/^([^:：]{1,12})[:：]\s*(.+)$/);
-  if (labelled && RE_CREDIT_LABEL.test(labelled[1].trim())) return 'credit';
 
   // Genius 관례 `[Verse 2: A, B]` — 콜론 앞의 파트 이름만 본다
   const head = core.split(/[:：]/)[0].trim();
@@ -183,25 +224,52 @@ export function stripPartMarkers(raw: string): CleanResult {
   return { text: kept.join('\n'), removed, kinds, bailed: false };
 }
 
-const KIND_LABEL: Record<MarkerKind, string> = {
-  note: '주석',
-  section: '파트 표기',
-  repeat: '반복 표기',
-  credit: '크레딧',
-  footnote: '각주',
-};
+/**
+ * 서버 싱크·외부 LRC·위키·유튜브 자막 등 이미 구조화된 모든 가사에서 제작진 줄을 제거한다.
+ *
+ * 줄만 거르면 언어별 번역 배열의 인덱스가 어긋나므로 같은 인덱스를 함께 제거한다.
+ * 변경이 없으면 원본 객체를 돌려줘 같은 곡 재적용 판정과 캐시 서명을 불필요하게 흔들지 않는다.
+ */
+export function stripProductionCredits(data: LyricsData): LyricsData {
+  const keptIndices = data.lines
+    .map((line, index) => ({ index, keep: !isProductionCreditLine(line.text) }))
+    .filter(item => item.keep)
+    .map(item => item.index);
+  if (keptIndices.length === data.lines.length) return data;
+
+  const lines = keptIndices.map(index => data.lines[index]);
+  const translationsByLang = data.translationsByLang
+    ? Object.fromEntries(
+      Object.entries(data.translationsByLang)
+        .filter(([, values]) => values.length === data.lines.length)
+        .map(([lang, values]) => [lang, keptIndices.map(index => values[index])]),
+    )
+    : undefined;
+
+  return {
+    ...data,
+    lines,
+    plainText: lines.map(line => line.text).join('\n'),
+    translationsByLang,
+  };
+}
 
 /**
  * 걸러낸 결과를 사용자에게 알릴 한 줄 — 지운 게 없으면 null.
  * 조용히 지우면 "가사가 사라졌다"로 보이므로 **몇 줄을, 무엇을** 지웠는지 함께 보여준다.
+ * (예전엔 한국어 하드코딩이라 zh/en/ja UI에 한국어가 샜다 — uiLanguage 카탈로그를 탄다)
  */
 export function describeRemoved(res: CleanResult): string | null {
   if (res.removed.length === 0) return null;
   const sample = res.removed.slice(0, 3).join(', ');
-  const more = res.removed.length > 3 ? ` 외 ${res.removed.length - 3}줄` : '';
+  const more = res.removed.length > 3
+    ? t('lyricsClean.moreLines', [String(res.removed.length - 3)])
+    : '';
   if (res.bailed) {
-    return `표기처럼 보이는 줄이 너무 많아 그대로 뒀어요 (${res.removed.length}줄) — 가사가 아닌 줄은 직접 지워 주세요`;
+    return t('lyricsClean.bailed', [String(res.removed.length)]);
   }
-  const kinds = [...new Set(res.kinds)].map(k => KIND_LABEL[k]).join('·');
-  return `${kinds} ${res.removed.length}줄을 제외했어요 — ${sample}${more}`;
+  const kinds = [...new Set(res.kinds)]
+    .map(k => t(`lyricsClean.kind.${k}`))
+    .join('·');
+  return t('lyricsClean.removed', [kinds, String(res.removed.length), sample + more]);
 }

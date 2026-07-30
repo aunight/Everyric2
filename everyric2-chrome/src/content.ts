@@ -2,10 +2,18 @@ import { detectSong, getCurrentVideoId, getVideoElement } from './lib/song-detec
 import { SyncEngine, type SyncHandlers } from './lib/sync-engine';
 import { KaraokeAudio, collectMelodyNotes } from './lib/karaoke-audio';
 import { parseTriLineLyrics } from './lib/tri-line';
-import { describeRemoved, stripPartMarkers } from './lib/lyrics-clean';
+import {
+  describeRemoved,
+  stripPartMarkers,
+  stripProductionCredits,
+} from './lib/lyrics-clean';
+import { addScore, bestScore } from './lib/score-store';
 import { MicPitch } from './lib/mic-pitch';
 import { getGeometry, getSettings, saveGeometry, saveSettings } from './lib/settings';
 import { matchWikiLinesToSegments, resolveScript, resolvedPronunciation } from './lib/lang';
+import { isSameLanguageTarget } from './lib/translation-visibility';
+import { lyricsSourceOrder } from './lib/lyrics-source-priority';
+import { normalizeScoringSettingsPatch } from './lib/scoring-settings';
 import { setUiLanguage, t } from './lib/i18n';
 import { LyricsOverlay } from './ui/overlay';
 import { PipController } from './ui/pip';
@@ -784,6 +792,7 @@ async function handleRequestSyncList(): Promise<void> {
 }
 
 async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
+  patch = normalizeScoringSettingsPatch(patch);
   settings = await saveSettings(patch);
   if (patch.uiLanguage !== undefined) setUiLanguage(settings.uiLanguage);
   overlay?.applySettings(settings);
@@ -886,6 +895,12 @@ async function handleSettingsChange(patch: Partial<Settings>): Promise<void> {
   }
   if (patch.micOctave !== undefined) {
     pip.setMicOctave(settings.micOctave);
+  }
+  if (patch.karaokeScoring !== undefined) {
+    pip.setKaraokeScoring(settings.karaokeScoring);
+  }
+  if (patch.micDisplayMode !== undefined) {
+    pip.setMicDisplayMode(settings.micDisplayMode);
   }
   if (patch.pitchF0Curve !== undefined) {
     pip.setShowF0(settings.pitchF0Curve);
@@ -1079,6 +1094,7 @@ async function enrichFromVocaro(videoId: string, data: LyricsData): Promise<void
 function hasMatchingHumanTranslation(data: LyricsData): boolean {
   if (data.attribution?.sourceId === 'miraheze') return settings.translationLanguage === 'en';
   if (data.source === 'vocaro') return settings.translationLanguage === 'ko';
+  if (data.source === 'netease') return settings.translationLanguage === 'zh';
   return Boolean(data.humanTranslated) && data.translationLang === settings.translationLanguage;
 }
 
@@ -1313,7 +1329,7 @@ async function harvestWiki(data: LyricsData, videoId: string, lang: 'ko' | 'en')
  */
 async function harvestCaptions(data: LyricsData, videoId: string, have: Set<string>): Promise<void> {
   try {
-    const candidates = (['ko', 'en', 'ja'] as const).filter(lang => !have.has(lang));
+    const candidates = (['ko', 'en', 'ja', 'zh'] as const).filter(lang => !have.has(lang));
     if (candidates.length === 0) return;
     const tracks = await getCaptionTracks(videoId);
     if (videoId !== currentVideoId || tracks.length === 0) return;
@@ -1404,7 +1420,7 @@ async function loadTranslations(opts: { languageSwitch?: boolean } = {}): Promis
   // 사용자 눈엔 "번역 줄이 사라졌다"로만 보인다는 실보고 — 원문만 보는 중임을 짧게 알린다.
   // clearTranslations가 이미 setTranslationStatus(null)로 이전 상태를 지운 뒤이므로
   // 여기서 새로 세팅해도 이전 문구와 겹치지 않는다.
-  if (detectSongScript(srcLines) === lang) {
+  if (isSameLanguageTarget(srcLines, lang)) {
     overlay?.setTranslationStatus(t('content.translation.originalOnly'));
     return;
   }
@@ -1878,16 +1894,19 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   panel.setSong(song);
   // PiP 제목도 함께 갱신한다 — 지금까지 PiP는 **창을 열 때 한 번만** 제목을 받아서, 곡을
   // 넘겨도 이전 제목이 남았다(열던 순간 광고가 돌고 있었다면 광고 제목이 계속 남는다)
-  if (pip.isOpen()) pip.setSong(song.title, song.artist ?? '');
+  if (pip.isOpen()) {
+    pip.setVideoId(videoId, song.title);
+    pip.setSong(song.title, song.artist ?? '');
+  }
 
-  // 소스 우선순위: 서버 싱크는 항상 최우선, 그 다음은 설정에 따라
-  // 보카로 위키(발음·사람 번역) → LRCLIB 순서 또는 그 반대
-  const wikiFirst = settings.lyricsSourcePriority === 'vocaro';
+  // 소스 우선순위: 서버 싱크는 항상 최우선, 그 다음은 설정에서 고른 외부 소스부터 찾는다.
+  // LRCLIB 우선 모드는 기존 background 체인 안에서 먼저 조회하므로 아래 폴백에서 중복 호출하지 않는다.
+  const lrclibTriedWithServer = settings.lyricsSourcePriority === 'lrclib';
   const res = await sendToBackground<LyricsData | null>({
     type: 'FETCH_LYRICS',
     // lang은 번역 레이어 언어별 서빙 요청용 — background가 아직 서버 호출에 넘기지 않으면
     // (구버전 배선) 조용히 무시되고 오늘과 동일하게 동작한다
-    payload: { ...song, skipLrclib: wikiFirst, lang: settings.translationLanguage },
+    payload: { ...song, skipLrclib: !lrclibTriedWithServer, lang: settings.translationLanguage },
   });
   if (seq !== searchSeq || videoId !== currentVideoId) return;
   // 서버 조회가 실패했다면(401·연결 불가 등) 사유를 먼저 상태에 반영한다 — 그래야
@@ -1911,16 +1930,22 @@ async function searchLyrics(queryOverride?: { title: string; artist: string }): 
   let data = res.data ?? null;
   if (data?.synced) keptLyrics = null; // 새 싱크가 생겼으니 초기화 보관본은 낡았다
   currentSourceUrl = null;
-  if (!data) {
-    const wiki = await lookupWikiSources(videoId, seq, song.title);
-    if (wiki.stale) return;
-    data = wiki.data;
-  }
-  // 위키 우선 모드에서 위키까지 미스면 후순위 LRCLIB 시도
-  if (!data && wikiFirst) {
-    const lr = await sendToBackground<LyricsData | null>({ type: 'FETCH_LRCLIB', payload: song });
-    if (seq !== searchSeq || videoId !== currentVideoId) return;
-    data = lr.data ?? null;
+  for (const source of lyricsSourceOrder(settings.lyricsSourcePriority)) {
+    if (data) break;
+    if (source === 'lrclib' && lrclibTriedWithServer) continue;
+    if (source === 'vocaro') {
+      const wiki = await lookupWikiSources(videoId, seq, song.title);
+      if (wiki.stale) return;
+      data = wiki.data;
+    } else {
+      const lookup = await sendToBackground<LyricsData | null>({
+        type: source === 'lrclib' ? 'FETCH_LRCLIB' : 'FETCH_NETEASE',
+        payload: song,
+      });
+      if (seq !== searchSeq || videoId !== currentVideoId) return;
+      data = lookup.data ?? null;
+      if (data?.source === 'netease') currentSourceUrl = data.attribution?.url ?? null;
+    }
   }
   // 서버 싱크(위키 가사로 생성된 것)에 위키의 발음/사람 번역을 텍스트 매칭으로 병합
   if (data && data.source === 'everyric' && data.synced) {
@@ -2169,6 +2194,14 @@ async function handlePickCandidate(candidate: SearchCandidate): Promise<void> {
     });
     if (seq !== searchSeq || videoId !== currentVideoId) return;
     if (page.data && page.data.lines.length > 0) data = adoptVocaroResult(videoId, page.data);
+  } else if (candidate.source === 'netease') {
+    const res = await sendToBackground<LyricsData | null>({
+      type: 'PICK_NETEASE',
+      payload: { id: candidate.id },
+    });
+    if (seq !== searchSeq || videoId !== currentVideoId) return;
+    data = res.data ?? null;
+    if (data) currentSourceUrl = `https://music.163.com/#/song?id=${candidate.id}`;
   } else {
     const res = await sendToBackground<LyricsData | null>({
       type: 'PICK_LRCLIB',
@@ -2219,6 +2252,10 @@ function prefillTranslationCacheFromServer(data: LyricsData): void {
 
 function applyLyricsData(data: LyricsData | null): void {
   const panel = ensureOverlay();
+  if (data) {
+    data = stripProductionCredits(data);
+    if (data.lines.length === 0) data = null;
+  }
   currentData = data;
   lastLineIndex = -1;
   engine.stop();
@@ -2295,6 +2332,9 @@ function applyLyricsData(data: LyricsData | null): void {
       pip.setDebugMeta(data.debugMeta ?? null);
       panel.setDebugMeta(data.debugMeta ?? null);
       pip.setShowF0(settings.pitchF0Curve);
+      // 곡 전환 — 이전 곡 채점을 그 곡 id로 flush한 뒤 새 곡으로 귀속을 바꾼다
+      pip.setVideoId(currentVideoId ?? '', currentSong?.title ?? '');
+      void bestScore(currentVideoId ?? '').then(b => pip.setScoreBest(b));
       pip.setLines(data.lines);
       // 노트·템포는 위에서 이미 이 곡 값으로 맞췄다 (분기마다 갱신하던 것을 한곳으로 모았다)
       if (settings.pipKeepPanel) {
@@ -2982,9 +3022,12 @@ function stageLabel(stage: string): string {
  *  '싱크 생성'을 누른 사용자에게 지금까지 진행 표시가 아예 없었다. */
 function updateGenChip(): void {
   const cur = currentVideoId ? generatingJobs.get(currentVideoId) : undefined;
+  const currentPreparing = Boolean(
+    currentVideoId && preparingGenerate.has(currentVideoId),
+  );
   const others = generatingJobs.size - (cur ? 1 : 0);
   let text: string | null = null;
-  if (!cur && currentVideoId && preparingGenerate.has(currentVideoId)) {
+  if (!cur && currentPreparing) {
     // 잡 등록 전 준비 단계 — 버튼이 무반응처럼 보이지 않게 즉시 표시
     text = t('content.genChip.preparing');
   } else if (cur) {
@@ -3009,7 +3052,7 @@ function updateGenChip(): void {
     .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent));
   overlay?.setGenerationList(items);
   // 잡이 등록된 뒤에만 취소 가능 (준비 단계는 잡 id가 아직 없다)
-  overlay?.setGenerationChip(text, Boolean(cur));
+  overlay?.setGenerationChip(text, Boolean(cur), Boolean(cur) || currentPreparing);
   // PiP에는 대기열 목록·취소 UI가 없다 — 같은 진행 문구만 창 안 칩으로 보여 준다
   pip.setGenerationChip(text);
 }
@@ -3081,6 +3124,13 @@ async function handlePipToggle(): Promise<void> {
     initialVideoRatio: settings.pipVideoRatio,
     showPronunciation: settings.showPronunciation,
     pronScript: resolveScript(settings),
+    // PiP 창 안 발음 표기 토글 — 완료를 기다려連點造成的設定競態
+    onPronScriptChange: script =>
+      handleSettingsChange({ pronunciationScript: script, showPronunciation: true }),
+    // 곡이 끝나거나 창을 닫을 때의 최종 점수 — 로컬 기록소에 쌓고 최고점을 HUD에 되돌린다
+    onScoreResult: (vid, title, score) => {
+      void addScore(vid, title, score).then(best => pip.setScoreBest(best));
+    },
     pitchEnabled: settings.pitchGuide,
     pitchLaneHeight: settings.pitchLaneHeight,
     pitchWindowMeasures: settings.pitchWindowMeasures,
@@ -3140,11 +3190,15 @@ async function handlePipToggle(): Promise<void> {
     metronomeBeat: settings.metronomeBeat,
     onMetronomeBeatChange: beat => void handleSettingsChange({ metronomeBeat: beat }),
     micOctave: settings.micOctave,
+    karaokeScoring: settings.karaokeScoring,
+    micDisplayMode: settings.micDisplayMode,
+    onMicDisplayModeChange: mode =>
+      void handleSettingsChange({ micDisplayMode: mode }),
     onPitchWindowChange: measures => void handleSettingsChange({ pitchWindowMeasures: measures }),
     onPitchScrollModeChange: mode => void handleSettingsChange({ pitchScrollMode: mode }),
     onKaraokeToggle: on => void handleSettingsChange({ pitchGuide: on }),
     onVideoToggle: on => void handleSettingsChange({ pipShowVideo: on }),
-    getMicSamples: () => micPitch.samples(),
+    getMicSamples: () => micPitch.isCapturing() ? micPitch.samples() : null,
     onClosed: () => {
       karaokeAudio.setActive(false);
       micPitch.stop();
@@ -3159,7 +3213,10 @@ async function handlePipToggle(): Promise<void> {
     pip.close();
     return;
   }
+  // 채점 기록 귀속 + 이 곡의 저장된 최고점 표시
+  pip.setVideoId(videoId ?? '', currentSong?.title ?? '');
   pip.setSong(currentSong?.title ?? '', currentSong?.artist ?? '');
+  if (videoId) void bestScore(videoId).then(b => pip.setScoreBest(b));
   pip.setTempo(currentData.tempo ?? null);
   pip.setKey(currentData.key ?? null);
   pip.setDebugMeta(currentData.debugMeta ?? null);

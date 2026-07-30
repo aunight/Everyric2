@@ -87,7 +87,7 @@ export interface PronSegment {
   confidence?: number;
 }
 
-export type LyricsSource = 'everyric' | 'lrclib' | 'vocaro' | 'caption';
+export type LyricsSource = 'everyric' | 'lrclib' | 'vocaro' | 'caption' | 'netease';
 
 export interface LyricsData {
   source: LyricsSource;
@@ -417,6 +417,9 @@ export interface ServerStatus {
   at: number;
 }
 
+/** 採點時的麥克風回饋：即時歌唱軌跡或直接替目標音符上色。 */
+export type MicDisplayMode = 'trace' | 'notes';
+
 export interface Settings {
   autoSearch: boolean;
   /** 쇼츠(/shorts/)에서도 가사창 자동 열기 허용 — 기본 꺼짐 */
@@ -430,7 +433,7 @@ export interface Settings {
   /** 원문 밑에 한국어 발음 표기(있을 때만) 표시 — 패널·PiP 공통 */
   showPronunciation: boolean;
   /** 서버 싱크가 없을 때 어느 가사 소스를 먼저 찾을지 — 보카로 위키는 발음·사람 번역 제공 */
-  lyricsSourcePriority: 'vocaro' | 'lrclib';
+  lyricsSourcePriority: 'vocaro' | 'lrclib' | 'netease';
   pipKeepPanel: boolean;
   pipShowVideo: boolean;
   /** 빈 문자열이면 헤더 생략 */
@@ -454,7 +457,7 @@ export interface Settings {
   /** 음정 모델 RAW f0 곡선을 디버그 모드와 무관하게 레인에 상시 표시 */
   pitchF0Curve: boolean;
   /** 계이름 표기: korean(도레미)·english(멜로다인식 C4·D#5, 옥타브 포함). 기본 korean(무회귀) */
-  solfegeNotation: 'korean' | 'english';
+  solfegeNotation: 'korean' | 'english' | 'off';
   /** 음정선(f0 곡선·노트 바) 밝기 배율 — 0.2~1.0, 기존 알파값에 곱해진다. 기본 1(현행과
    *  동일 — f0 곡선 0.65·노트 채움 0.55/0.65가 그대로 유지돼 무회귀) */
   pitchLineOpacity: number;
@@ -482,6 +485,12 @@ export interface Settings {
   micDeviceId: string;
   /** 마이크 음정 옥타브 보정 (옥타브 단위, -2~+2) — 자동 폴딩 전에 적용 */
   micOctave: number;
+  /** 채점 모드 — 마이크 피치를 멜로디 노트와 비교해 점수를 표시 (마이크 표시가 켜져 있어야 입력이 있다) */
+  karaokeScoring: boolean;
+  /** 採點顯示：即時歌唱軌跡或日 K 式命中音符 */
+  micDisplayMode: MicDisplayMode;
+  /** 사용자 자신의 번역(LLM) API 키 — 자가 호스팅 서버가 env 키 대신 이 키로 번역한다 */
+  translationApiKey: string;
   /** 전사 신뢰도가 매우 낮은 곡(<0.001)에서 가사창 상단 경고 바 표시 */
   lowConfWarning: boolean;
   /** 전사 잡 완료/실패 시 브라우저 알림 — 다른 탭에 있어도 확인 가능 */
@@ -491,7 +500,7 @@ export interface Settings {
   /** 발음 표기 방식 — 'auto'면 translationLanguage 기준 자동 결정(lib/lang.ts resolveScript) */
   pronunciationScript: 'auto' | 'hangul' | 'romaji' | 'kana';
   /** 확장 UI 언어 — 'auto'면 브라우저 로케일. 지금은 값만 저장(i18n 태스크에서 소비) */
-  uiLanguage: 'auto' | 'ko' | 'en' | 'ja';
+  uiLanguage: 'auto' | 'ko' | 'en' | 'ja' | 'zh';
 }
 
 /** 디버그 스트립에 표시할 내부 상태 스냅샷 */
@@ -568,7 +577,10 @@ export interface PanelGeometry {
 /** 수동 검색에서 사용자가 직접 고를 수 있는 후보 (소스별) */
 export type SearchCandidate =
   | { source: 'lrclib'; id: number; title: string; artist: string; duration: number; synced: boolean }
-  | { source: 'vocaro'; slug: string; title: string; url: string };
+  | { source: 'vocaro'; slug: string; title: string; url: string }
+  // hasTranslation: tlyric(중국어 번역 LRC) 존재 여부는 가사를 열어봐야 안다 — 검색
+  // 단계에선 항상 false로 두고 표시는 열어본 뒤 결정한다 (추가 왕복 방지)
+  | { source: 'netease'; id: number; title: string; artist: string; duration: number };
 
 /** 자막 한 줄 (타이밍 포함) — 싱크 가사로 바로 표시하는 데 쓴다.
  *  트랙 **목록**은 클라이언트가 워치 페이지에서 직접 읽는다(lib/yt-captions.ts).
@@ -583,8 +595,10 @@ export type BgRequest =
   // lang은 번역 레이어 언어별 서빙 요청용(옵션) — 없으면 서버는 기존 응답 그대로 준다
   | { type: 'FETCH_LYRICS'; payload: SongInfo & { skipLrclib?: boolean; lang?: string } }
   | { type: 'FETCH_LRCLIB'; payload: SongInfo }
+  | { type: 'FETCH_NETEASE'; payload: SongInfo }
   | { type: 'SEARCH_CANDIDATES'; payload: { title: string; artist: string; duration: number } }
   | { type: 'PICK_LRCLIB'; payload: { id: number } }
+  | { type: 'PICK_NETEASE'; payload: { id: number } }
   // title·artist는 완성된 싱크에 함께 저장돼 커버 링크 후보 탐색의 단서가 된다 —
   // 이게 없으면 코퍼스에 제목이 쌓이지 않아 후보 탐색이 영원히 빈손이다
   // targetLang·lineMetaLang은 생성 요청자의 번역 언어(옵션, 기본 서버는 "ko") — background가

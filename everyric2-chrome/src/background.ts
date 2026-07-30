@@ -1,5 +1,13 @@
 import { fetchFromLrclib, getLrclibById, searchTracksLrclib } from './lib/lrclib';
+import {
+  fetchFromNetease,
+  fetchNeteaseLyric,
+  searchNetease,
+  type NeteaseLyric,
+} from './lib/netease';
+import { Converter } from 'opencc-js';
 import { attachLineMeta, cancelJob, checkServerStatus, fetchCaptionLines, findLinkCandidates, generateSync, generateSyncFromCaption, getJobStatus, getLinkJobStatus, getServerLog, linkSync, listSyncs, lookupSync, regenerateSync, resetSync, saveTranslationLayer, saveUserOffset, translateLyrics, unlinkSync, vocaroMatch, type FailureSink, type ServerConfig } from './lib/everyric-api';
+import { selectTranslationApiKey } from './lib/host-permissions';
 import { parseLRC, parsePlainLyrics, segmentsToLines } from './lib/lyrics-parser';
 import { mirahezeLookup } from './lib/miraheze';
 import { fetchSongPage, vocaroLookup } from './lib/vocaro';
@@ -7,8 +15,12 @@ import { getSettings } from './lib/settings';
 import type { BgRequest, ContentMessage, LRCLibTrack, LyricsData, MessageResponse, SearchCandidate, SongInfo, SourceAttribution } from './types';
 
 async function getServerConfig(): Promise<ServerConfig> {
-  const { serverUrl, apiKey } = await getSettings();
-  return { serverUrl, apiKey };
+  const { serverUrl, apiKey, translationApiKey } = await getSettings();
+  return {
+    serverUrl,
+    apiKey,
+    translatorApiKey: selectTranslationApiKey(serverUrl, translationApiKey),
+  };
 }
 
 /**
@@ -129,12 +141,32 @@ async function handleMessage(message: BgRequest): Promise<MessageResponse> {
       return { data: track ? lrclibToLyricsData(track) : null };
     }
 
+    case 'FETCH_NETEASE': {
+      const match = await fetchFromNetease(message.payload);
+      const { translationLanguage } = await getSettings();
+      const data = match ? neteaseToLyricsData(match.lyric, translationLanguage) : null;
+      if (data && match) {
+        data.attribution = {
+          name: 'NetEase Cloud Music',
+          url: `https://music.163.com/#/song?id=${match.track.id}`,
+          sourceId: 'netease',
+        };
+      }
+      return { data };
+    }
+
     case 'SEARCH_CANDIDATES':
       return { data: await searchCandidates(message.payload) };
 
     case 'PICK_LRCLIB': {
       const track = await getLrclibById(message.payload.id);
       return { data: track ? lrclibToLyricsData(track) : null };
+    }
+
+    case 'PICK_NETEASE': {
+      const lyric = await fetchNeteaseLyric(message.payload.id);
+      const { translationLanguage } = await getSettings();
+      return { data: lyric ? neteaseToLyricsData(lyric, translationLanguage) : null };
     }
 
     case 'GENERATE_SYNC': {
@@ -427,10 +459,53 @@ function lrclibToLyricsData(track: LRCLibTrack): LyricsData | null {
   return null;
 }
 
-/** 수동 검색 후보: LRCLIB 트랙들 + 보카로 위키 매칭(서버 원제 인덱스 → 클라 독음 인덱스) */
+/** 간체 → 정체(대만 자형) 변환기 — **자형만** 바꾼다(to:'tw'). 'twp'처럼 어휘까지
+ *  치환하면(软件→軟體) 번역 문구 자체가 달라진다 — 넷이즈 번역은 토씨 하나 안 바꾸고
+ *  글자만 정체로 (사용자 확정). 다의 간체자(发→發/髮)는 opencc 낱말 단위 판단에 맡긴다.
+ *  **번역 줄에만** 쓴다 — 원문 가사에 돌리면 일본어 한자까지 바뀌어 훼손된다(절대 금지). */
+const s2t = Converter({ from: 'cn', to: 'tw' });
+
+/** 넷이즈 가사 → LyricsData. tlyric은 넷이즈의 **사람 번역**이라 그대로 살린다 —
+ *  LLM 재번역으로 갈아치우면 다른 번역이 된다(사용자 확인: 사람 번역 유지가 정답).
+ *  원문과 타임태그를 공유하므로 같은 시각(10ms 반올림)의 번역 줄을 원문 줄에 붙이고,
+ *  간체로 오는 본문만 s2twp로 대만 정체화한다. */
+function neteaseToLyricsData(lyric: NeteaseLyric, targetLang: string): LyricsData | null {
+  if (!lyric.lrc) return null;
+  const lines = parseLRC(lyric.lrc);
+  if (lines.length === 0) return null;
+  const translations = new Array<string | undefined>(lines.length);
+  if (lyric.tlyric) {
+    const trByTime = new Map<number, string>();
+    for (const tr of parseLRC(lyric.tlyric)) {
+      if (tr.time != null && tr.text) trByTime.set(Math.round(tr.time * 100), s2t(tr.text));
+    }
+    for (const [index, line] of lines.entries()) {
+      if (line.time == null) continue;
+      const tr = trByTime.get(Math.round(line.time * 100));
+      if (!tr) continue;
+      translations[index] = tr;
+      if (targetLang === 'zh') line.translation = tr;
+    }
+  }
+  const hasTranslation = translations.some(Boolean);
+  const hasVisibleTranslation = hasTranslation && targetLang === 'zh';
+  return {
+    source: 'netease',
+    synced: true,
+    lines,
+    plainText: lines.map(l => l.text).join('\n'),
+    humanTranslated: hasVisibleTranslation,
+    translationLang: hasVisibleTranslation ? 'zh' : undefined,
+    availableLangs: hasTranslation ? ['zh'] : undefined,
+    translationsByLang: hasTranslation ? { zh: translations } : undefined,
+  };
+}
+
+/** 수동 검색 후보: LRCLIB 트랙들 + 넷이즈 + 보카로 위키 매칭(서버 원제 인덱스 → 클라 독음 인덱스) */
 async function searchCandidates(query: { title: string; artist: string; duration: number }): Promise<SearchCandidate[]> {
-  const [tracks, wikiMatch] = await Promise.all([
+  const [tracks, neteaseTracks, wikiMatch] = await Promise.all([
     searchTracksLrclib(query),
+    searchNetease(query),
     vocaroMatch(await getServerConfig(), query.title),
   ]);
 
@@ -457,6 +532,15 @@ async function searchCandidates(query: { title: string; artist: string; duration
       artist: t.artistName ?? '',
       duration: t.duration ?? 0,
       synced: Boolean(t.syncedLyrics),
+    });
+  }
+  for (const nt of neteaseTracks) {
+    candidates.push({
+      source: 'netease',
+      id: nt.id,
+      title: nt.title,
+      artist: nt.artist,
+      duration: nt.duration,
     });
   }
   return candidates;

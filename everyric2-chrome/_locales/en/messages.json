@@ -47,6 +47,9 @@
   "pip_controls_modeToggle": {
     "message": "Switch mode — fixed screen (playhead moves) ↔ scroll (playhead fixed)"
   },
+  "pip_controls_micDisplayToggle": {
+    "message": "Switch scoring display: pitch trace / hit notes"
+  },
   "pip_controls_modeFixed": {
     "message": "Fixed"
   },
@@ -667,13 +670,16 @@
     "message": "Romaji"
   },
   "overlay_settings_pronScript_kana": {
-    "message": "Kana"
+    "message": "Hiragana"
   },
   "overlay_settings_sourcePriority_vocaro": {
     "message": "Vocaloid Lyrics Wiki first"
   },
   "overlay_settings_sourcePriority_lrclib": {
     "message": "LRCLIB first"
+  },
+  "overlay_settings_sourcePriority_netease": {
+    "message": "NetEase Cloud Music first"
   },
   "overlay_settings_pitchWindow_half": {
     "message": "½ bar"
@@ -1509,5 +1515,164 @@
   },
   "overlay_settings_row_pitchLineOpacityTitle": {
     "message": "Adjusts the opacity of the f0 curve and note bars"
+  },
+  "pip_score_label": {
+    "message": "Score $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_row_karaokeScore": {
+    "message": "Scoring mode (BETA)"
+  },
+  "overlay_settings_row_karaokeScoreTitle": {
+    "message": "Compares microphone pitch against the melody and shows the total in the top right. Enabling scoring also enables microphone pitch."
+  },
+  "overlay_settings_row_micDisplayMode": {
+    "message": "Scoring display"
+  },
+  "overlay_settings_micDisplayMode_trace": {
+    "message": "Pitch trace"
+  },
+  "overlay_settings_micDisplayMode_notes": {
+    "message": "Hit notes (karaoke)"
+  },
+  "serverStatus_code_timeout": {
+    "message": "No response (timeout)"
+  },
+  "serverStatus_code_permission": {
+    "message": "No host permission"
+  },
+  "serverStatus_code_offline": {
+    "message": "Connection failed"
+  },
+  "serverStatus_code_timeoutMs": {
+    "message": "Exceeded $P1$ms",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "serverStatus_offline": {
+    "message": "Can't reach the server — it may be off, or the address may be wrong"
+  },
+  "serverStatus_timeout": {
+    "message": "The server didn't respond in time"
+  },
+  "serverStatus_auth": {
+    "message": "API key authentication failed — check the key in settings"
+  },
+  "serverStatus_server": {
+    "message": "The server hit an error"
+  },
+  "serverStatus_notfound": {
+    "message": "The server doesn't have this feature — it may be an older version"
+  },
+  "serverStatus_malformed": {
+    "message": "Couldn't parse the server response"
+  },
+  "serverStatus_client": {
+    "message": "The server rejected the request"
+  },
+  "serverStatus_permission": {
+    "message": "No permission to access the local server — grant it first"
+  },
+  "pip_score_noMic": {
+    "message": "Score — mic off"
+  },
+  "overlay_header_pipLabel": {
+    "message": "Score"
+  },
+  "overlay_pronChip_title": {
+    "message": "Pronunciation script — click to switch"
+  },
+  "pip_controls_pronScriptToggle": {
+    "message": "Switch pronunciation script (Hangul/Romaji/Hiragana)"
+  },
+  "overlay_settings_solfegeNotation_off": {
+    "message": "Off"
+  },
+  "overlay_pronChip_kk": {
+    "message": "KK (IPA)"
+  },
+  "overlay_pronChip_pinyin": {
+    "message": "Pinyin"
+  },
+  "overlay_pronChip_off": {
+    "message": "Pron. off"
+  },
+  "lyricsClean_kind_note": {
+    "message": "notes"
+  },
+  "lyricsClean_kind_section": {
+    "message": "part labels"
+  },
+  "lyricsClean_kind_repeat": {
+    "message": "repeat marks"
+  },
+  "lyricsClean_kind_credit": {
+    "message": "credits"
+  },
+  "lyricsClean_kind_footnote": {
+    "message": "footnotes"
+  },
+  "lyricsClean_moreLines": {
+    "message": " +$P1$ more",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "lyricsClean_bailed": {
+    "message": "Too many lines look like labels — kept everything ($P1$ lines). Please remove non-lyric lines yourself",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "lyricsClean_removed": {
+    "message": "Removed $P2$ line(s) of $P1$ — $P3$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      },
+      "p2": {
+        "content": "$2"
+      },
+      "p3": {
+        "content": "$3"
+      }
+    }
+  },
+  "pip_score_best": {
+    "message": "Best $P1$",
+    "placeholders": {
+      "p1": {
+        "content": "$1"
+      }
+    }
+  },
+  "overlay_settings_translationApiKeyLabel": {
+    "message": "Translation API key (Gemini etc.)"
+  },
+  "overlay_settings_translationApiKeyPlaceholder": {
+    "message": "(optional) your own LLM API key"
+  },
+  "overlay_settings_translationApiKeyTitle": {
+    "message": "Stored only in local Chrome storage and never sent to the default server. Sent only to your configured self-hosted server when it explicitly allows caller keys."
+  },
+  "panels_results_neteaseLabel": {
+    "message": "NetEase Music"
+  },
+  "panels_results_neteaseMeta": {
+    "message": "Synced · may include Chinese translation"
+  },
+  "overlay_source_netease": {
+    "message": "NetEase Music"
   }
 }
