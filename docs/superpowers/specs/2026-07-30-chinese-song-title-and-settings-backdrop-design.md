@@ -10,7 +10,7 @@ Everyric2 Chrome 擴充套件會從 YouTube Media Session 或頁面 DOM 讀取�
 ```
 
 設定頁目前另有一個 sticky「回到歌詞」區塊。玻璃背景套在整個外層容器上，捲動時形成一條
-沒有圓角的黑色橫板。
+沒有圓角的黑色橫板。語言按鈕列的堆疊層級又高於設定頁，會直接蓋住返回按鈕。
 
 ## 問題
 
@@ -26,6 +26,7 @@ Everyric2 Chrome 擴充套件會從 YouTube Media Session 或頁面 DOM 讀取�
   等已知宣傳尾詞。
 - 保留既有的 `歌手 - 歌名`、`歌手 – 歌名`、`歌手 — 歌名` 與 `歌手 | 歌名` 格式。
 - sticky 返回區塊保持透明，玻璃模糊只出現在圓角按鈕範圍內。
+- 設定頁完整覆蓋語言按鈕列，返回按鈕在開啟設定後保持可見、可點擊。
 
 ## 非目標
 
@@ -65,6 +66,8 @@ Everyric2 Chrome 擴充套件會從 YouTube Media Session 或頁面 DOM 讀取�
 - `.ey-settings-back` 維持滿寬圓角，新增半透明背景、`backdrop-filter` 與
   `-webkit-backdrop-filter`。
 - 使用現有 `999px` 圓角規則，使模糊效果被限制在按鈕輪廓內。
+- `.ey-settings` 的堆疊層級高於 `.ey-lang-chips`；設定頁開啟時，語言按鈕列不再覆蓋
+  返回按鈕或設定內容。
 
 ## 測試
 
@@ -75,6 +78,8 @@ Everyric2 Chrome 擴充套件會從 YouTube Media Session 或頁面 DOM 讀取�
 - 既有 `歌手 - 歌名` 格式維持正確。
 - 純英文正式歌名不因包含英文而被刪除。
 - 不含宣傳詞的普通標題維持不變。
+- `.ey-settings` 的 `z-index` 高於 `.ey-lang-chips`。
+- 模糊背景只存在於 `.ey-settings-back`，不再存在於 `.ey-settings-top`。
 
 驗證 Chrome 擴充套件 TypeScript 型別檢查與正式建置，並檢查 CSS 規則只把玻璃背景套在
 `.ey-settings-back`。
